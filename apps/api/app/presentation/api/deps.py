@@ -14,6 +14,14 @@ from app.application.use_cases.exam_sessions.management import (
     UpdateExamSessionStatus,
 )
 from app.application.use_cases.exam_sessions.pipeline import ExamPipelineService
+from app.application.use_cases.policies.management import (
+    AcknowledgeCommand,
+    CreatePolicyProfile,
+    DeletePolicyProfile,
+    GetPendingCommands,
+    ListPolicyProfiles,
+    UpdatePolicyProfile,
+)
 
 
 def get_pipeline_service(request: Request) -> ExamPipelineService:
@@ -62,4 +70,48 @@ ListExamSessionsUseCase = Annotated[ListExamSessions, Depends(get_list_exam_sess
 UpdateExamSessionStatusUseCase = Annotated[
     UpdateExamSessionStatus,
     Depends(get_update_exam_session_status),
+]
+
+
+def get_list_policy_profiles(request: Request) -> ListPolicyProfiles:
+    return request.app.state.container.list_policy_profiles
+
+
+def get_pending_commands(request: Request) -> GetPendingCommands:
+    return request.app.state.container.get_pending_commands
+
+
+def get_create_policy_profile(request: Request) -> CreatePolicyProfile:
+    return request.app.state.container.create_policy_profile
+
+
+def get_update_policy_profile(request: Request) -> UpdatePolicyProfile:
+    return request.app.state.container.update_policy_profile
+
+
+def get_delete_policy_profile(request: Request) -> DeletePolicyProfile:
+    return request.app.state.container.delete_policy_profile
+
+
+def get_acknowledge_command(request: Request) -> AcknowledgeCommand:
+    return request.app.state.container.acknowledge_command
+
+
+ListPolicyProfilesUseCase = Annotated[
+    ListPolicyProfiles, Depends(get_list_policy_profiles)
+]
+CreatePolicyProfileUseCase = Annotated[
+    CreatePolicyProfile, Depends(get_create_policy_profile)
+]
+UpdatePolicyProfileUseCase = Annotated[
+    UpdatePolicyProfile, Depends(get_update_policy_profile)
+]
+DeletePolicyProfileUseCase = Annotated[
+    DeletePolicyProfile, Depends(get_delete_policy_profile)
+]
+GetPendingCommandsUseCase = Annotated[
+    GetPendingCommands, Depends(get_pending_commands)
+]
+AcknowledgeCommandUseCase = Annotated[
+    AcknowledgeCommand, Depends(get_acknowledge_command)
 ]

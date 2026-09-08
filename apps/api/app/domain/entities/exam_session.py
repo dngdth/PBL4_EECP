@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from hashlib import sha256
 from typing import Any
-from uuid import uuid4
 
 from app.domain.exceptions.errors import (
     InvalidStateTransitionError,
@@ -13,18 +11,7 @@ from app.domain.exceptions.errors import (
     ReadinessGateError,
 )
 from app.domain.value_objects.enums import Readiness, SessionState
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
-def new_id(prefix: str) -> str:
-    return f"{prefix}_{uuid4().hex}"
-
-
-def canonical_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+from app.domain.value_objects.primitives import canonical_json, new_id, utc_now
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +178,51 @@ class ExamSession:
         self.updated_at = utc_now()
         return self.policy
 
+    def assign_management_policy(
+        self, profile: str, rules: dict[str, Any]
+    ) -> PolicyDocument:
+        if self.gateway_id is not None:
+            raise InvalidStateTransitionError(
+                "management policy assignment requires a direct session"
+            )
+        if self.state != SessionState.CREATED:
+            raise InvalidStateTransitionError(
+                "management policy can only be assigned while session is CREATED"
+            )
+        next_version = 1 if self.policy is None else self.policy.version + 1
+        self.policy = PolicyDocument.create(profile, rules, next_version)
+        for workstation in self.workstations.values():
+            workstation.desired_policy_hash = self.policy.policy_hash
+            workstation.actual_policy_hash = None
+            workstation.readiness = Readiness.UNKNOWN
+            workstation.restored = False
+        self.updated_at = utc_now()
+        return self.policy
+
+    def acknowledge_management_policy(self, target_id: str, policy_hash: str) -> None:
+        if self.gateway_id is not None or self.policy is None:
+            raise InvalidStateTransitionError(
+                "management policy acknowledgement requires a direct session policy"
+            )
+        self._workstation(target_id).acknowledge_policy(policy_hash)
+        self.updated_at = utc_now()
+
+    def record_management_policy_failure(self, target_id: str) -> None:
+        if self.gateway_id is not None or self.policy is None:
+            raise InvalidStateTransitionError(
+                "management policy failure requires a direct session policy"
+            )
+        self._workstation(target_id).readiness = Readiness.FAILED
+        self.updated_at = utc_now()
+
+    def acknowledge_management_restore(self, target_id: str) -> None:
+        if self.gateway_id is not None or self.state != SessionState.FINISHED:
+            raise InvalidStateTransitionError(
+                "management restore acknowledgement requires a FINISHED direct session"
+            )
+        self._workstation(target_id).restored = True
+        self.updated_at = utc_now()
+
     def acknowledge_policy(self, target_id: str, policy_hash: str) -> None:
         if self.state != SessionState.DEPLOYING or self.policy is None:
             raise InvalidStateTransitionError("policy acknowledgements require DEPLOYING state")
@@ -210,8 +242,10 @@ class ExamSession:
             self.updated_at = utc_now()
 
     def record_policy_failure(self, target_id: str) -> None:
-        if self.state != SessionState.DEPLOYING:
-            raise InvalidStateTransitionError("policy failure requires DEPLOYING state")
+        if self.state not in {SessionState.DEPLOYING, SessionState.DEGRADED}:
+            raise InvalidStateTransitionError(
+                "policy failure requires DEPLOYING or DEGRADED state"
+            )
         if target_id in self.workstations:
             self.workstations[target_id].readiness = Readiness.FAILED
         elif target_id != self.gateway_id:
@@ -299,6 +333,8 @@ class ExamSession:
             self.started_at = at
         elif target == SessionState.FINISHED:
             self.finished_at = at
+            for workstation in self.workstations.values():
+                workstation.restored = False
         self.updated_at = at
 
     def _workstation(self, workstation_id: str) -> WorkstationSession:

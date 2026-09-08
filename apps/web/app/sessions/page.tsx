@@ -12,9 +12,14 @@ export default function SessionsPage() {
           <h1>Exam Sessions</h1>
           <p>Create, prepare, run, and finish managed exam sessions.</p>
         </div>
-        <Link className="sessions-primary-link" href="/sessions/create">
-          Create session
-        </Link>
+        <div className="sessions-hero__actions">
+          <Link className="sessions-secondary-link" href="/policies">
+            Manage policies
+          </Link>
+          <Link className="sessions-primary-link" href="/sessions/create">
+            Create session
+          </Link>
+        </div>
       </header>
       <SessionList />
     </main>

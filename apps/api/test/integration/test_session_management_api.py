@@ -33,6 +33,21 @@ def _create_management_session(client: TestClient, agent_id: str = "PC01") -> di
     return response.json()
 
 
+def _apply_policy(client: TestClient, agent_id: str = "PC01") -> None:
+    commands = client.get(f"/api/v1/agents/{agent_id}/commands")
+    assert commands.status_code == 200
+    command = commands.json()[0]
+    response = client.post(
+        f"/api/v1/commands/{command['id']}/acknowledge",
+        json={
+            "success": True,
+            "policy_hash": command["payload"]["policy_hash"],
+            "actor": agent_id,
+        },
+    )
+    assert response.status_code == 200
+
+
 def _make_agent_stale(client: TestClient, agent_id: str) -> None:
     database = client.app.state.container.database
     with database.unit_of_work() as uow:
@@ -84,6 +99,7 @@ def test_update_management_session_from_created_to_ready(tmp_path: Path) -> None
     with TestClient(create_app(tmp_path / "ready.db")) as client:
         _register_agent(client, "PC01", "DESKTOP-ALPHA", "192.168.3.51")
         created = _create_management_session(client)
+        _apply_policy(client)
 
         response = client.patch(
             f"/api/v1/sessions/{created['id']}/status",
@@ -92,6 +108,72 @@ def test_update_management_session_from_created_to_ready(tmp_path: Path) -> None
 
         assert response.status_code == 200
         assert response.json()["status"] == "READY"
+
+
+def test_running_session_lists_agent_policy_violation(tmp_path: Path) -> None:
+    with TestClient(create_app(tmp_path / "violation.db")) as client:
+        _register_agent(client, "PC01", "DESKTOP-ALPHA", "192.168.3.51")
+        created = _create_management_session(client)
+        _apply_policy(client)
+        ready = client.patch(
+            f"/api/v1/sessions/{created['id']}/status",
+            json={"status": "READY"},
+        )
+        assert ready.status_code == 200
+        running = client.patch(
+            f"/api/v1/sessions/{created['id']}/status",
+            json={"status": "RUNNING"},
+        )
+        assert running.status_code == 200
+
+        telemetry = client.post(
+            f"/api/v1/sessions/{created['id']}/telemetry",
+            json={
+                "workstation_id": "PC01",
+                "event_type": "POLICY_VIOLATION",
+                "severity": "WARNING",
+                "category": "PROHIBITED_WEBSITE",
+                "action": "BLOCKED",
+                "destination": "chatgpt.com",
+            },
+        )
+
+        assert telemetry.status_code == 202
+        assert telemetry.json()["incident_id"] is not None
+        detail = client.get(f"/api/v1/sessions/{created['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["violations"][0]["workstation_id"] == "PC01"
+        assert detail.json()["violations"][0]["destination"] == "chatgpt.com"
+
+
+def test_ready_rejects_pending_policy(tmp_path: Path) -> None:
+    with TestClient(create_app(tmp_path / "pending-policy.db")) as client:
+        _register_agent(client, "PC01", "DESKTOP-ALPHA", "192.168.3.51")
+        created = _create_management_session(client)
+
+        response = client.patch(
+            f"/api/v1/sessions/{created['id']}/status",
+            json={"status": "READY"},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "READINESS_GATE"
+        assert "PC01 (PENDING)" in response.json()["detail"]
+
+
+def test_create_rejects_agent_in_active_session(tmp_path: Path) -> None:
+    with TestClient(create_app(tmp_path / "active-conflict.db")) as client:
+        _register_agent(client, "PC01", "DESKTOP-ALPHA", "192.168.3.51")
+        first = _create_management_session(client)
+
+        response = client.post(
+            "/api/v1/sessions",
+            json={"name": "Second", "room": "A102", "agent_ids": ["PC01"]},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "SESSION_CONFLICT"
+        assert first["id"] in response.json()["detail"]
 
 
 def test_update_management_session_rejects_skipped_state(tmp_path: Path) -> None:

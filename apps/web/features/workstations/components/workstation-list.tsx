@@ -1,5 +1,5 @@
 import { StatusPill } from "@/components/ui/status-pill";
-import { AutoRefresh } from "@/features/workstations/components/auto-refresh";
+import { AutoRefresh } from "@/components/ui/auto-refresh";
 import { getAgents } from "@/features/workstations/queries";
 
 export async function WorkstationList() {

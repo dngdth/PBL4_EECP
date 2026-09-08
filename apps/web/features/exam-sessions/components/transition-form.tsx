@@ -5,7 +5,7 @@ import { useFormStatus } from "react-dom";
 import {
   transitionSessionAction,
   type TransitionSessionActionState,
-} from "@/app/sessions/actions";
+} from "@/features/exam-sessions/actions";
 
 type TransitionFormProps = {
   sessionId: string;

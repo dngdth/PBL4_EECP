@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
+from datetime import datetime
 from typing import Protocol
 
 from app.domain.entities.agent import Agent
 from app.domain.entities.exam_session import ExamSession
 from app.domain.entities.operations import AuditEvent, Command, Incident, TelemetryEvent
 from app.domain.entities.session_workstation import SessionWorkstation
+from app.domain.services.policy_profiles import PolicyProfileDefinition
 
 
 class AgentRepository(Protocol):
@@ -35,7 +37,16 @@ class CommandRepository(Protocol):
     def add_many(self, commands: Sequence[Command]) -> None: ...
     def get(self, command_id: str) -> Command: ...
     def save(self, command: Command) -> None: ...
-    def pending_for_target(self, target_id: str) -> list[Command]: ...
+    def available_for_target(self, target_id: str, at: datetime) -> list[Command]: ...
+
+
+class PolicyProfileRepository(Protocol):
+    def add(self, profile: PolicyProfileDefinition) -> None: ...
+    def get(self, profile_id: str) -> PolicyProfileDefinition: ...
+    def find(self, profile_id: str) -> PolicyProfileDefinition | None: ...
+    def save(self, profile: PolicyProfileDefinition) -> None: ...
+    def delete(self, profile_id: str) -> None: ...
+    def list_all(self) -> list[PolicyProfileDefinition]: ...
 
 
 class TelemetryRepository(Protocol):
@@ -61,6 +72,7 @@ class UnitOfWork(Protocol):
     sessions: SessionRepository
     session_workstations: SessionWorkstationRepository
     commands: CommandRepository
+    policy_profiles: PolicyProfileRepository
     telemetry: TelemetryRepository
     incidents: IncidentRepository
     audits: AuditRepository

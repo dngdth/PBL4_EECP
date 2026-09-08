@@ -37,3 +37,14 @@ def test_noncritical_failure_results_in_warning_but_session_is_ready() -> None:
 
     assert readiness == Readiness.WARNING
     assert session.state == SessionState.READY
+
+
+def test_multiple_policy_delivery_failures_remain_degraded() -> None:
+    session = ExamSession.create("Programming C", "F301", "gw-f301", ["PC01"])
+    session.deploy_policy("PROGRAMMING_EXAM", {})
+
+    session.record_policy_failure("gw-f301")
+    session.record_policy_failure("PC01")
+
+    assert session.state == SessionState.DEGRADED
+    assert session.workstations["PC01"].readiness == Readiness.FAILED

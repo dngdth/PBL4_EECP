@@ -24,13 +24,22 @@ export async function createSessionAction(
     .filter((value): value is string => typeof value === "string")
     .map((value) => value.trim())
     .filter(Boolean);
+  const policyProfile =
+    formData.get("policy_profile")?.toString().trim() ?? "";
 
-  if (!name || !room || agentIds.length === 0) {
-    return { error: "Vui lòng nhập tên kỳ thi, phòng thi và chọn ít nhất một máy trạm." };
+  if (!name || !room || !policyProfile || agentIds.length === 0) {
+    return {
+      error: "Vui lòng nhập đủ thông tin, chọn policy và ít nhất một máy trạm.",
+    };
   }
 
   try {
-    await createSession({ name, room, agent_ids: agentIds });
+    await createSession({
+      name,
+      room,
+      agent_ids: agentIds,
+      policy_profile: policyProfile,
+    });
   } catch (error) {
     return {
       error: error instanceof ApiError ? error.detail : connectionError,

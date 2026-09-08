@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from app.application.dtos.exam_pipeline import (
-    AcknowledgeCommandInput,
     CreateSessionInput,
     DeployPolicyInput,
     StartSessionInput,
@@ -16,7 +15,6 @@ from app.domain.exceptions.errors import InvalidStateTransitionError, PolicyVali
 from app.domain.interfaces.unit_of_work import UnitOfWorkFactory
 from app.domain.services.policies import IncidentPolicy
 from app.domain.value_objects.enums import (
-    CommandStatus,
     CommandType,
     IncidentStatus,
     SessionState,
@@ -86,59 +84,6 @@ class ExamPipelineService:
                     "policy_hash": policy.policy_hash,
                     "targets": targets,
                 },
-            )
-            uow.commit()
-            return session
-
-    def pending_commands(self, target_id: str) -> list[Command]:
-        with self._uow_factory() as uow:
-            return uow.commands.pending_for_target(target_id)
-
-    def acknowledge_command(self, data: AcknowledgeCommandInput) -> ExamSession:
-        with self._uow_factory() as uow:
-            command = uow.commands.get(data.command_id)
-            if command.status != CommandStatus.PENDING:
-                raise InvalidStateTransitionError("command has already been acknowledged")
-            session = uow.sessions.get(command.session_id)
-            command.acknowledged_at = datetime.now(UTC)
-
-            if not data.success:
-                command.status = CommandStatus.FAILED
-                command.error = data.error or "target reported command failure"
-                if command.type == CommandType.APPLY_POLICY:
-                    session.record_policy_failure(command.target_id)
-                uow.sessions.save(session)
-                uow.commands.save(command)
-                uow.audits.append(
-                    session.id,
-                    actor=data.actor,
-                    action="COMMAND_FAILED",
-                    target=command.target_id,
-                    details={
-                        "command_id": command.id,
-                        "type": command.type,
-                        "error": command.error,
-                    },
-                )
-                uow.commit()
-                return session
-
-            command.status = CommandStatus.ACKNOWLEDGED
-            if command.type == CommandType.APPLY_POLICY:
-                if not data.policy_hash:
-                    raise PolicyValidationError("APPLY_POLICY acknowledgement requires policy_hash")
-                session.acknowledge_policy(command.target_id, data.policy_hash)
-            elif command.type == CommandType.RESTORE_BASELINE:
-                session.acknowledge_restore(command.target_id)
-
-            uow.sessions.save(session)
-            uow.commands.save(command)
-            uow.audits.append(
-                session.id,
-                actor=data.actor,
-                action="COMMAND_ACKNOWLEDGED",
-                target=command.target_id,
-                details={"command_id": command.id, "type": command.type},
             )
             uow.commit()
             return session

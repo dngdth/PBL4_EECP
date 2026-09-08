@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
-from app.domain.entities.exam_session import new_id, utc_now
 from app.domain.value_objects.enums import CommandStatus, CommandType, IncidentStatus, Severity
+from app.domain.value_objects.primitives import new_id, utc_now
+
+COMMAND_RETRY_DELAY = timedelta(seconds=10)
+COMMAND_TTL = timedelta(minutes=1)
+MAX_COMMAND_ATTEMPTS = 3
 
 
 @dataclass(slots=True)
@@ -19,6 +23,37 @@ class Command:
     created_at: datetime = field(default_factory=utc_now)
     acknowledged_at: datetime | None = None
     error: str | None = None
+    attempt_count: int = 0
+    last_attempt_at: datetime | None = None
+    next_retry_at: datetime | None = None
+    expires_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.expires_at is None:
+            self.expires_at = self.created_at + COMMAND_TTL
+
+    def deliver(self, at: datetime) -> None:
+        if self.status not in {CommandStatus.PENDING, CommandStatus.DELIVERED}:
+            raise ValueError(f"cannot deliver command while it is {self.status}")
+        if self.should_timeout(at):
+            raise ValueError("expired command cannot be delivered")
+        self.status = CommandStatus.DELIVERED
+        self.attempt_count += 1
+        self.last_attempt_at = at
+        self.next_retry_at = at + COMMAND_RETRY_DELAY
+
+    def should_timeout(self, at: datetime) -> bool:
+        return self.is_expired(at) or self.attempt_count >= MAX_COMMAND_ATTEMPTS
+
+    def is_expired(self, at: datetime) -> bool:
+        return self.expires_at is not None and at >= self.expires_at
+
+    def time_out(self) -> None:
+        if self.status not in {CommandStatus.PENDING, CommandStatus.DELIVERED}:
+            raise ValueError(f"cannot time out command while it is {self.status}")
+        self.status = CommandStatus.TIMED_OUT
+        self.error = "command acknowledgement timed out"
+        self.next_retry_at = None
 
 
 @dataclass(frozen=True, slots=True)

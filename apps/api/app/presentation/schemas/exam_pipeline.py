@@ -7,8 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.value_objects.enums import (
     AgentStatus,
-    CommandStatus,
-    CommandType,
     SessionState,
     Severity,
 )
@@ -23,6 +21,7 @@ class CreateManagementSessionRequest(ApiModel):
     room: str = Field(min_length=1)
     agent_ids: list[str] = Field(min_length=1)
     actor: str = Field(default="teacher", min_length=1)
+    policy_profile: str = Field(default="INTERNET_NO_AI", min_length=1)
 
 
 class CreatePipelineSessionRequest(ApiModel):
@@ -42,13 +41,6 @@ class DeployPolicyRequest(ApiModel):
     profile: str = Field(min_length=1)
     rules: dict[str, Any]
     actor: str = Field(default="teacher", min_length=1)
-
-
-class AcknowledgeCommandRequest(ApiModel):
-    success: bool
-    policy_hash: str | None = None
-    error: str | None = None
-    actor: str = Field(default="agent", min_length=1)
 
 
 class PreflightCheckRequest(ApiModel):
@@ -84,16 +76,6 @@ class TelemetryRequest(ApiModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class CommandView(ApiModel):
-    id: str
-    session_id: str
-    target_id: str
-    type: CommandType
-    payload: dict[str, Any]
-    status: CommandStatus
-    created_at: datetime
-
-
 class TelemetryAcceptedView(ApiModel):
     event_id: str
     incident_id: str | None
@@ -125,6 +107,14 @@ class AssignedAgentView(ApiModel):
     status: AgentStatus | None
     last_seen: datetime | None
     assigned_at: datetime | None
+    policy_status: str
+
+
+class PolicyViolationView(ApiModel):
+    workstation_id: str
+    destination: str | None
+    category: str
+    occurred_at: datetime
 
 
 class SessionDetailView(SessionView):
@@ -133,6 +123,7 @@ class SessionDetailView(SessionView):
     status: SessionState
     agent_count: int
     agents: list[AssignedAgentView]
+    violations: list[PolicyViolationView]
 
 
 class ErrorView(ApiModel):

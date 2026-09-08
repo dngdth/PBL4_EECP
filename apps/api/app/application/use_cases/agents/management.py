@@ -5,8 +5,8 @@ from datetime import datetime
 
 from app.application.dtos.agents import RegisterAgentInput
 from app.domain.entities.agent import Agent
-from app.domain.entities.exam_session import utc_now
 from app.domain.interfaces.unit_of_work import UnitOfWorkFactory
+from app.domain.value_objects.primitives import utc_now
 
 Clock = Callable[[], datetime]
 

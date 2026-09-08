@@ -4,6 +4,9 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.domain.services.policy_profiles import BUILT_IN_POLICY_PROFILES
+from app.domain.value_objects.primitives import canonical_json
+
 if TYPE_CHECKING:
     from app.infrastructure.repositories.sqlite import SqliteUnitOfWork
 
@@ -48,9 +51,21 @@ CREATE TABLE IF NOT EXISTS commands (
     created_at TEXT NOT NULL,
     acknowledged_at TEXT,
     error TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TEXT,
+    next_retry_at TEXT,
+    expires_at TEXT,
     FOREIGN KEY(session_id) REFERENCES exam_sessions(id)
 );
 CREATE INDEX IF NOT EXISTS ix_commands_target_status ON commands(target_id, status);
+
+CREATE TABLE IF NOT EXISTS policy_profiles (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    description TEXT NOT NULL,
+    rules TEXT NOT NULL,
+    is_builtin INTEGER NOT NULL DEFAULT 0
+);
 
 CREATE TABLE IF NOT EXISTS telemetry_events (
     id TEXT PRIMARY KEY,
@@ -107,7 +122,53 @@ class SqliteDatabase:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            self._migrate_commands(connection)
+            self._seed_policy_profiles(connection)
             connection.commit()
+
+    @staticmethod
+    def _migrate_commands(connection: sqlite3.Connection) -> None:
+        existing = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(commands)").fetchall()
+        }
+        additions = {
+            "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "last_attempt_at": "TEXT",
+            "next_retry_at": "TEXT",
+            "expires_at": "TEXT",
+        }
+        for name, definition in additions.items():
+            if name not in existing:
+                connection.execute(
+                    f"ALTER TABLE commands ADD COLUMN {name} {definition}"
+                )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_commands_delivery
+                ON commands(target_id, status, next_retry_at)
+            """
+        )
+
+    @staticmethod
+    def _seed_policy_profiles(connection: sqlite3.Connection) -> None:
+        connection.executemany(
+            """
+            INSERT OR IGNORE INTO policy_profiles(
+                id, label, description, rules, is_builtin
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    profile.id,
+                    profile.label,
+                    profile.description,
+                    canonical_json(profile.rules),
+                    int(profile.is_builtin),
+                )
+                for profile in BUILT_IN_POLICY_PROFILES.list_all()
+            ],
+        )
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)

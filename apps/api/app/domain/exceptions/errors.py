@@ -18,5 +18,13 @@ class ReadinessGateError(DomainError):
     pass
 
 
+class SessionConflictError(DomainError):
+    pass
+
+
+class PolicyInUseError(DomainError):
+    pass
+
+
 class ConcurrencyError(DomainError):
     pass

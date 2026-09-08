@@ -3,7 +3,6 @@ from __future__ import annotations
 from fastapi import APIRouter, status
 
 from app.application.dtos.exam_pipeline import (
-    AcknowledgeCommandInput,
     CreateSessionInput,
     DeployPolicyInput,
     StartSessionInput,
@@ -16,7 +15,6 @@ from app.application.dtos.session_management import (
     UpdateExamSessionStatusInput,
 )
 from app.domain.entities.exam_session import ExamSession, PreflightCheck
-from app.domain.entities.operations import Command
 from app.presentation.api.deps import (
     CreateExamSessionUseCase,
     GetExamSessionUseCase,
@@ -25,13 +23,12 @@ from app.presentation.api.deps import (
     UpdateExamSessionStatusUseCase,
 )
 from app.presentation.schemas.exam_pipeline import (
-    AcknowledgeCommandRequest,
     AssignedAgentView,
-    CommandView,
     CreateManagementSessionRequest,
     CreatePipelineSessionRequest,
     DeployPolicyRequest,
     FinishSessionRequest,
+    PolicyViolationView,
     SessionDetailView,
     SessionView,
     StartSessionRequest,
@@ -93,23 +90,6 @@ def deploy_policy(
     service: Service,
 ) -> SessionView:
     session = service.deploy_policy(DeployPolicyInput(session_id=session_id, **body.model_dump()))
-    return _session_view(session)
-
-
-@router.get("/agents/{target_id}/commands", response_model=list[CommandView])
-def pending_commands(target_id: str, service: Service) -> list[CommandView]:
-    return [_command_view(command) for command in service.pending_commands(target_id)]
-
-
-@router.post("/commands/{command_id}/acknowledge", response_model=SessionView)
-def acknowledge_command(
-    command_id: str,
-    body: AcknowledgeCommandRequest,
-    service: Service,
-) -> SessionView:
-    session = service.acknowledge_command(
-        AcknowledgeCommandInput(command_id=command_id, **body.model_dump())
-    )
     return _session_view(session)
 
 
@@ -196,20 +176,18 @@ def _session_detail_view(details: ExamSessionDetails) -> SessionDetailView:
                     status=agent.status,
                     last_seen=agent.last_seen,
                     assigned_at=agent.assigned_at,
+                    policy_status=agent.policy_status,
                 )
                 for agent in sorted(details.agents, key=lambda item: item.id)
             ],
+            "violations": [
+                PolicyViolationView(
+                    workstation_id=violation.workstation_id,
+                    destination=violation.destination,
+                    category=violation.category,
+                    occurred_at=violation.occurred_at,
+                )
+                for violation in details.violations
+            ],
         }
-    )
-
-
-def _command_view(command: Command) -> CommandView:
-    return CommandView(
-        id=command.id,
-        session_id=command.session_id,
-        target_id=command.target_id,
-        type=command.type,
-        payload=command.payload,
-        status=command.status,
-        created_at=command.created_at,
     )

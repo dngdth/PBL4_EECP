@@ -23,15 +23,6 @@ class DeployPolicyInput:
 
 
 @dataclass(frozen=True, slots=True)
-class AcknowledgeCommandInput:
-    command_id: str
-    success: bool
-    policy_hash: str | None = None
-    error: str | None = None
-    actor: str = "agent"
-
-
-@dataclass(frozen=True, slots=True)
 class SubmitPreflightInput:
     session_id: str
     workstation_id: str

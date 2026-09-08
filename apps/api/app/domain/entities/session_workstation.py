@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.domain.entities.exam_session import new_id
 from app.domain.exceptions.errors import PolicyValidationError
+from app.domain.value_objects.primitives import new_id
 
 
 @dataclass(frozen=True, slots=True)

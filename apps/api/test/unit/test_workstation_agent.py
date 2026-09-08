@@ -4,8 +4,10 @@ import pytest
 
 from agent import config as agent_config
 from agent import main as agent_main
-from agent.heartbeat import AgentClient, WorkstationIdentity, collect_identity
-from agent.main import run_agent
+from agent.application.runtime import run_agent
+from agent.domain.identity import WorkstationIdentity
+from agent.infrastructure.control_server import AgentClient
+from agent.infrastructure.system_identity import collect_identity
 
 
 class Response:
@@ -106,6 +108,99 @@ def test_agent_client_sends_registration_payload_and_heartbeat_path() -> None:
         "http://192.168.3.50:8000/api/v1/agents/PC01/heartbeat"
     )
     assert requests[1][0].get_method() == "POST"
+
+
+def test_agent_client_polls_and_acknowledges_commands() -> None:
+    requests = []
+
+    class JsonResponse(Response):
+        def __init__(self, body: bytes):
+            self._body = body
+
+        def read(self) -> bytes:
+            return self._body
+
+    def open_request(request, timeout):
+        requests.append((request, timeout))
+        if request.get_method() == "GET":
+            return JsonResponse(b'[{"id":"cmd-1"}]')
+        return JsonResponse(b"{}")
+
+    client = AgentClient("http://control:8000", opener=open_request)
+
+    assert client.pending_commands("PC01") == [{"id": "cmd-1"}]
+    client.acknowledge_command(
+        "cmd-1",
+        success=True,
+        policy_hash="a" * 64,
+        actor="PC01",
+    )
+
+    assert requests[0][0].full_url.endswith("/api/v1/agents/PC01/commands")
+    assert requests[0][0].get_method() == "GET"
+    assert requests[1][0].full_url.endswith("/api/v1/commands/cmd-1/acknowledge")
+    assert json.loads(requests[1][0].data) == {
+        "success": True,
+        "policy_hash": "a" * 64,
+        "error": None,
+        "actor": "PC01",
+    }
+
+
+def test_agent_client_reports_policy_violation() -> None:
+    requests = []
+
+    def open_request(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    client = AgentClient("http://control:8000", opener=open_request)
+
+    client.report_policy_violation("ses-1", "PC01", "chatgpt.com")
+
+    request = requests[0][0]
+    assert request.full_url.endswith("/api/v1/sessions/ses-1/telemetry")
+    assert json.loads(request.data) == {
+        "workstation_id": "PC01",
+        "event_type": "POLICY_VIOLATION",
+        "severity": "WARNING",
+        "category": "PROHIBITED_WEBSITE",
+        "action": "BLOCKED",
+        "destination": "chatgpt.com",
+        "payload": {"source": "agent-loopback-monitor"},
+    }
+
+
+def test_agent_client_finds_running_policy_for_agent() -> None:
+    class JsonResponse(Response):
+        def read(self) -> bytes:
+            return json.dumps(
+                [
+                    {
+                        "id": "ses-1",
+                        "status": "RUNNING",
+                        "agents": [{"id": "PC01"}],
+                        "policy": _agent_policy(),
+                    }
+                ]
+            ).encode()
+
+    client = AgentClient(
+        "http://control:8000",
+        opener=lambda _request, timeout: JsonResponse(),
+    )
+
+    assert client.active_policy("PC01") == ("ses-1", _agent_policy())
+    assert client.active_policy("PC02") is None
+
+
+def _agent_policy() -> dict:
+    return {
+        "profile": "INTERNET_NO_AI",
+        "rules": {"network": {"block": ["generative_ai"]}},
+        "version": 1,
+        "policy_hash": "a" * 64,
+    }
 
 
 def test_collect_identity_falls_back_to_hostname_resolution() -> None:

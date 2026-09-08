@@ -1,6 +1,10 @@
 import { fetchApi } from "@/lib/api-client";
-import type { Agent } from "@/features/workstations/types";
-import type { ApiHealth, ExamSession } from "@/features/exam-sessions/types";
+import type {
+  ApiHealth,
+  AvailableAgent,
+  ExamSession,
+  PolicyProfile,
+} from "@/features/exam-sessions/types";
 
 export async function getApiHealth(): Promise<ApiHealth | null> {
   try {
@@ -18,9 +22,17 @@ export async function getSessions(): Promise<ExamSession[] | null> {
   }
 }
 
-export async function getAvailableAgents(): Promise<Agent[] | null> {
+export async function getAvailableAgents(): Promise<AvailableAgent[] | null> {
   try {
-    return await fetchApi<Agent[]>("/api/v1/agents");
+    return await fetchApi<AvailableAgent[]>("/api/v1/agents");
+  } catch {
+    return null;
+  }
+}
+
+export async function getPolicyProfiles(): Promise<PolicyProfile[] | null> {
+  try {
+    return await fetchApi<PolicyProfile[]>("/api/v1/policy-profiles");
   } catch {
     return null;
   }

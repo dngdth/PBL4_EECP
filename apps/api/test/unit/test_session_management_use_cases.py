@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from app.application.dtos.exam_pipeline import CreateSessionInput
+from app.application.dtos.policies import AcknowledgeCommandInput
 from app.application.dtos.session_management import (
     CreateExamSessionInput,
     UpdateExamSessionStatusInput,
@@ -14,12 +15,17 @@ from app.application.use_cases.exam_sessions.management import (
     UpdateExamSessionStatus,
 )
 from app.application.use_cases.exam_sessions.pipeline import ExamPipelineService
+from app.application.use_cases.policies.management import (
+    AcknowledgeCommand,
+    GetPendingCommands,
+)
 from app.domain.entities.agent import Agent
 from app.domain.exceptions.errors import (
     EntityNotFoundError,
     InvalidStateTransitionError,
     PolicyValidationError,
     ReadinessGateError,
+    SessionConflictError,
 )
 from app.domain.value_objects.enums import AgentStatus, SessionState
 from app.infrastructure.persistence.database import SqliteDatabase
@@ -39,6 +45,18 @@ def _register(database: SqliteDatabase, agent_id: str, last_seen=NOW) -> None:
             Agent.register(agent_id, f"HOST-{agent_id}", "192.168.3.55", "1.0.0", last_seen)
         )
         uow.commit()
+
+
+def _apply_policy(database: SqliteDatabase, agent_id: str, at=NOW) -> None:
+    command = GetPendingCommands(database.unit_of_work, clock=lambda: at)(agent_id)[0]
+    AcknowledgeCommand(database.unit_of_work, clock=lambda: at)(
+        AcknowledgeCommandInput(
+            command_id=command.id,
+            success=True,
+            policy_hash=command.payload["policy_hash"],
+            actor=agent_id,
+        )
+    )
 
 
 def test_create_session_assigns_online_agents(tmp_path: Path) -> None:
@@ -176,13 +194,37 @@ def test_get_session_returns_current_agent_and_assignment_details(tmp_path: Path
 def test_list_sessions_returns_newest_first(tmp_path: Path) -> None:
     database = _database(tmp_path)
     _register(database, "PC01")
+    _register(database, "PC02")
     create = CreateExamSession(database.unit_of_work, clock=lambda: NOW)
     create(CreateExamSessionInput("First", "A101", ["PC01"]))
-    create(CreateExamSessionInput("Second", "A102", ["PC01"]))
+    create(CreateExamSessionInput("Second", "A102", ["PC02"]))
 
     details = ListExamSessions(database.unit_of_work, clock=lambda: NOW)()
 
     assert [item.session.exam_name for item in details] == ["Second", "First"]
+
+
+def test_create_session_rejects_agent_assigned_to_active_session(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    _register(database, "PC01")
+    create = CreateExamSession(database.unit_of_work, clock=lambda: NOW)
+    first = create(CreateExamSessionInput("First", "A101", ["PC01"]))
+
+    with pytest.raises(SessionConflictError, match=first.session.id):
+        create(CreateExamSessionInput("Second", "A102", ["PC01"]))
+
+
+def test_ready_rejects_policy_without_agent_acknowledgement(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    _register(database, "PC01")
+    created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
+        CreateExamSessionInput("Exam", "A101", ["PC01"])
+    )
+
+    with pytest.raises(ReadinessGateError, match=r"PC01 \(PENDING\)"):
+        UpdateExamSessionStatus(database.unit_of_work, clock=lambda: NOW)(
+            UpdateExamSessionStatusInput(created.session.id, SessionState.READY)
+        )
 
 
 def test_ready_rejects_and_persists_offline_agent(tmp_path: Path) -> None:
@@ -213,6 +255,7 @@ def test_valid_management_status_updates_succeed_in_order(tmp_path: Path) -> Non
     created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
         CreateExamSessionInput("Exam", "A101", ["PC01"])
     )
+    _apply_policy(database, "PC01")
     current = [NOW + timedelta(seconds=1)]
     update = UpdateExamSessionStatus(database.unit_of_work, clock=lambda: current[0])
 
@@ -235,6 +278,7 @@ def test_running_and_finished_updates_do_not_recheck_agent_liveness(tmp_path: Pa
     created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
         CreateExamSessionInput("Exam", "A101", ["PC01"])
     )
+    _apply_policy(database, "PC01")
     UpdateExamSessionStatus(database.unit_of_work, clock=lambda: NOW)(
         UpdateExamSessionStatusInput(created.session.id, SessionState.READY)
     )

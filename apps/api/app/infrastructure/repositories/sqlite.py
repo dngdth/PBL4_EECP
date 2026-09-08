@@ -6,11 +6,12 @@ from collections.abc import Sequence
 from datetime import datetime
 
 from app.domain.entities.agent import Agent
-from app.domain.entities.exam_session import ExamSession, canonical_json, utc_now
+from app.domain.entities.exam_session import ExamSession
 from app.domain.entities.operations import AuditEvent, Command, Incident, TelemetryEvent
 from app.domain.entities.session_workstation import SessionWorkstation
 from app.domain.exceptions.errors import ConcurrencyError, EntityNotFoundError
 from app.domain.services.policies import compute_audit_hash
+from app.domain.services.policy_profiles import PolicyProfileDefinition
 from app.domain.value_objects.enums import (
     AgentStatus,
     CommandStatus,
@@ -18,6 +19,7 @@ from app.domain.value_objects.enums import (
     IncidentStatus,
     Severity,
 )
+from app.domain.value_objects.primitives import canonical_json, utc_now
 from app.infrastructure.persistence.database import SqliteDatabase
 
 
@@ -202,8 +204,9 @@ class SqliteCommandRepository:
             """
             INSERT INTO commands(
                 id, session_id, target_id, type, payload, status, created_at,
-                acknowledged_at, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                acknowledged_at, error, attempt_count, last_attempt_at,
+                next_retry_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [self._values(command) for command in commands],
         )
@@ -220,27 +223,41 @@ class SqliteCommandRepository:
         cursor = self._connection.execute(
             """
             UPDATE commands
-               SET status = ?, acknowledged_at = ?, error = ?
+               SET status = ?, acknowledged_at = ?, error = ?, attempt_count = ?,
+                   last_attempt_at = ?, next_retry_at = ?, expires_at = ?
              WHERE id = ?
             """,
             (
                 command.status.value,
                 _iso(command.acknowledged_at),
                 command.error,
+                command.attempt_count,
+                _iso(command.last_attempt_at),
+                _iso(command.next_retry_at),
+                _iso(command.expires_at),
                 command.id,
             ),
         )
         if cursor.rowcount != 1:
             raise EntityNotFoundError(f"command not found: {command.id}")
 
-    def pending_for_target(self, target_id: str) -> list[Command]:
+    def available_for_target(self, target_id: str, at: datetime) -> list[Command]:
         rows = self._connection.execute(
             """
             SELECT * FROM commands
-             WHERE target_id = ? AND status = ?
+             WHERE target_id = ?
+               AND (
+                    status = ?
+                    OR (status = ? AND next_retry_at <= ?)
+               )
              ORDER BY created_at, id
             """,
-            (target_id, CommandStatus.PENDING.value),
+            (
+                target_id,
+                CommandStatus.PENDING.value,
+                CommandStatus.DELIVERED.value,
+                at.isoformat(),
+            ),
         ).fetchall()
         return [self._from_row(row) for row in rows]
 
@@ -256,6 +273,10 @@ class SqliteCommandRepository:
             command.created_at.isoformat(),
             _iso(command.acknowledged_at),
             command.error,
+            command.attempt_count,
+            _iso(command.last_attempt_at),
+            _iso(command.next_retry_at),
+            _iso(command.expires_at),
         )
 
     @staticmethod
@@ -270,6 +291,89 @@ class SqliteCommandRepository:
             created_at=datetime.fromisoformat(row["created_at"]),
             acknowledged_at=_datetime(row["acknowledged_at"]),
             error=row["error"],
+            attempt_count=row["attempt_count"],
+            last_attempt_at=_datetime(row["last_attempt_at"]),
+            next_retry_at=_datetime(row["next_retry_at"]),
+            expires_at=_datetime(row["expires_at"]),
+        )
+
+
+class SqlitePolicyProfileRepository:
+    def __init__(self, connection: sqlite3.Connection):
+        self._connection = connection
+
+    def add(self, profile: PolicyProfileDefinition) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO policy_profiles(id, label, description, rules, is_builtin)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            self._values(profile),
+        )
+
+    def get(self, profile_id: str) -> PolicyProfileDefinition:
+        profile = self.find(profile_id)
+        if profile is None:
+            raise EntityNotFoundError(f"policy profile not found: {profile_id}")
+        return profile
+
+    def find(self, profile_id: str) -> PolicyProfileDefinition | None:
+        row = self._connection.execute(
+            "SELECT * FROM policy_profiles WHERE id = ?",
+            (profile_id.strip().upper(),),
+        ).fetchone()
+        return self._from_row(row) if row is not None else None
+
+    def save(self, profile: PolicyProfileDefinition) -> None:
+        cursor = self._connection.execute(
+            """
+            UPDATE policy_profiles
+               SET label = ?, description = ?, rules = ?, is_builtin = ?
+             WHERE id = ?
+            """,
+            (
+                profile.label,
+                profile.description,
+                canonical_json(profile.rules),
+                int(profile.is_builtin),
+                profile.id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise EntityNotFoundError(f"policy profile not found: {profile.id}")
+
+    def delete(self, profile_id: str) -> None:
+        cursor = self._connection.execute(
+            "DELETE FROM policy_profiles WHERE id = ?",
+            (profile_id.strip().upper(),),
+        )
+        if cursor.rowcount != 1:
+            raise EntityNotFoundError(f"policy profile not found: {profile_id}")
+
+    def list_all(self) -> list[PolicyProfileDefinition]:
+        rows = self._connection.execute(
+            "SELECT * FROM policy_profiles ORDER BY is_builtin DESC, id"
+        ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    @staticmethod
+    def _values(profile: PolicyProfileDefinition) -> tuple:
+        return (
+            profile.id,
+            profile.label,
+            profile.description,
+            canonical_json(profile.rules),
+            int(profile.is_builtin),
+        )
+
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> PolicyProfileDefinition:
+        return PolicyProfileDefinition(
+            id=row["id"],
+            label=row["label"],
+            description=row["description"],
+            rules=json.loads(row["rules"]),
+            is_builtin=bool(row["is_builtin"]),
         )
 
 
@@ -475,6 +579,7 @@ class SqliteUnitOfWork:
         self.sessions = SqliteSessionRepository(self._connection)
         self.session_workstations = SqliteSessionWorkstationRepository(self._connection)
         self.commands = SqliteCommandRepository(self._connection)
+        self.policy_profiles = SqlitePolicyProfileRepository(self._connection)
         self.telemetry = SqliteTelemetryRepository(self._connection)
         self.incidents = SqliteIncidentRepository(self._connection)
         self.audits = SqliteAuditRepository(self._connection)

@@ -235,6 +235,10 @@ foreach ($status in "READY", "RUNNING", "FINISHED") {
 }
 ```
 
+Before running the transition loop, wait until every assigned Agent shows
+`POLICY APPLIED`. Phase 3.1 rejects `CREATED -> READY` while any policy is still
+`PENDING` or `FAILED`.
+
 The `POST /api/v1/sessions` example above accepts management fields `name`,
 `room`, and `agent_ids`; the API returns `201 Created`. `GET /api/v1/sessions`
 lists sessions, `GET /api/v1/sessions/{session_id}` returns a session and its
@@ -254,7 +258,73 @@ For the LAN demo:
 
 1. Confirm PC01 and PC02 are `ONLINE` on `/workstations`.
 2. Open `/sessions/create`, enter an exam name and room, select PC01 and PC02, then create the session (`CREATED`).
-3. Open `/sessions`, confirm both assigned Agents and transition to `READY`.
+3. Open `/sessions`, wait until both assigned Agents show `POLICY APPLIED`, then transition to `READY`.
 4. Transition to `RUNNING`, then to `FINISHED`.
 5. To demonstrate the gate, stop either Agent with Ctrl+C, wait up to 20 seconds for offline detection, and attempt either a new creation or the `READY` transition; verify the `READINESS_GATE` response. Restart that Agent before continuing.
+
+## Demo Phase 3: Policy management
+
+Every new direct-management session now receives a policy profile. The Control
+Server renders the profile as YAML, hashes the canonical policy, and queues one
+`APPLY_POLICY` command per assigned Agent in the same transaction as session
+creation. The Agent checks pending commands after each heartbeat and reports an
+acknowledgement. The sessions dashboard shows `POLICY PENDING`, `POLICY APPLIED`,
+`POLICY FAILED`, or `POLICY RESTORED` for each workstation.
+
+Phase 3.1 retries an unacknowledged command after 10 seconds, up to three
+delivery attempts and within a one-minute lifetime. A timed-out command marks
+that Agent's policy as `FAILED`. `READY` requires all Agents to be online with
+`POLICY APPLIED`, and the API prevents the same Agent from being assigned to
+overlapping active sessions (`409 SESSION_CONFLICT`).
+
+Phase 3.2 adds persistent teacher-managed profiles. Open
+`http://192.168.3.50:3000/policies` (or select **Manage policies** on the
+sessions page) to create a custom profile using application, network-category,
+and USB controls. Custom profiles immediately appear on `/sessions/create`.
+Editing a profile applies only to future sessions because each session keeps a
+policy snapshot and hash. Built-in profiles are read-only, and a custom profile
+already referenced by a session cannot be deleted (`409 POLICY_IN_USE`).
+
+The built-in profiles are available from `GET /api/v1/policy-profiles`. The
+default `INTERNET_NO_AI` profile allows programming tools, blocks known
+generative-AI and social-network domains, terminates explicitly denied remote
+control/AI applications, and denies USB storage. The browser itself is not
+blocked: AI access is controlled by the network category, so ordinary Internet
+resources remain usable.
+
+### Run the Windows Agent
+
+The default mode applies real Windows controls and therefore PowerShell must be
+opened with **Run as Administrator**:
+
+```powershell
+$env:EECP_SERVER_URL="http://192.168.3.50:8000"
+$env:EECP_AGENT_ID="PC01"
+$env:EECP_POLICY_MODE="enforce"
+python -m agent.main
+```
+
+`enforce` performs three reversible controls:
+
+- denied applications are terminated and checked again after each heartbeat;
+- category domains are placed inside an EECP-marked block in the Windows hosts file;
+- USB mass storage is disabled through the Windows `USBSTOR` service setting.
+
+When the teacher moves a management session to `FINISHED`, the server queues a
+`RESTORE_BASELINE` command. The Agent removes only the EECP hosts block, restores
+the previous USB setting, deletes its local policy state, and acknowledges the
+restore. Do not delete the policy state file manually while a policy is active,
+because it contains the previous USB value needed for restoration.
+
+For a UI/API demo that must not modify Windows, explicitly use audit mode. It
+validates and records the policy locally but does not enforce OS controls:
+
+```powershell
+$env:EECP_POLICY_MODE="audit"
+python -m agent.main
+```
+
+The state path defaults to `%LOCALAPPDATA%\EECP\policy-state.json` and can be
+overridden with `EECP_POLICY_STATE_PATH`. More implementation and API details
+are in [docs/policy-management.md](docs/policy-management.md).
 

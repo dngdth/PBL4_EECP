@@ -101,3 +101,55 @@ app → features → components/lib
 
 Chưa tạo `apps/worker` vì hiện không có job nền độc lập. Khi có nhu cầu như xử lý AI/RAG, tổng hợp báo cáo lớn hoặc retry command dài hạn, worker mới nên được tách và cũng tuân theo `domain/application/infrastructure/presentation` nếu nghiệp vụ đủ phức tạp.
 
+## Ranh giới đã xác minh sau Phase 3
+
+Policy Management được chia theo trách nhiệm như sau:
+
+```text
+apps/api/app/
+├── domain/
+│   └── services/
+│       ├── policies.py             # incident/audit business rules
+│       └── policy_profiles.py      # profile model, validation, built-in seed
+├── application/
+│   ├── dtos/policies.py
+│   └── use_cases/policies/
+│       └── management.py           # profile CRUD, pending command, ACK
+├── infrastructure/
+│   ├── repositories/sqlite.py      # profile/command persistence adapters
+│   └── di/container.py             # dependency composition
+└── presentation/
+    ├── api/routers/policies.py     # HTTP policy/command endpoints
+    ├── schemas/policies.py         # Pydantic contracts
+    └── serializers/policy_yaml.py  # YAML preview formatting
+```
+
+Các quyết định quan trọng:
+
+- Domain giữ profile và rule vì đây là chính sách nghiệp vụ, nhưng không biết YAML/HTTP.
+- YAML chỉ là representation phục vụ người dùng nên nằm ở `presentation`.
+- `ExamPipelineService` chỉ điều phối gateway pipeline; ACK dùng chung nằm trong policy use case và dispatch theo loại session.
+- SQLite profile và command repositories vẫn là output adapters của ports trong domain.
+
+Frontend tuân theo `app -> features -> components/lib`:
+
+- Server Actions của exam session nằm trong `features/exam-sessions/actions.ts`.
+- Server Actions quản lý profile nằm trong `features/policy-profiles/actions.ts`.
+- Feature không import `app` và không import nội bộ của feature khác.
+- Auto refresh dùng chung nằm trong `components/ui/auto-refresh.tsx`.
+
+Workstation Agent cũng dùng ports-and-adapters thu gọn:
+
+```text
+agent/
+├── domain/          # identity và policy contract thuần
+├── application/     # heartbeat loop và command orchestration qua Protocol
+├── infrastructure/  # HTTP, system identity, Windows/audit enforcement
+├── config.py
+└── main.py          # composition root
+```
+
+Các ranh giới này được khóa bằng
+`apps/api/test/unit/test_architecture_boundaries.py`. Test sẽ fail nếu domain
+phụ thuộc outer layer, application phụ thuộc infrastructure/presentation, hoặc
+một frontend feature import `app`/feature khác.

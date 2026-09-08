@@ -32,8 +32,10 @@ class CommandType(StrEnum):
 
 class CommandStatus(StrEnum):
     PENDING = "PENDING"
+    DELIVERED = "DELIVERED"
     ACKNOWLEDGED = "ACKNOWLEDGED"
     FAILED = "FAILED"
+    TIMED_OUT = "TIMED_OUT"
 
 
 class IncidentStatus(StrEnum):

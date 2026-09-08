@@ -2,12 +2,16 @@
 
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
-import { createSessionAction } from "@/app/sessions/actions";
 import { StatusPill } from "@/components/ui/status-pill";
-import type { Agent } from "@/features/workstations/types";
+import { createSessionAction } from "@/features/exam-sessions/actions";
+import type {
+  AvailableAgent,
+  PolicyProfile,
+} from "@/features/exam-sessions/types";
 
 type CreateSessionFormProps = {
-  agents: Agent[];
+  agents: AvailableAgent[];
+  profiles: PolicyProfile[];
 };
 
 function SubmitButton() {
@@ -20,7 +24,7 @@ function SubmitButton() {
   );
 }
 
-export function CreateSessionForm({ agents }: CreateSessionFormProps) {
+export function CreateSessionForm({ agents, profiles }: CreateSessionFormProps) {
   const [state, formAction] = useActionState(createSessionAction, { error: null });
 
   return (
@@ -34,6 +38,29 @@ export function CreateSessionForm({ agents }: CreateSessionFormProps) {
         <label htmlFor="session-room">Room</label>
         <input id="session-room" name="room" type="text" required />
       </div>
+
+      <fieldset className="session-form__profiles">
+        <legend>Exam policy</legend>
+        <p>Select the policy that the Control Server will push after creation.</p>
+        <div className="session-form__profile-list">
+          {profiles.map((profile, index) => (
+            <label className="session-form__profile" key={profile.id}>
+              <span className="session-form__profile-heading">
+                <input
+                  type="radio"
+                  name="policy_profile"
+                  value={profile.id}
+                  defaultChecked={index === 0}
+                  required
+                />
+                <strong>{profile.label}</strong>
+              </span>
+              <span>{profile.description}</span>
+              <pre aria-label={`${profile.label} YAML policy`}>{profile.yaml}</pre>
+            </label>
+          ))}
+        </div>
+      </fieldset>
 
       <fieldset className="session-form__agents">
         <legend>Workstation Agents</legend>

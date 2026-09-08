@@ -11,7 +11,7 @@ def load_agent_id() -> str:
     return agent_id
 
 
-SERVER_URL = os.getenv("EECP_SERVER_URL", "http://192.168.3.50:8000").rstrip("/")
+SERVER_URL = os.getenv("EECP_SERVER_URL", "http://10.10.58.89:8000").rstrip("/")
 AGENT_VERSION = os.getenv("EECP_AGENT_VERSION", "1.1.0")
 HEARTBEAT_INTERVAL_SECONDS = 5
 REQUEST_TIMEOUT_SECONDS = 5

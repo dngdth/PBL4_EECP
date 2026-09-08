@@ -1,0 +1,5 @@
+export const API_CONFIG = {
+  BASE_URL: '/api/v1',
+  DEFAULT_TIMEOUT_MS: 15000,
+  POLL_INTERVAL_MS: 3000,
+};

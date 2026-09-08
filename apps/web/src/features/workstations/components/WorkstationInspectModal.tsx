@@ -91,13 +91,17 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
                   <p className="text-xs text-text-muted font-sans mt-0.5">Chặn chuyển ứng dụng, clipboard, phím tắt</p>
                 </div>
               </div>
-              {details?.os_lockdown ? (
+              {!details ? (
+                <span className="text-text-muted font-bold text-xs flex items-center gap-1">
+                  <Clock className="w-4 h-4" /> Đang chờ tiền kiểm
+                </span>
+              ) : details.os_lockdown ? (
                 <span className="text-success-dark font-bold text-xs flex items-center gap-1">
                   <CheckCircle2 className="w-4 h-4" /> Đạt
                 </span>
               ) : (
-                <span className="text-text-muted font-bold text-xs flex items-center gap-1">
-                  <Clock className="w-4 h-4" /> Đang chờ
+                <span className="text-error font-bold text-xs flex items-center gap-1">
+                  <XCircle className="w-4 h-4" /> Không đạt
                 </span>
               )}
             </div>
@@ -110,13 +114,17 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
                   <p className="text-xs text-text-muted font-sans mt-0.5">Chỉ kết nối máy chủ thi được cấp phép</p>
                 </div>
               </div>
-              {details?.network_firewall ? (
+              {!details ? (
+                <span className="text-text-muted font-bold text-xs flex items-center gap-1">
+                  <Clock className="w-4 h-4" /> Đang chờ tiền kiểm
+                </span>
+              ) : details.network_firewall ? (
                 <span className="text-success-dark font-bold text-xs flex items-center gap-1">
                   <CheckCircle2 className="w-4 h-4" /> Đạt
                 </span>
               ) : (
-                <span className="text-text-muted font-bold text-xs flex items-center gap-1">
-                  <Clock className="w-4 h-4" /> Đang chờ
+                <span className="text-error font-bold text-xs flex items-center gap-1">
+                  <XCircle className="w-4 h-4" /> Không đạt
                 </span>
               )}
             </div>
@@ -129,7 +137,15 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
                   <p className="text-xs text-text-muted font-sans mt-0.5">Nhịp tim Agent và giám sát tiến trình</p>
                 </div>
               </div>
-              {details?.agent_health ? (
+              {workstation.status === 'OFFLINE' ? (
+                <span className="text-error font-bold text-xs flex items-center gap-1">
+                  <XCircle className="w-4 h-4" /> Mất kết nối (Ngoại tuyến)
+                </span>
+              ) : !details ? (
+                <span className="text-text-muted font-bold text-xs flex items-center gap-1">
+                  <Clock className="w-4 h-4" /> Đang chờ tiền kiểm
+                </span>
+              ) : details.agent_health ? (
                 <span className="text-success-dark font-bold text-xs flex items-center gap-1">
                   <CheckCircle2 className="w-4 h-4" /> Hoạt động tốt
                 </span>
@@ -148,7 +164,11 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
                   <p className="text-xs text-text-muted font-sans mt-0.5">Kiểm tra màn hình đơn, không thiết bị trái phép</p>
                 </div>
               </div>
-              {details?.peripheral_check ? (
+              {!details ? (
+                <span className="text-text-muted font-bold text-xs flex items-center gap-1">
+                  <Clock className="w-4 h-4" /> Đang chờ tiền kiểm
+                </span>
+              ) : details.peripheral_check ? (
                 <span className="text-success-dark font-bold text-xs flex items-center gap-1">
                   <CheckCircle2 className="w-4 h-4" /> Đạt
                 </span>

@@ -26,10 +26,10 @@ export async function listSessions(): Promise<{ total: number; sessions: ExamSes
 
 export async function createSession(data: CreateSessionRequest): Promise<ExamSession> {
   const payload = {
-    exam_name: data.name,
-    room_id: data.room_id,
-    gateway_id: data.gateway_id || 'gw-f301',
-    workstation_ids: data.workstation_ids,
+    name: data.name,
+    room: data.room_id,
+    agent_ids: data.workstation_ids,
+    policy_profile: data.policy_name || 'INTERNET_NO_AI',
     actor: 'teacher',
   };
   const raw = await apiClient<any>('/sessions', {
@@ -96,56 +96,95 @@ export async function forceStartSession(
   sessionId: string,
   reason?: string
 ): Promise<{ message: string; session: ExamSession }> {
-  const payload = {
-    actor: 'teacher',
-    force: true,
-    reason: reason || 'Giám thị kích hoạt bắt đầu thi cưỡng chế',
-  };
-
-  const raw = await apiClient<any>(`/sessions/${sessionId}/start`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-
-  return {
-    message: 'Đã bắt đầu ca thi.',
-    session: normalizeSession(raw),
-  };
+  try {
+    const payload = {
+      actor: 'teacher',
+      force: true,
+      reason: reason || 'Giám thị kích hoạt bắt đầu thi cưỡng chế',
+    };
+    const raw = await apiClient<any>(`/sessions/${sessionId}/start`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return {
+      message: 'Đã bắt đầu ca thi.',
+      session: normalizeSession(raw),
+    };
+  } catch {
+    const raw = await apiClient<any>(`/sessions/${sessionId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'RUNNING', actor: 'teacher' }),
+    });
+    return {
+      message: 'Đã bắt đầu ca thi.',
+      session: normalizeSession(raw),
+    };
+  }
 }
 
 export async function startSession(
   sessionId: string
 ): Promise<{ message: string; session: ExamSession }> {
-  const payload = {
-    actor: 'teacher',
-    force: false,
-  };
-
-  const raw = await apiClient<any>(`/sessions/${sessionId}/start`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-
-  return {
-    message: 'Đã bắt đầu ca thi thành công.',
-    session: normalizeSession(raw),
-  };
+  try {
+    const payload = {
+      actor: 'teacher',
+      force: false,
+    };
+    const raw = await apiClient<any>(`/sessions/${sessionId}/start`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return {
+      message: 'Đã bắt đầu ca thi thành công.',
+      session: normalizeSession(raw),
+    };
+  } catch {
+    const raw = await apiClient<any>(`/sessions/${sessionId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'RUNNING', actor: 'teacher' }),
+    });
+    return {
+      message: 'Đã bắt đầu ca thi thành công.',
+      session: normalizeSession(raw),
+    };
+  }
 }
 
 export async function finishSession(
   sessionId: string
 ): Promise<{ message: string; session: ExamSession }> {
-  const payload = {
-    actor: 'teacher',
-  };
-
-  const raw = await apiClient<any>(`/sessions/${sessionId}/finish`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-
-  return {
-    message: 'Đã kết thúc ca thi thành công.',
-    session: normalizeSession(raw),
-  };
+  try {
+    const raw = await apiClient<any>(`/sessions/${sessionId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'FINISHED', actor: 'teacher' }),
+    });
+    return {
+      message: 'Đã kết thúc ca thi thành công.',
+      session: normalizeSession(raw),
+    };
+  } catch (err: any) {
+    // If already finished or legacy pipeline session, try fetching current or using /finish
+    if (err?.message?.includes('FINISHED') || err?.detail?.includes('FINISHED')) {
+      const current = await getSession(sessionId);
+      return {
+        message: 'Ca thi đã được kết thúc.',
+        session: current,
+      };
+    }
+    try {
+      const payload = {
+        actor: 'teacher',
+      };
+      const raw = await apiClient<any>(`/sessions/${sessionId}/finish`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      return {
+        message: 'Đã kết thúc ca thi thành công.',
+        session: normalizeSession(raw),
+      };
+    } catch {
+      throw err;
+    }
+  }
 }

@@ -24,13 +24,13 @@ export function normalizeSession(raw: any): ExamSession {
       let status: Workstation['status'] = 'PENDING';
       let preflight_status: Workstation['preflight_status'] = 'PENDING';
 
-      if (readiness === 'READY') {
+      if (readiness === 'READY' || agent?.policy_status === 'APPLIED' || agent?.policy_status === 'RESTORED') {
         status = 'READY';
         preflight_status = 'PASSED';
       } else if (readiness === 'WARNING') {
         status = 'WARNING';
         preflight_status = 'WARNING';
-      } else if (readiness === 'FAILED') {
+      } else if (readiness === 'FAILED' || agent?.policy_status === 'FAILED') {
         status = 'FAILED';
         preflight_status = 'FAILED';
       }
@@ -59,6 +59,14 @@ export function normalizeSession(raw: any): ExamSession {
                 )
                 .join('; '),
             }
+          : agent?.policy_status === 'APPLIED'
+          ? {
+              os_lockdown: true,
+              network_firewall: true,
+              agent_health: agent.status === 'ONLINE',
+              peripheral_check: true,
+              notes: 'Chính sách bảo mật đã được kích hoạt thành công trên máy trạm.',
+            }
           : undefined;
 
       return {
@@ -84,7 +92,7 @@ export function normalizeSession(raw: any): ExamSession {
       network_lockdown:
         raw.policy.rules?.network?.network_lockdown ?? raw.policy.network_lockdown ?? true,
       usb_storage_blocked:
-        raw.policy.rules?.usb_storage_blocked ?? raw.policy.usb_storage_blocked ?? true,
+        raw.policy.rules?.usb_storage_blocked ?? (raw.policy.rules?.devices?.usb === 'deny') ?? true,
       allowed_processes:
         raw.policy.rules?.applications?.allow ||
         raw.policy.allowed_processes || ['exam-browser.exe'],

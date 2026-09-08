@@ -16,7 +16,7 @@ def collect_identity(
     socket_factory: Callable[..., socket.socket] = socket.socket,
 ) -> WorkstationIdentity:
     hostname = hostname_getter()
-    server_hostname = urlsplit(server_url).hostname or "10.10.58.89"
+    server_hostname = urlsplit(server_url).hostname or "172.20.10.3"
     try:
         with socket_factory(socket.AF_INET, socket.SOCK_DGRAM) as connection:
             connection.connect((server_hostname, 80))

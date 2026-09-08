@@ -97,15 +97,28 @@ export const SessionHeader: React.FC<SessionHeaderProps> = ({
             )}
 
             {session.status === 'CREATED' && (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={onOpenDeployModal}
-                leftIcon={<Send className="w-3.5 h-3.5" />}
-                className="flex-1 sm:flex-initial justify-center bg-primary hover:bg-primary-dark font-bold text-surface"
-              >
-                {UI_LABELS.session.deployPolicy}
-              </Button>
+              session.policy ? (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={onForceStart}
+                  isLoading={isStarting}
+                  leftIcon={<Play className="w-3.5 h-3.5 fill-current" />}
+                  className="flex-1 sm:flex-initial justify-center bg-primary hover:bg-primary-dark font-bold text-surface"
+                >
+                  {UI_LABELS.session.startExam}
+                </Button>
+              ) : (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={onOpenDeployModal}
+                  leftIcon={<Send className="w-3.5 h-3.5" />}
+                  className="flex-1 sm:flex-initial justify-center bg-primary hover:bg-primary-dark font-bold text-surface"
+                >
+                  {UI_LABELS.session.deployPolicy}
+                </Button>
+              )
             )}
 
             {session.status === 'DEPLOYING' && (
@@ -153,23 +166,22 @@ export const SessionHeader: React.FC<SessionHeaderProps> = ({
             )}
 
             {session.status === 'RUNNING' && (
-              <>
-                <div className="hidden sm:flex items-center px-3 py-1.5 bg-success-soft text-success-dark border border-success/30 rounded text-xs font-sans font-bold uppercase tracking-wider gap-1.5 select-none">
-                  <span className="w-2 h-2 rounded-full bg-success animate-pulse shrink-0" />
-                  <span className="truncate">{UI_LABELS.session.activeExam}</span>
-                </div>
-                {onFinishExam && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={onFinishExam}
-                    leftIcon={<StopCircle className="w-3.5 h-3.5 text-error" />}
-                    className="flex-1 sm:flex-initial justify-center border-error/30 hover:border-error hover:bg-error-soft text-error-dark font-bold"
-                  >
-                    Kết thúc ca thi
-                  </Button>
-                )}
-              </>
+              <div className="hidden sm:flex items-center px-3 py-1.5 bg-success-soft text-success-dark border border-success/30 rounded text-xs font-sans font-bold uppercase tracking-wider gap-1.5 select-none">
+                <span className="w-2 h-2 rounded-full bg-success animate-pulse shrink-0" />
+                <span className="truncate">{UI_LABELS.session.activeExam}</span>
+              </div>
+            )}
+
+            {!isCompleted && onFinishExam && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onFinishExam}
+                leftIcon={<StopCircle className="w-3.5 h-3.5 text-error" />}
+                className="flex-1 sm:flex-initial justify-center border-error/40 hover:border-error bg-error-soft/60 hover:bg-error-soft text-error-dark font-bold shadow-2xs transition-all"
+              >
+                Kết thúc ca thi
+              </Button>
             )}
 
             {isCompleted && (

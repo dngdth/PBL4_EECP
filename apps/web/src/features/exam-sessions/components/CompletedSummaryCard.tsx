@@ -8,7 +8,9 @@ export interface CompletedSummaryCardProps {
 }
 
 export const CompletedSummaryCard: React.FC<CompletedSummaryCardProps> = ({ session }) => {
-  const readyCount = session.workstations.filter((ws) => ws.status === 'READY').length;
+  const readyCount = session.workstations.filter(
+    (ws) => ws.status === 'READY' || ws.status === 'ONLINE'
+  ).length;
   const totalCount = session.workstations.length;
 
   return (

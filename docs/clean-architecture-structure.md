@@ -36,10 +36,11 @@ apps/
 │       ├── unit/
 │       └── integration/
 └── web/
-    ├── app/                         # Next.js routes/layout
-    ├── features/exam-sessions/      # UI, query và type theo nghiệp vụ
-    ├── components/ui/               # UI dùng chung
-    └── lib/                         # API client và config kỹ thuật
+    ├── app/                         # App routes (React Router) & layout
+    ├── pages/                       # Page containers (Overview, Sessions, Workstations, Policies)
+    ├── features/                    # Feature modules (exam-sessions, workstations, security-policy)
+    ├── shared/                      # Shared UI, API client, utils, labels
+    └── domain/                      # Frontend domain types & view models
 ```
 
 ## Dependency rule backend

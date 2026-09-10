@@ -1,28 +1,30 @@
 import React from 'react';
 import { SessionStatus } from '@/src/domain';
-import { LIFECYCLE_STEPS, SESSION_STATUS_CONFIG } from '../model/lifecycle';
+import { getLifecycleSteps, getStepIndex } from '../model/lifecycle';
 import { cn } from '@/src/shared/lib/cn';
 import { Check } from 'lucide-react';
 
 export interface SessionLifecycleStepperProps {
   status: SessionStatus;
+  hasGateway?: boolean;
   updatedAt?: string;
 }
 
 export const SessionLifecycleStepper: React.FC<SessionLifecycleStepperProps> = ({
   status,
+  hasGateway = false,
 }) => {
-  const currentConfig = SESSION_STATUS_CONFIG[status] || { stepIndex: 0 };
-  const activeIndex = currentConfig.stepIndex;
+  const steps = getLifecycleSteps(hasGateway);
+  const activeIndex = getStepIndex(status, hasGateway);
 
   return (
     <nav aria-label="Vòng đời ca thi" className="bg-surface border border-border rounded-sm px-4 py-3 sm:px-6 sm:py-4 w-full shadow-2xs">
       <div className="overflow-x-auto no-scrollbar py-1">
         <ol className="flex items-center justify-between min-w-[580px] sm:min-w-0 w-full gap-1.5 list-none m-0 p-0">
-          {LIFECYCLE_STEPS.map((step, idx) => {
+          {steps.map((step, idx) => {
             const isPassed = idx < activeIndex;
             const isCurrent = idx === activeIndex;
-            const isLast = idx === LIFECYCLE_STEPS.length - 1;
+            const isLast = idx === steps.length - 1;
 
             return (
               <li key={step.key} className="flex-1 flex items-center min-w-0 last:flex-initial">

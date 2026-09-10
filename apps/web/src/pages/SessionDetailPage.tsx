@@ -179,7 +179,10 @@ export const SessionDetailPage: React.FC = () => {
         )}
         {/* Session Lifecycle Progress */}
         <section className="bg-surface border border-border rounded p-4 sm:p-5 shadow-2xs">
-          <SessionLifecycleStepper status={session.status} />
+          <SessionLifecycleStepper 
+            status={session.status} 
+            hasGateway={Boolean(session.gateway_id)} 
+          />
         </section>
 
         {/* Completed Summary Banner */}

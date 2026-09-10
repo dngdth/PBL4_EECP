@@ -29,7 +29,7 @@ export const ForceStartDialog: React.FC<ForceStartDialogProps> = ({
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const res = await forceStartSession(session.id, reason);
+      const res = await forceStartSession(session.id, reason, session.gateway_id !== null);
       onSuccess(res.session);
       onClose();
     } catch (err: any) {

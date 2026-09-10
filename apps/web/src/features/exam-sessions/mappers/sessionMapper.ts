@@ -150,7 +150,7 @@ export function normalizeSession(raw: any): ExamSession {
     id: raw.id,
     name: raw.name || raw.exam_name || 'Ca thi không tên',
     room_id: raw.room || raw.room_id || 'Chưa chỉ định',
-    gateway_id: raw.gateway_id || 'gw-default',
+    gateway_id: raw.gateway_id ?? null,
     status: rawStatus === ('COMPLETED' as any) ? 'FINISHED' : rawStatus,
     workstations,
     policy,

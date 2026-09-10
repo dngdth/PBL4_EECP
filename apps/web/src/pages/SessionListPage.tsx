@@ -37,7 +37,7 @@ export const SessionListPage: React.FC = () => {
       const matchSearch =
         s.name.toLowerCase().includes(search.toLowerCase()) ||
         s.room_id.toLowerCase().includes(search.toLowerCase()) ||
-        s.gateway_id.toLowerCase().includes(search.toLowerCase()) ||
+        (s.gateway_id || '').toLowerCase().includes(search.toLowerCase()) ||
         s.id.toLowerCase().includes(search.toLowerCase());
 
       if (!matchSearch) return false;

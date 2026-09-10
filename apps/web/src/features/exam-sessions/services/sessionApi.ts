@@ -94,9 +94,10 @@ export async function deployPolicy(
 
 export async function forceStartSession(
   sessionId: string,
-  reason?: string
+  reason?: string,
+  hasGateway = true
 ): Promise<{ message: string; session: ExamSession }> {
-  try {
+  if (hasGateway) {
     const payload = {
       actor: 'teacher',
       force: true,
@@ -110,16 +111,16 @@ export async function forceStartSession(
       message: 'Đã bắt đầu ca thi.',
       session: normalizeSession(raw),
     };
-  } catch {
-    const raw = await apiClient<any>(`/sessions/${sessionId}/status`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: 'RUNNING', actor: 'teacher' }),
-    });
-    return {
-      message: 'Đã bắt đầu ca thi.',
-      session: normalizeSession(raw),
-    };
   }
+
+  const raw = await apiClient<any>(`/sessions/${sessionId}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'RUNNING', actor: 'teacher' }),
+  });
+  return {
+    message: 'Đã bắt đầu ca thi.',
+    session: normalizeSession(raw),
+  };
 }
 
 export async function startSession(

@@ -4,6 +4,7 @@ import { AlertCircle, ArrowLeft } from 'lucide-react';
 import { ExamSession, Workstation, ActivityItem } from '@/src/domain';
 import {
   getSession,
+  updateSessionStatus,
   SessionHeader,
   SessionLifecycleStepper,
   SessionEnvironmentCard,
@@ -31,6 +32,8 @@ export const SessionDetailPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isTransitioning, setIsTransitioning] = useState<boolean>(false);
 
   // Modals & Inspection
   const [isDeployModalOpen, setIsDeployModalOpen] = useState<boolean>(false);
@@ -73,7 +76,11 @@ export const SessionDetailPage: React.FC = () => {
   // Auto-polling when deploying or in preflight
   useEffect(() => {
     if (!autoPoll || !session) return;
-    const isTransitional = session.status === 'DEPLOYING' || session.status === 'PREFLIGHT';
+    const isTransitional =
+      session.status === 'CREATED' ||
+      session.status === 'DEPLOYING' ||
+      session.status === 'PREFLIGHT' ||
+      session.status === 'RUNNING';
     if (!isTransitional) return;
 
     const timer = setInterval(() => {
@@ -88,6 +95,20 @@ export const SessionDetailPage: React.FC = () => {
     if (inspectingWorkstation) {
       const refreshedWs = updated.workstations.find((w) => w.id === inspectingWorkstation.id);
       if (refreshedWs) setInspectingWorkstation(refreshedWs);
+    }
+  };
+
+  const handleMarkReady = async () => {
+    if (!session) return;
+    setIsTransitioning(true);
+    setActionError(null);
+    try {
+      const result = await updateSessionStatus(session.id, 'READY');
+      handleSessionUpdated(result.session);
+    } catch (err: any) {
+      setActionError(err.message || 'Không thể chuyển ca thi sang trạng thái READY.');
+    } finally {
+      setIsTransitioning(false);
     }
   };
 
@@ -142,13 +163,20 @@ export const SessionDetailPage: React.FC = () => {
         onRefresh={() => fetchSessionData(false)}
         isRefreshing={isRefreshing}
         onOpenDeployModal={() => setIsDeployModalOpen(true)}
+        onMarkReady={handleMarkReady}
         onForceStart={() => setIsForceStartOpen(true)}
         onFinishExam={() => setIsFinishModalOpen(true)}
         onOpenInterveneModal={() => setIsInterveneModalOpen(true)}
+        isStarting={isTransitioning}
       />
 
       {/* 2. Main Content Canvas */}
       <div className="w-full max-w-[1600px] mx-auto p-4 sm:p-6 lg:p-8 space-y-5 flex-1 min-w-0">
+        {actionError && (
+          <div className="p-3 bg-error-soft border border-error/30 rounded text-xs text-error-dark">
+            {actionError}
+          </div>
+        )}
         {/* Session Lifecycle Progress */}
         <section className="bg-surface border border-border rounded p-4 sm:p-5 shadow-2xs">
           <SessionLifecycleStepper status={session.status} />

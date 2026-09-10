@@ -260,7 +260,7 @@ export const OverviewPage: React.FC = () => {
 
                           <span className="flex items-center gap-1 font-mono">
                             <Router className={cn('w-3.5 h-3.5', isCompleted ? 'text-text-subtle' : 'text-primary')} />
-                            <span>{sess.gateway_id}</span>
+                            <span>{sess.gateway_id || 'Direct'}</span>
                           </span>
 
                           <span>• Cập nhật {formatRelativeTime(sess.updated_at)}</span>

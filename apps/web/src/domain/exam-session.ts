@@ -33,7 +33,7 @@ export interface ExamSession {
   id: string;
   name: string;
   room_id: string;
-  gateway_id: string;
+  gateway_id: string | null;
   status: SessionStatus;
   workstations: Workstation[];
   policy?: PolicyConfig;

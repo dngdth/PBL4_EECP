@@ -7,6 +7,7 @@ import { SessionCreatePage } from '@/src/pages/SessionCreatePage';
 import { SessionDetailPage } from '@/src/pages/SessionDetailPage';
 
 import { PolicyProfilesPage } from '@/src/pages/PolicyProfilesPage';
+import { WorkstationsPage } from '@/src/pages/WorkstationsPage';
 
 export const router = createBrowserRouter([
   {
@@ -27,11 +28,15 @@ export const router = createBrowserRouter([
       },
       {
         path: 'sessions/new',
-        element: <SessionCreatePage />,
+        element: <Navigate to="/sessions/create" replace />,
       },
       {
         path: 'sessions/:sessionId',
         element: <SessionDetailPage />,
+      },
+      {
+        path: 'workstations',
+        element: <WorkstationsPage />,
       },
       {
         path: 'policies',

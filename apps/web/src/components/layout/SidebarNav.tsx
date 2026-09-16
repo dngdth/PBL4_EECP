@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Layers, PlusCircle, ShieldCheck } from 'lucide-react';
+import { LayoutDashboard, Layers, PlusCircle, ShieldCheck, Monitor } from 'lucide-react';
 import { cn } from '@/src/shared/lib/cn';
 import { UI_LABELS } from '@/src/shared/config/labels';
 
@@ -24,9 +24,15 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed, onItemClick }
       end: true,
     },
     {
-      to: '/sessions/new',
+      to: '/sessions/create',
       label: UI_LABELS.nav.newSession,
       icon: PlusCircle,
+      end: true,
+    },
+    {
+      to: '/workstations',
+      label: UI_LABELS.nav.workstations,
+      icon: Monitor,
       end: true,
     },
     {

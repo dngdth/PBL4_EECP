@@ -4,7 +4,7 @@ import { UI_LABELS } from '@/src/shared/config/labels';
 
 export interface SessionEnvironmentCardProps {
   roomId?: string;
-  gatewayId?: string;
+  gatewayId?: string | null;
   workstationCount?: number;
   onOpenCommandQueue?: (targetId: string) => void;
 }

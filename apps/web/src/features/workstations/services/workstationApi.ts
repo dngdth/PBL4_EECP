@@ -1,6 +1,6 @@
 import { apiClient } from '@/src/shared/api/client';
 import { Workstation, ExamSession, Agent, CommandItem } from '@/src/domain';
-import { normalizeSession } from '@/src/features/exam-sessions/services/sessionApi';
+import { normalizeSession } from '@/src/features/exam-sessions';
 
 export async function listAgents(): Promise<Agent[]> {
   const res = await apiClient<any>('/agents');

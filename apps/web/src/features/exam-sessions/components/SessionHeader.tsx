@@ -11,6 +11,7 @@ export interface SessionHeaderProps {
   onRefresh: () => void;
   isRefreshing?: boolean;
   onOpenDeployModal: () => void;
+  onMarkReady: () => void;
   onForceStart: () => void;
   onFinishExam?: () => void;
   onOpenInterveneModal?: () => void;
@@ -22,6 +23,7 @@ export const SessionHeader: React.FC<SessionHeaderProps> = ({
   onRefresh,
   isRefreshing = false,
   onOpenDeployModal,
+  onMarkReady,
   onForceStart,
   onFinishExam,
   onOpenInterveneModal,
@@ -101,12 +103,12 @@ export const SessionHeader: React.FC<SessionHeaderProps> = ({
                 <Button
                   variant="primary"
                   size="sm"
-                  onClick={onForceStart}
+                  onClick={onMarkReady}
                   isLoading={isStarting}
-                  leftIcon={<Play className="w-3.5 h-3.5 fill-current" />}
+                  leftIcon={<CheckCircle2 className="w-3.5 h-3.5" />}
                   className="flex-1 sm:flex-initial justify-center bg-primary hover:bg-primary-dark font-bold text-surface"
                 >
-                  {UI_LABELS.session.startExam}
+                  Đánh dấu sẵn sàng
                 </Button>
               ) : (
                 <Button

@@ -68,7 +68,7 @@ export const SESSION_STATUS_CONFIG: Record<SessionStatus, SessionStatusConfig> =
   },
 };
 
-export const LIFECYCLE_STEPS: Array<{ key: SessionStatus; label: string; index: number }> = [
+export const PIPELINE_LIFECYCLE_STEPS: Array<{ key: SessionStatus; label: string; index: number }> = [
   { key: 'CREATED', label: SESSION_STATUS_LABELS.CREATED, index: 0 },
   { key: 'DEPLOYING', label: SESSION_STATUS_LABELS.DEPLOYING, index: 1 },
   { key: 'PREFLIGHT', label: SESSION_STATUS_LABELS.PREFLIGHT, index: 2 },
@@ -76,3 +76,39 @@ export const LIFECYCLE_STEPS: Array<{ key: SessionStatus; label: string; index: 
   { key: 'RUNNING', label: SESSION_STATUS_LABELS.RUNNING, index: 4 },
   { key: 'FINISHED', label: SESSION_STATUS_LABELS.FINISHED, index: 5 },
 ];
+
+export const MANAGEMENT_LIFECYCLE_STEPS: Array<{ key: SessionStatus; label: string; index: number }> = [
+  { key: 'CREATED', label: SESSION_STATUS_LABELS.CREATED, index: 0 },
+  { key: 'READY', label: SESSION_STATUS_LABELS.READY, index: 1 },
+  { key: 'RUNNING', label: SESSION_STATUS_LABELS.RUNNING, index: 2 },
+  { key: 'FINISHED', label: SESSION_STATUS_LABELS.FINISHED, index: 3 },
+];
+
+export const LIFECYCLE_STEPS = PIPELINE_LIFECYCLE_STEPS;
+
+export function getLifecycleSteps(hasGateway = false) {
+  return hasGateway ? PIPELINE_LIFECYCLE_STEPS : MANAGEMENT_LIFECYCLE_STEPS;
+}
+
+export function getStepIndex(status: SessionStatus, hasGateway = false): number {
+  if (hasGateway) {
+    return SESSION_STATUS_CONFIG[status]?.stepIndex ?? 0;
+  }
+  switch (status) {
+    case 'CREATED':
+    case 'DEPLOYING':
+    case 'PREFLIGHT':
+      return 0;
+    case 'READY':
+    case 'DEGRADED':
+      return 1;
+    case 'RUNNING':
+      return 2;
+    case 'FINISHED':
+    case 'RESTORING':
+    case 'NORMAL':
+      return 3;
+    default:
+      return 0;
+  }
+}

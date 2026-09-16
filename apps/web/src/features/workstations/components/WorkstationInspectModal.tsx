@@ -12,8 +12,8 @@ export interface WorkstationInspectModalProps {
   isOpen: boolean;
   onClose: () => void;
   workstation: Workstation | null;
-  sessionId: string;
-  onWorkstationUpdated: (updatedSession: ExamSession) => void;
+  sessionId?: string;
+  onWorkstationUpdated?: (updatedSession: ExamSession) => void;
   onViewCommandQueue?: (workstationId: string) => void;
 }
 
@@ -31,12 +31,13 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
   if (!workstation) return null;
 
   const handleRetry = async () => {
+    if (!sessionId) return;
     setIsRetrying(true);
     setFeedback(null);
     try {
       const res = await retryWorkstationPreflight(sessionId, workstation.id);
       setFeedback('Kiểm tra tiền kiểm lại hoàn tất thành công.');
-      onWorkstationUpdated(res.session);
+      onWorkstationUpdated?.(res.session);
     } catch (err: any) {
       setFeedback(`Kiểm tra lại thất bại: ${err.message}`);
     } finally {
@@ -199,16 +200,18 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
         {/* Actions */}
         <div className="flex items-center justify-between pt-2 border-t border-border-subtle gap-2 flex-wrap">
           <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleRetry}
-              isLoading={isRetrying}
-              leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
-            >
-              Chạy lại tiền kiểm
-            </Button>
+            {sessionId && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleRetry}
+                isLoading={isRetrying}
+                leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+              >
+                Chạy lại tiền kiểm
+              </Button>
+            )}
 
             {onViewCommandQueue && (
               <Button

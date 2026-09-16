@@ -27,9 +27,9 @@ export async function listSessions(): Promise<{ total: number; sessions: ExamSes
 export async function createSession(data: CreateSessionRequest): Promise<ExamSession> {
   const payload = {
     name: data.name,
-    room: data.room_id,
-    agent_ids: data.workstation_ids,
-    policy_profile: data.policy_name || 'INTERNET_NO_AI',
+    room: data.room || data.room_id,
+    agent_ids: data.agent_ids || data.workstation_ids,
+    policy_profile: data.policy_profile || data.policy_name || 'INTERNET_NO_AI',
     actor: 'teacher',
   };
   const raw = await apiClient<any>('/sessions', {
@@ -94,9 +94,10 @@ export async function deployPolicy(
 
 export async function forceStartSession(
   sessionId: string,
-  reason?: string
+  reason?: string,
+  hasGateway = true
 ): Promise<{ message: string; session: ExamSession }> {
-  try {
+  if (hasGateway) {
     const payload = {
       actor: 'teacher',
       force: true,
@@ -110,48 +111,54 @@ export async function forceStartSession(
       message: 'Đã bắt đầu ca thi.',
       session: normalizeSession(raw),
     };
-  } catch {
-    const raw = await apiClient<any>(`/sessions/${sessionId}/status`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: 'RUNNING', actor: 'teacher' }),
-    });
-    return {
-      message: 'Đã bắt đầu ca thi.',
-      session: normalizeSession(raw),
-    };
   }
+
+  const raw = await apiClient<any>(`/sessions/${sessionId}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'RUNNING', actor: 'teacher' }),
+  });
+  return {
+    message: 'Đã bắt đầu ca thi.',
+    session: normalizeSession(raw),
+  };
 }
 
 export async function startSession(
-  sessionId: string
+  sessionId: string,
+  hasGateway = false
 ): Promise<{ message: string; session: ExamSession }> {
-  try {
-    const payload = {
-      actor: 'teacher',
-      force: false,
-    };
-    const raw = await apiClient<any>(`/sessions/${sessionId}/start`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    return {
-      message: 'Đã bắt đầu ca thi thành công.',
-      session: normalizeSession(raw),
-    };
-  } catch {
-    const raw = await apiClient<any>(`/sessions/${sessionId}/status`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: 'RUNNING', actor: 'teacher' }),
-    });
-    return {
-      message: 'Đã bắt đầu ca thi thành công.',
-      session: normalizeSession(raw),
-    };
+  if (hasGateway) {
+    try {
+      const payload = {
+        actor: 'teacher',
+        force: false,
+      };
+      const raw = await apiClient<any>(`/sessions/${sessionId}/start`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      return {
+        message: 'Đã bắt đầu ca thi thành công.',
+        session: normalizeSession(raw),
+      };
+    } catch {
+      // Fallback to PATCH status if pipeline start fails
+    }
   }
+
+  const raw = await apiClient<any>(`/sessions/${sessionId}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'RUNNING', actor: 'teacher' }),
+  });
+  return {
+    message: 'Đã bắt đầu ca thi thành công.',
+    session: normalizeSession(raw),
+  };
 }
 
 export async function finishSession(
-  sessionId: string
+  sessionId: string,
+  hasGateway = false
 ): Promise<{ message: string; session: ExamSession }> {
   try {
     const raw = await apiClient<any>(`/sessions/${sessionId}/status`, {
@@ -163,7 +170,6 @@ export async function finishSession(
       session: normalizeSession(raw),
     };
   } catch (err: any) {
-    // If already finished or legacy pipeline session, try fetching current or using /finish
     if (err?.message?.includes('FINISHED') || err?.detail?.includes('FINISHED')) {
       const current = await getSession(sessionId);
       return {
@@ -171,20 +177,23 @@ export async function finishSession(
         session: current,
       };
     }
-    try {
-      const payload = {
-        actor: 'teacher',
-      };
-      const raw = await apiClient<any>(`/sessions/${sessionId}/finish`, {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      });
-      return {
-        message: 'Đã kết thúc ca thi thành công.',
-        session: normalizeSession(raw),
-      };
-    } catch {
-      throw err;
+    if (hasGateway) {
+      try {
+        const payload = {
+          actor: 'teacher',
+        };
+        const raw = await apiClient<any>(`/sessions/${sessionId}/finish`, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        return {
+          message: 'Đã kết thúc ca thi thành công.',
+          session: normalizeSession(raw),
+        };
+      } catch {
+        throw err;
+      }
     }
+    throw err;
   }
 }

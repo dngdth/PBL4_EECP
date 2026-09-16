@@ -20,7 +20,7 @@ import { cn } from '@/src/shared/lib/cn';
 export interface PolicySummaryCardProps {
   policy?: PolicyConfig;
   status: SessionStatus;
-  gatewayId?: string;
+  gatewayId?: string | null;
   onDeployClick?: () => void;
   canDeploy?: boolean;
 }

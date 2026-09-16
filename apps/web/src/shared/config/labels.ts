@@ -127,6 +127,7 @@ export const UI_LABELS = {
     dashboard: 'Tổng quan',
     liveSessions: 'Danh sách ca thi',
     newSession: 'Tạo ca thi',
+    workstations: 'Máy trạm',
     policies: 'Chính sách bảo mật',
     monitoring: 'Giám sát',
     operations: 'Vận hành',

@@ -63,6 +63,17 @@ def test_management_lifecycle_rejects_skipped_transition() -> None:
         session.transition_management(SessionState.RUNNING, NOW)
 
 
+def test_management_lifecycle_allows_finishing_from_created_or_ready() -> None:
+    session = ExamSession.create_managed("Exam", "A101", ["PC01"], NOW)
+    session.transition_management(SessionState.FINISHED, NOW + timedelta(seconds=1))
+    assert session.state == SessionState.FINISHED
+
+    session2 = ExamSession.create_managed("Exam2", "A101", ["PC01"], NOW)
+    session2.transition_management(SessionState.READY, NOW + timedelta(seconds=1))
+    session2.transition_management(SessionState.FINISHED, NOW + timedelta(seconds=2))
+    assert session2.state == SessionState.FINISHED
+
+
 def test_pipeline_session_rejects_management_transition() -> None:
     session = ExamSession.create("Exam", "A101", "gw-a101", ["PC01"])
 

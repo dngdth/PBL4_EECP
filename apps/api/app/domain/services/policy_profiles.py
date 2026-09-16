@@ -159,7 +159,7 @@ BUILT_IN_POLICY_PROFILES = PolicyProfileCatalog(
             rules={
                 "applications": {
                     "allow": ["vscode.exe", "gcc.exe"],
-                    "deny": ["chatgpt.exe", "anydesk.exe", "teamviewer.exe"],
+                    "deny": ["chatgpt.exe", "anydesk.exe", "teamviewer.exe", "antigravity.exe"],
                 },
                 "network": {"block": ["generative_ai", "social_network"]},
                 "devices": {"usb": "deny"},

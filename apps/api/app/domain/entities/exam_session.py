@@ -324,7 +324,13 @@ class ExamSession:
             SessionState.READY: SessionState.RUNNING,
             SessionState.RUNNING: SessionState.FINISHED,
         }
-        if allowed.get(self.state) != target:
+        if target == SessionState.FINISHED and self.state in (
+            SessionState.CREATED,
+            SessionState.READY,
+            SessionState.RUNNING,
+        ):
+            pass
+        elif allowed.get(self.state) != target:
             raise InvalidStateTransitionError(
                 f"cannot transition management session from {self.state} to {target}"
             )

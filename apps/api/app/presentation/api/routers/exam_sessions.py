@@ -53,7 +53,9 @@ def create_session(
     service: Service,
     create_management: CreateExamSessionUseCase,
     get_management: GetExamSessionUseCase,
+    request: Request,
 ) -> SessionDetailView:
+    authorize(request, Permission.CONTROL_AGENT)
     if isinstance(body, CreatePipelineSessionRequest):
         session = service.create_session(CreateSessionInput(**body.model_dump()))
     else:
@@ -63,8 +65,15 @@ def create_session(
 
 
 @router.get("/sessions", response_model=list[SessionDetailView])
-def list_sessions(use_case: ListExamSessionsUseCase) -> list[SessionDetailView]:
-    return [_session_detail_view(details) for details in use_case()]
+def list_sessions(
+    use_case: ListExamSessionsUseCase, request: Request
+) -> list[SessionDetailView]:
+    authorize(request, Permission.VIEW_SESSION)
+    details = use_case()
+    principal = getattr(request.state, "principal", None)
+    if principal is not None and principal.role.value != "ADMIN":
+        details = [item for item in details if item.session.id in principal.session_scope]
+    return [_session_detail_view(item) for item in details]
 
 
 @router.patch("/sessions/{session_id}/status", response_model=SessionDetailView)
@@ -83,7 +92,9 @@ def update_session_status(
 def get_session(
     session_id: str,
     use_case: GetExamSessionUseCase,
+    request: Request,
 ) -> SessionDetailView:
+    authorize(request, Permission.VIEW_SESSION, session_id=session_id)
     return _session_detail_view(use_case(session_id))
 
 
@@ -114,7 +125,9 @@ def submit_preflight(
     workstation_id: str,
     body: SubmitPreflightRequest,
     service: Service,
+    request: Request,
 ) -> SessionView:
+    authorize(request, Permission.CONTROL_AGENT, session_id=session_id)
     checks = [PreflightCheck(**check.model_dump()) for check in body.checks]
     session = service.submit_preflight(
         SubmitPreflightInput(
@@ -154,7 +167,9 @@ def ingest_telemetry(
     session_id: str,
     body: TelemetryRequest,
     service: Service,
+    request: Request,
 ) -> TelemetryAcceptedView:
+    authorize(request, Permission.CONTROL_AGENT, session_id=session_id)
     event, incident_id = service.ingest_telemetry(
         TelemetryInput(session_id=session_id, **body.model_dump())
     )
@@ -179,7 +194,8 @@ def finish_session(
 
 
 @router.get("/sessions/{session_id}/summary")
-def get_summary(session_id: str, service: Service) -> dict:
+def get_summary(session_id: str, service: Service, request: Request) -> dict:
+    authorize(request, Permission.VIEW_INCIDENT, session_id=session_id)
     return service.get_summary(session_id)
 
 

@@ -89,14 +89,17 @@ class BackendUplink:
                         health_task = asyncio.create_task(
                             asyncio.sleep(self._settings.health_interval_seconds)
                         )
-                        done, pending = await asyncio.wait(
-                            {receive_task, send_task, health_task},
-                            return_when=asyncio.FIRST_COMPLETED,
-                        )
-                        for task in pending:
-                            task.cancel()
-                        if pending:
-                            await asyncio.gather(*pending, return_exceptions=True)
+                        tasks = {receive_task, send_task, health_task}
+                        try:
+                            done, _pending = await asyncio.wait(
+                                tasks,
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                        finally:
+                            for task in tasks:
+                                if not task.done():
+                                    task.cancel()
+                            await asyncio.gather(*tasks, return_exceptions=True)
                         if receive_task in done:
                             message = receive_task.result()
                             await self._on_message(

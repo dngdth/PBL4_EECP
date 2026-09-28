@@ -1,10 +1,14 @@
 from contracts.v2.ack import Ack, AckStatus
 from contracts.v2.command import (
+    COMMAND_AUTHORIZATION_DOMAIN,
     ApplyPolicyPayload,
     Command,
     CommandType,
     HealthCheckPayload,
     RestoreBaselinePayload,
+    canonical_command_authorization,
+    compute_command_authorization,
+    verify_command_authorization,
 )
 from contracts.v2.common import PROTOCOL_VERSION
 from contracts.v2.errors import ERROR_DESCRIPTIONS, ErrorCode
@@ -44,6 +48,7 @@ __all__ = [
     "ApplicationRules",
     "ApplyPolicyPayload",
     "Command",
+    "COMMAND_AUTHORIZATION_DOMAIN",
     "CommandType",
     "DeviceRules",
     "DeliveryFailure",
@@ -69,7 +74,10 @@ __all__ = [
     "ServiceResult",
     "UsbAccess",
     "canonical_policy_json",
+    "canonical_command_authorization",
+    "compute_command_authorization",
     "compute_policy_hash",
     "compute_policy_signature",
     "verify_policy_signature",
+    "verify_command_authorization",
 ]

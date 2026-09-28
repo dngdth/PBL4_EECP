@@ -38,10 +38,21 @@ POLICY_VERIFICATION_KEY = os.getenv("EECP_POLICY_VERIFICATION_KEY", "").strip()
 REQUIRE_SIGNED_POLICY = os.getenv(
     "EECP_REQUIRE_SIGNED_POLICY", "true" if ENVIRONMENT == "production-like" else "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
+COMMAND_VERIFICATION_KEY = os.getenv("EECP_COMMAND_VERIFICATION_KEY", "").strip()
+REQUIRE_AUTHORIZED_COMMANDS = os.getenv(
+    "EECP_REQUIRE_AUTHORIZED_COMMANDS",
+    "true" if ENVIRONMENT == "production-like" else "false",
+).strip().lower() in {"1", "true", "yes", "on"}
 POLICY_STATE_PATH = Path(
     os.getenv(
         "EECP_POLICY_STATE_PATH",
         str(Path(os.getenv("LOCALAPPDATA", "data")) / "EECP" / "policy-state.json"),
+    )
+)
+COMMAND_REPLAY_PATH = Path(
+    os.getenv(
+        "EECP_COMMAND_REPLAY_PATH",
+        str(POLICY_STATE_PATH.with_name("command-replay.json")),
     )
 )
 

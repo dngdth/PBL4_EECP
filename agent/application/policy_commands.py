@@ -73,6 +73,10 @@ class PolicyCommandProcessor:
                 command_type,
                 payload,
                 correlation_id=command.get("correlation_id"),
+                target_id=command.get("target_id"),
+                issued_at=command.get("issued_at"),
+                deadline=command.get("deadline"),
+                authorization=command.get("authorization"),
             )
             result = self._privileged_executor.execute(request)
             if result.status != AckStatus.SUCCEEDED:
@@ -126,6 +130,10 @@ class PolicyCommandProcessor:
         payload: dict[str, Any],
         *,
         correlation_id: object = None,
+        target_id: object = None,
+        issued_at: object = None,
+        deadline: object = None,
+        authorization: object = None,
     ) -> ServiceRequest:
         try:
             operation = CommandType(command_type)
@@ -185,4 +193,8 @@ class PolicyCommandProcessor:
             policy_hash=policy_hash,
             payload=service_payload,
             correlation_id=preserved_correlation_id,
+            target_id=target_id if isinstance(target_id, str) else None,
+            issued_at=issued_at,
+            deadline=deadline,
+            authorization=authorization if isinstance(authorization, str) else None,
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from pydantic import ValidationError
@@ -65,4 +66,8 @@ async def agent_websocket(websocket: WebSocket) -> None:
         if agent_id is not None:
             removed = await state.connections.disconnect(agent_id, websocket)
             if removed:
-                await state.router.agent_disconnected(agent_id)
+                # Disconnect is already authoritative in the local registry. Presence is
+                # best-effort and must not turn bounded uplink backpressure into an ASGI
+                # teardown failure.
+                with suppress(OSError):
+                    await state.router.agent_disconnected(agent_id)

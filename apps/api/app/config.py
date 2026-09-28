@@ -53,6 +53,7 @@ class Settings:
                     settings.examiner_password_hash,
                     settings.gateway_credentials_json,
                     os.getenv("EECP_POLICY_SIGNING_KEY", "").strip(),
+                    os.getenv("EECP_COMMAND_SIGNING_KEY", "").strip(),
                 )
             ):
                 raise ValueError(
@@ -68,6 +69,9 @@ class Settings:
                 "EECP_AUTH_SIGNING_KEY": settings.auth_signing_key,
                 "EECP_EXAMINER_PASSWORD_HASH": settings.examiner_password_hash,
                 "EECP_POLICY_SIGNING_KEY": os.getenv("EECP_POLICY_SIGNING_KEY", "").strip(),
+                "EECP_COMMAND_SIGNING_KEY": os.getenv(
+                    "EECP_COMMAND_SIGNING_KEY", ""
+                ).strip(),
             }
             for name, value in secrets.items():
                 if _is_insecure_development_secret(value):

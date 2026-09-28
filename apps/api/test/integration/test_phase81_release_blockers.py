@@ -223,6 +223,7 @@ def test_production_settings_reject_development_secrets(monkeypatch) -> None:
         "EECP_EXAMINER_PASSWORD_HASH": "pbkdf2-sha256$00$11",
         "EECP_GATEWAY_CREDENTIALS_JSON": ('{"GW-A":{"secret_sha256":"' + "a" * 64 + '"}}'),
         "EECP_POLICY_SIGNING_KEY": "a-secure-policy-key-that-is-long-enough",
+        "EECP_COMMAND_SIGNING_KEY": "a-secure-command-key-that-is-long-enough",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -241,6 +242,7 @@ def test_production_settings_reject_development_secrets(monkeypatch) -> None:
         "EECP_EXAMINER_PASSWORD_HASH",
         "EECP_GATEWAY_CREDENTIALS_JSON",
         "EECP_POLICY_SIGNING_KEY",
+        "EECP_COMMAND_SIGNING_KEY",
     ],
 )
 def test_production_settings_reject_missing_required_configuration(
@@ -256,6 +258,7 @@ def test_production_settings_reject_missing_required_configuration(
         "EECP_EXAMINER_PASSWORD_HASH": "pbkdf2-sha256$00$11",
         "EECP_GATEWAY_CREDENTIALS_JSON": ('{"GW-A":{"secret_sha256":"' + "a" * 64 + '"}}'),
         "EECP_POLICY_SIGNING_KEY": "a-secure-policy-key-that-is-long-enough",
+        "EECP_COMMAND_SIGNING_KEY": "a-secure-command-key-that-is-long-enough",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)

@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Request, status
 
 from app.application.dtos.agents import RegisterAgentInput
+from app.application.security import Permission
 from app.presentation.api.deps import (
     HeartbeatAgentUseCase,
     ListAgentsUseCase,
     RegisterAgentUseCase,
+    authorize,
 )
 from app.presentation.schemas.agents import AgentView, RegisterAgentRequest
 
@@ -41,6 +43,7 @@ def heartbeat_agent(
 
 @router.get("", response_model=list[AgentView])
 def list_agents(use_case: ListAgentsUseCase, request: Request) -> list[AgentView]:
+    authorize(request, Permission.VIEW_AGENT)
     values = []
     latest_by_agent = {}
     with request.app.state.container.database.unit_of_work() as uow:

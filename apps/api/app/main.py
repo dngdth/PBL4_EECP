@@ -59,12 +59,12 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def authenticate_examiner(request: Request, call_next):
+        examiner_api = request.url.path.startswith(
+            ("/api/v1", "/api/v2/gateways")
+        )
         if (
-            settings.environment != "production-like"
-            or not (
-                request.url.path.startswith("/api/v1")
-                or request.url.path == "/api/v2/gateways"
-            )
+            request.app.state.settings.environment != "production-like"
+            or not examiner_api
             or request.url.path == "/api/v1/auth/login"
         ):
             return await call_next(request)

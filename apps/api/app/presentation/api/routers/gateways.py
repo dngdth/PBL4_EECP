@@ -12,11 +12,13 @@ from app.application.dtos.agents import RegisterAgentInput
 from app.application.dtos.exam_pipeline import TelemetryInput
 from app.application.dtos.gateways import BindAgentToGatewayInput, RegisterGatewayInput
 from app.application.dtos.policies import AcknowledgeCommandInput
+from app.application.security import Permission
 from app.domain.entities.gateway import GatewayStatus
 from app.domain.entities.operations import Command as DomainCommand
 from app.domain.exceptions.errors import DomainError
 from app.domain.value_objects.enums import Severity
 from app.infrastructure.security import MachineCredentialRegistry
+from app.presentation.api.deps import authorize
 from contracts.v2 import (
     Ack,
     AckStatus,
@@ -38,6 +40,7 @@ from contracts.v2 import (
     Presence,
     PresenceHealth,
     RestoreBaselinePayload,
+    compute_command_authorization,
     compute_policy_signature,
 )
 
@@ -46,6 +49,7 @@ router = APIRouter(prefix="/api/v2/gateways", tags=["gateways"])
 
 @router.get("")
 def list_gateways(request: Request) -> list[dict]:
+    authorize(request, Permission.VIEW_AGENT)
     values = []
     for gateway in request.app.state.container.list_gateways():
         presence = request.app.state.presence.get_gateway(gateway.id) or {}
@@ -72,6 +76,7 @@ def list_gateways(request: Request) -> list[dict]:
 def resolve_agent_gateway(
     agent_id: str, request: Request
 ) -> dict | None:
+    authorize(request, Permission.VIEW_AGENT)
     binding = request.app.state.container.resolve_gateway_for_agent(agent_id)
     if binding is None:
         return None
@@ -354,6 +359,23 @@ def _to_contract_command(command: DomainCommand) -> Command:
     else:
         payload = HealthCheckPayload(nonce=command.id)
         policy_hash = None
+    command_fields = {
+        "protocol_version": 2,
+        "command_id": command.id,
+        "operation": operation,
+        "session_id": command.session_id,
+        "target_id": command.target_id,
+        "policy_hash": policy_hash,
+        "issued_at": command.created_at,
+        "deadline": command.expires_at or command.created_at,
+        "correlation_id": command.id,
+    }
+    command_signing_key = os.getenv("EECP_COMMAND_SIGNING_KEY", "").strip()
+    authorization = (
+        compute_command_authorization(command_signing_key, **command_fields)
+        if command_signing_key and operation != CommandType.HEALTH_CHECK
+        else None
+    )
     return Command(
         protocol_version=2,
         command_id=command.id,
@@ -365,6 +387,7 @@ def _to_contract_command(command: DomainCommand) -> Command:
         policy_hash=policy_hash,
         payload=payload,
         correlation_id=command.id,
+        authorization=authorization,
     )
 
 

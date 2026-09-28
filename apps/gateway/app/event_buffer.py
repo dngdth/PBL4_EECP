@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,7 +47,7 @@ class EventBuffer:
         self.degraded_threshold = degraded_threshold
         self._lock = threading.Lock()
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS gateway_events (
@@ -80,7 +81,7 @@ class EventBuffer:
         event = Event.model_validate(envelope.payload)
         at = now or datetime.now(UTC)
         encoded = envelope.to_json()
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection:
             existing = connection.execute(
                 "SELECT envelope_json FROM gateway_events WHERE event_id = ?",
                 (event.event_id,),
@@ -119,7 +120,7 @@ class EventBuffer:
             return True
 
     def due(self, now: datetime, limit: int) -> tuple[BufferedEvent, ...]:
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM gateway_events
@@ -132,7 +133,7 @@ class EventBuffer:
         return tuple(self._from_row(row) for row in rows)
 
     def mark_in_flight(self, event_id: str, next_attempt_at: datetime) -> None:
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection:
             connection.execute(
                 """
                 UPDATE gateway_events
@@ -147,7 +148,7 @@ class EventBuffer:
     def schedule_retry(
         self, event_id: str, next_attempt_at: datetime, error: str
     ) -> None:
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection:
             connection.execute(
                 """
                 UPDATE gateway_events
@@ -160,14 +161,14 @@ class EventBuffer:
             connection.commit()
 
     def complete(self, event_id: str, at: datetime) -> None:
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection:
             connection.execute("DELETE FROM gateway_events WHERE event_id = ?", (event_id,))
             self._set_meta(connection, "last_flush_success_at", at.isoformat())
             self._set_meta(connection, "last_flush_error", None)
             connection.commit()
 
     def mark_terminal(self, event_id: str, error: str) -> None:
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection:
             connection.execute(
                 """
                 UPDATE gateway_events
@@ -183,12 +184,12 @@ class EventBuffer:
         query = "SELECT COUNT(*) FROM gateway_events"
         if not include_terminal:
             query += " WHERE state IN ('PENDING', 'IN_FLIGHT')"
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection:
             return int(connection.execute(query).fetchone()[0])
 
     def health(self, now: datetime | None = None) -> EventBufferHealth:
         at = now or datetime.now(UTC)
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection:
             pending, oldest = connection.execute(
                 """
                 SELECT COUNT(*), MIN(created_at) FROM gateway_events

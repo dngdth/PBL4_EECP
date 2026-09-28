@@ -365,4 +365,8 @@ def _legacy_command(command: Command) -> dict[str, Any]:
         "type": command.command_type.value,
         "payload": legacy_payload,
         "correlation_id": command.correlation_id,
+        "target_id": command.target_id,
+        "issued_at": command.issued_at,
+        "deadline": command.deadline,
+        "authorization": command.authorization,
     }

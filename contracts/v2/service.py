@@ -5,6 +5,7 @@ from pydantic import model_validator
 from contracts.v2.ack import AckStatus
 from contracts.v2.command import (
     ApplyPolicyPayload,
+    CommandAuthorization,
     CommandPayload,
     CommandType,
     HealthCheckPayload,
@@ -22,6 +23,10 @@ class ServiceRequest(VersionedContract):
     policy_hash: Sha256Hex | None = None
     payload: CommandPayload
     correlation_id: OpaqueId
+    target_id: OpaqueId | None = None
+    issued_at: UtcDatetime | None = None
+    deadline: UtcDatetime | None = None
+    authorization: CommandAuthorization | None = None
 
     @model_validator(mode="after")
     def validate_operation_payload(self) -> ServiceRequest:

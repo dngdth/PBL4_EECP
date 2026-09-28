@@ -7,14 +7,18 @@ from functools import partial
 
 from agent.config import (
     AGENT_VERSION,
+    COMMAND_REPLAY_PATH,
+    COMMAND_VERIFICATION_KEY,
     GATEWAY_URL,
     IPC_MAX_MESSAGE_BYTES,
     IPC_PIPE_NAME,
     POLICY_MODE,
     POLICY_STATE_PATH,
     POLICY_VERIFICATION_KEY,
+    REQUIRE_AUTHORIZED_COMMANDS,
     REQUIRE_SIGNED_POLICY,
     SERVICE_MAINTENANCE_INTERVAL_SECONDS,
+    load_agent_id,
 )
 from agent.infrastructure.policy_enforcement import WindowsPolicyEnforcer
 from agent.infrastructure.windows.firewall_enforcer import (
@@ -43,6 +47,10 @@ def build_service_runtime() -> AgentServiceRuntime:
         windows_factory=windows_factory,
         policy_verification_key=POLICY_VERIFICATION_KEY,
         require_signed_policy=REQUIRE_SIGNED_POLICY,
+        command_verification_key=COMMAND_VERIFICATION_KEY,
+        require_authorized_commands=REQUIRE_AUTHORIZED_COMMANDS,
+        command_target_id=load_agent_id() if REQUIRE_AUTHORIZED_COMMANDS else "",
+        replay_path=COMMAND_REPLAY_PATH,
     )
 
 
@@ -85,6 +93,14 @@ def main(argv: Sequence[str] | None = None) -> None:
                 policy_mode=POLICY_MODE,
                 state_path=POLICY_STATE_PATH,
                 service_version=AGENT_VERSION,
+                policy_verification_key=POLICY_VERIFICATION_KEY,
+                require_signed_policy=REQUIRE_SIGNED_POLICY,
+                command_verification_key=COMMAND_VERIFICATION_KEY,
+                require_authorized_commands=REQUIRE_AUTHORIZED_COMMANDS,
+                command_target_id=(
+                    load_agent_id() if REQUIRE_AUTHORIZED_COMMANDS else ""
+                ),
+                replay_path=COMMAND_REPLAY_PATH,
             )
             print(
                 f"component=agent-service status=config-valid "

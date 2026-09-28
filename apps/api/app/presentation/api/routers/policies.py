@@ -32,7 +32,10 @@ router = APIRouter(prefix="/api/v1", tags=["policies"])
 
 
 @router.get("/policy-profiles", response_model=list[PolicyProfileView])
-def policy_profiles(use_case: ListPolicyProfilesUseCase) -> list[PolicyProfileView]:
+def policy_profiles(
+    use_case: ListPolicyProfilesUseCase, request: Request
+) -> list[PolicyProfileView]:
+    authorize(request, Permission.VIEW_SESSION)
     return [_policy_profile_view(profile) for profile in use_case()]
 
 
@@ -81,8 +84,9 @@ def delete_policy_profile(
 
 @router.get("/agents/{target_id}/commands", response_model=list[CommandView])
 def pending_commands(
-    target_id: str, use_case: GetPendingCommandsUseCase
+    target_id: str, use_case: GetPendingCommandsUseCase, request: Request
 ) -> list[CommandView]:
+    authorize(request, Permission.CONTROL_AGENT)
     return [_command_view(command) for command in use_case(target_id)]
 
 
@@ -91,7 +95,9 @@ def acknowledge_command(
     command_id: str,
     body: AcknowledgeCommandRequest,
     use_case: AcknowledgeCommandUseCase,
+    request: Request,
 ) -> SessionView:
+    authorize(request, Permission.CONTROL_AGENT)
     session = use_case(
         AcknowledgeCommandInput(command_id=command_id, **body.model_dump())
     )

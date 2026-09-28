@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Callable
 from enum import StrEnum
@@ -72,6 +73,10 @@ class AgentServiceRuntime:
         windows_factory: EnforcerFactory = WindowsPolicyEnforcer,
         policy_verification_key: str = "",
         require_signed_policy: bool = False,
+        command_verification_key: str = "",
+        require_authorized_commands: bool = False,
+        command_target_id: str = "",
+        replay_path: Path | None = None,
     ) -> AgentServiceRuntime:
         if policy_mode == "audit":
             enforcer = audit_factory(state_path)
@@ -80,12 +85,19 @@ class AgentServiceRuntime:
         else:
             raise ValueError("EECP_POLICY_MODE must be 'enforce' or 'audit'")
         privileged_executor = InProcessPrivilegedExecutor(enforcer, service_version)
+        active_policy_hash, active_session_id = _load_active_policy_state(state_path)
         execution_service = ExecutionService(
             privileged_executor,
             service_version=service_version,
             replay_capacity=replay_capacity,
             policy_verification_key=policy_verification_key,
             require_signed_policy=require_signed_policy,
+            command_verification_key=command_verification_key,
+            require_authorized_commands=require_authorized_commands,
+            command_target_id=command_target_id,
+            replay_path=replay_path,
+            active_policy_hash=active_policy_hash,
+            active_session_id=active_session_id,
         )
         return cls(
             enforcer,
@@ -156,3 +168,19 @@ class AgentServiceRuntime:
                 self._maintenance_error = None
             except (OSError, ValueError) as exc:
                 self._maintenance_error = str(exc)[:500]
+
+
+def _load_active_policy_state(path: Path) -> tuple[str | None, str | None]:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise OSError(f"cannot read EECP policy state: {exc}") from exc
+    if not isinstance(state, dict):
+        raise OSError("EECP policy state is invalid")
+    policy_hash = state.get("policy_hash")
+    session_id = state.get("session_id")
+    if not isinstance(policy_hash, str) or not isinstance(session_id, str):
+        raise OSError("EECP active policy identity is invalid")
+    return policy_hash, session_id

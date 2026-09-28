@@ -56,6 +56,9 @@ class GatewayHealth(VersionedContract):
     last_flush_success_at: UtcDatetime | None = None
     last_flush_error: str | None = None
     buffer_status: PresenceHealth | None = None
+    outbound_queue_depth: int | None = Field(default=None, strict=True, ge=0)
+    outbound_queue_capacity: int | None = Field(default=None, strict=True, ge=1)
+    outbound_queue_saturation_count: int | None = Field(default=None, strict=True, ge=0)
 
 
 class AgentHello(VersionedContract):

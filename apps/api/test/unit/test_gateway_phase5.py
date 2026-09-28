@@ -301,3 +301,44 @@ def test_gateway_backend_uplink_reconnects_after_backend_restart() -> None:
         return 3
 
     asyncio.run(scenario())
+
+
+def test_gateway_backend_uplink_queue_overflow_is_explicit() -> None:
+    async def scenario() -> None:
+        settings = GatewaySettings(
+            gateway_id="GW-A",
+            room_id="LAB-A",
+            version="1.0.0",
+            listen_host="127.0.0.1",
+            listen_port=8443,
+            tls_certfile=None,
+            tls_keyfile=None,
+            backend_ws_url="ws://backend/api/v2/gateways/ws",
+            gateway_bootstrap_token="gateway-token",
+            agent_bootstrap_token="agent-token",
+            allow_plaintext_ws=True,
+            reconnect_initial_seconds=0.01,
+            reconnect_max_seconds=0.02,
+            presence_timeout_seconds=15,
+            health_interval_seconds=1,
+            backend_queue_max_messages=1,
+        )
+        uplink = BackendUplink(
+            settings,
+            lambda _message: asyncio.sleep(0),
+            lambda: asyncio.sleep(0),
+            lambda: asyncio.sleep(0, result=0),
+        )
+        envelope = _command_envelope()
+
+        await uplink.send(envelope)
+        with pytest.raises(OSError, match="queue is full; message was not retained"):
+            await uplink.send(envelope)
+
+        assert uplink._outbound.maxsize == 1
+        assert uplink._outbound.qsize() == 1
+        assert uplink.outbound_queue_depth == 1
+        assert uplink.outbound_queue_capacity == 1
+        assert uplink.queue_saturation_count == 1
+
+    asyncio.run(scenario())

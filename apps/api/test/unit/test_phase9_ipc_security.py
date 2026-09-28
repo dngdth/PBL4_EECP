@@ -257,11 +257,17 @@ def test_corrupt_replay_journal_fails_closed(tmp_path: Path) -> None:
         _service(RecordingExecutor(), journal)
 
 
-def test_agent_client_has_no_command_signing_capability() -> None:
+def test_agent_client_and_gateway_have_no_command_signing_capability() -> None:
     root = Path(__file__).parents[4]
     client_sources = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (root / "agent" / "client").rglob("*.py")
     )
+    gateway_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (root / "apps" / "gateway").rglob("*.py")
+    )
     assert "EECP_COMMAND_SIGNING_KEY" not in client_sources
     assert "compute_command_authorization" not in client_sources
+    assert "EECP_COMMAND_SIGNING_KEY" not in gateway_sources
+    assert "compute_command_authorization" not in gateway_sources

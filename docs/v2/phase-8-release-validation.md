@@ -35,7 +35,13 @@ Agent views expose the actual Agent/presence status, service health, active poli
 
 ## Production configuration
 
-Production-like Backend startup requires PostgreSQL, Redis, authentication material, per-Gateway credentials and the policy signing key. Known development secrets and placeholders are rejected. Production-like Gateway startup requires WSS, TLS listener files, per-Agent credentials and non-development bootstrap secrets; plaintext opt-in is rejected.
+Production-like Backend startup requires PostgreSQL, Redis, authentication material,
+per-Gateway credentials, the policy signing key, and the privileged-command signing
+key. Known development secrets and placeholders are rejected. The privileged Agent
+Service receives the matching policy/command verification material; neither key is
+configured on the normal-user Client or Gateway. Production-like Gateway startup
+requires WSS, TLS listener files, per-Agent credentials and non-development bootstrap
+secrets; plaintext opt-in is rejected.
 
 ## HMAC security review
 

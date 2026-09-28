@@ -47,6 +47,7 @@ class BackendUplink:
         self._outbound: asyncio.Queue[GatewayEnvelope] = asyncio.Queue(
             maxsize=settings.backend_queue_max_messages
         )
+        self._queue_saturation_count = 0
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self.status = PresenceHealth.OFFLINE
@@ -68,7 +69,20 @@ class BackendUplink:
         try:
             self._outbound.put_nowait(envelope)
         except asyncio.QueueFull as exc:
+            self._queue_saturation_count += 1
             raise OSError("Gateway uplink queue is full; message was not retained") from exc
+
+    @property
+    def outbound_queue_depth(self) -> int:
+        return self._outbound.qsize()
+
+    @property
+    def outbound_queue_capacity(self) -> int:
+        return self._outbound.maxsize
+
+    @property
+    def queue_saturation_count(self) -> int:
+        return self._queue_saturation_count
 
     async def _run(self) -> None:
         delay = self._settings.reconnect_initial_seconds
@@ -148,7 +162,11 @@ class BackendUplink:
             protocol_version=2,
             gateway_id=self._settings.gateway_id,
             room_id=self._settings.room_id,
-            status=PresenceHealth.ONLINE,
+            status=(
+                PresenceHealth.DEGRADED
+                if self._queue_saturation_count
+                else PresenceHealth.ONLINE
+            ),
             last_seen=datetime.now(UTC),
             connected_agent_count=connected_agent_count,
             backend_uplink_status=PresenceHealth.ONLINE,
@@ -157,6 +175,9 @@ class BackendUplink:
             last_flush_success_at=fields.get("last_flush_success_at"),
             last_flush_error=fields.get("last_flush_error"),
             buffer_status=fields.get("buffer_status"),
+            outbound_queue_depth=self.outbound_queue_depth,
+            outbound_queue_capacity=self.outbound_queue_capacity,
+            outbound_queue_saturation_count=self.queue_saturation_count,
         )
         return GatewayEnvelope(
             protocol_version=2,

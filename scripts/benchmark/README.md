@@ -8,6 +8,7 @@ exit. It does not modify Windows policy or production databases.
 ```powershell
 uv run python scripts/benchmark/run.py --agents 100 --output artifacts/benchmark-100.json
 uv run python scripts/benchmark/run.py --agents 500 --scenario command
+uv run python scripts/benchmark/run.py --agents 500 --scenario command --queue-max-messages 4096
 uv run python scripts/benchmark/run.py --agents 500 --scenario wan
 uv run python scripts/benchmark/run.py --agents 100 --scenario soak --duration 180
 uv run python scripts/benchmark/run.py --agents 50 --measure-memory

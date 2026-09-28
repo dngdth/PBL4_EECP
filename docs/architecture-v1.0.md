@@ -1,11 +1,30 @@
 # EECP Architecture Specification v1.0 (Enhanced Baseline)
 **Enterprise Exam Control & Proctoring Platform**
 
-> **TARGET / PLANNED EECP v2 — NOT CURRENT IMPLEMENTATION.** The current Phase 0
-> implementation is documented in `docs/v2/phase-0-baseline.md`. In particular,
-> the repository does not currently implement a Local Gateway, WebSocket/gRPC
-> transport, PostgreSQL, Redis, a split Agent Client/Windows Service, or Windows
-> Firewall enforcement.
+> **HISTORICAL TARGET ARCHITECTURE.** This document records the original target
+> and includes future ideas which are not necessarily implemented. For release
+> truth use `docs/v2/final-implementation-matrix.md` and the Phase 9 documents.
+
+## Current implementation status (Phase 9)
+
+Implemented now: Protocol v2; FastAPI Backend authority; PostgreSQL business
+persistence; Redis ephemeral presence; authenticated WSS through a Local Gateway;
+Gateway-local SQLite durable Event buffering/retry/dedupe; normal-user Agent Client
+sensors; Named Pipe boundary; LocalSystem Agent Service; hosts, outbound Windows
+Firewall IP/CIDR, process, and USB enforcement; HTTP authentication/RBAC; machine
+credentials; signed policy and privileged command verification; persistent Service
+replay protection; Docker images; and TLS/WSS configuration.
+
+Still target/future or pending validation: custom WFP/kernel drivers, global key
+hooks, Task Manager suppression, Agent-local durable event queue, multi-instance
+HA, broker-based scaling, full PKI/asymmetric command signing, and the unmeasured
+2,000/5,000-Agent targets. Real SCM/LocalSystem, Named Pipe ACL, and OS enforcement
+lifecycle validation remains pending on an isolated elevated Windows VM. The
+implemented route is:
+
+```text
+Dashboard -> Backend -> Local Gateway -> Agent Client -> Named Pipe -> Agent Service
+```
 
 ---
 

@@ -320,10 +320,17 @@ class SimulatedAgent:
 
 
 class Benchmark:
-    def __init__(self, agents: int, events_per_agent: int, timeout: float):
+    def __init__(
+        self,
+        agents: int,
+        events_per_agent: int,
+        timeout: float,
+        queue_max_messages: int,
+    ):
         self.count = agents
         self.events_per_agent = events_per_agent
         self.timeout = timeout
+        self.queue_max_messages = queue_max_messages
         self.gateway_id = "GW-BENCH"
         self.agent_token = "benchmark-agent-credential"
         self.backend = FakeBackend(self.gateway_id)
@@ -331,6 +338,7 @@ class Benchmark:
         self.gateway_port = _free_port()
         self.backend_server = None
         self.gateway_server: uvicorn.Server | None = None
+        self.gateway_app = None
         self.gateway_task: asyncio.Task[None] | None = None
         self.temporary = tempfile.TemporaryDirectory(prefix="eecp-benchmark-")
         self.event_buffer: EventBuffer | None = None
@@ -364,15 +372,16 @@ class Benchmark:
             event_flush_interval_seconds=0.05,
             event_flush_batch_size=50,
             environment="development",
-            backend_queue_max_messages=4096,
+            backend_queue_max_messages=self.queue_max_messages,
         )
         self.event_buffer = EventBuffer(
             settings.event_buffer_path,
             max_rows=settings.event_buffer_max_rows,
             degraded_threshold=settings.event_buffer_degraded_threshold,
         )
+        self.gateway_app = create_app(settings, event_buffer=self.event_buffer)
         config = uvicorn.Config(
-            create_app(settings, event_buffer=self.event_buffer),
+            self.gateway_app,
             host="127.0.0.1",
             port=self.gateway_port,
             log_level="error",
@@ -634,7 +643,12 @@ class Benchmark:
 
 
 async def _run(args: argparse.Namespace) -> list[Result]:
-    benchmark = Benchmark(args.agents, args.events_per_agent, args.timeout)
+    benchmark = Benchmark(
+        args.agents,
+        args.events_per_agent,
+        args.timeout,
+        args.queue_max_messages,
+    )
     results: list[Result] = []
     if args.measure_memory:
         tracemalloc.start()
@@ -667,6 +681,10 @@ async def _run(args: argparse.Namespace) -> list[Result]:
             peak_mib = round(peak / 1024 / 1024, 3)
         for result in results:
             result.gateway_python_peak_mib = peak_mib
+            if benchmark.gateway_app is not None:
+                result.queue_saturation_count = (
+                    benchmark.gateway_app.state.uplink.queue_saturation_count
+                )
             result.wrong_target_count = max(
                 result.wrong_target_count,
                 sum(agent.wrong_target_count for agent in benchmark.agents),
@@ -690,11 +708,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--events-per-agent", type=int, default=1)
     parser.add_argument("--duration", type=float, default=120.0)
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--queue-max-messages", type=int, default=4096)
     parser.add_argument("--measure-memory", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
-    if args.agents < 1 or args.events_per_agent < 1 or args.duration <= 0:
-        parser.error("agents, events-per-agent, and duration must be positive")
+    if (
+        args.agents < 1
+        or args.events_per_agent < 1
+        or args.duration <= 0
+        or args.queue_max_messages < 1
+    ):
+        parser.error("agents, events-per-agent, duration, and queue limit must be positive")
     if not args.scenario:
         args.scenario = ["all"]
     started = datetime.now(UTC)
@@ -712,6 +736,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             "agents": args.agents,
             "scenarios": args.scenario,
             "events_per_agent": args.events_per_agent,
+            "gateway_backend_queue_max_messages": args.queue_max_messages,
         },
         "results": [asdict(result) for result in results],
     }

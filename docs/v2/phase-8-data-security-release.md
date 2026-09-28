@@ -1,5 +1,11 @@
 # Phase 8 — Data, Security, Frontend & Release
 
+> **Validation status superseded.** The implementation description remains
+> historical Phase 8 design evidence. Its original external-service blockers were
+> resolved and validated in `docs/v2/phase-8-release-validation.md` (Phase 8.1).
+> Use that document, not the closing Phase 8 snapshot below, for PostgreSQL,
+> Redis, Docker, TLS, and WSS validation status.
+
 ## 1. Goals
 
 Move production-like business persistence to PostgreSQL, use Redis only for

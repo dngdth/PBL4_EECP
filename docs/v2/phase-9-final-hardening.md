@@ -65,3 +65,63 @@ external-service tests were skipped, and nine deprecation warnings were reported
 The remaining sections of this document are completed after implementation and
 measurement. Phase 9 preserves Protocol v2, the Local Gateway topology, Backend
 authority, the Named Pipe boundary, and Service-owned enforcement.
+
+## Completed hardening
+
+- HTTP production-like authentication is prefix-aware for `/api/v1/*` and
+  `/api/v2/gateways*`; `/health` remains intentionally anonymous. Router boundaries
+  state RBAC permissions and Session scope.
+- Backend HMAC authorization now covers command ID, operation, Session, target,
+  policy hash, issued/deadline timestamps, and correlation ID. The Gateway routes
+  it transparently and the Client cannot create it.
+- The Service verifies command proof, target, expiry, and active Session before
+  APPLY/RESTORE. Policy signatures remain a separate content authorization.
+- A bounded atomic replay journal survives Service reconstruction, returns cached
+  results for identical duplicate commands, and rejects conflicting duplicates.
+- Gateway WebSocket child tasks and SQLite connections are deterministically closed.
+  Disconnect presence reporting remains best-effort under explicit backpressure.
+- The Gateway uplink queue remains bounded/configurable and fails explicitly. Its
+  measured default changed from 1,000 to 4,096 after the former saturated during a
+  500-Agent HELLO/ONLINE burst.
+
+## Validation summary
+
+The repeatable Phase 9 security suites cover unauthenticated operational paths,
+wrong role/scope, forged/tampered/expired/wrong-session commands, policy proof,
+and replay after Service recreation. Full Python regression, Ruff, frontend lint
+and build are release gates. External PostgreSQL, Redis, Docker, and TLS/WSS status
+is tracked by Phase 8.1 and the final run report.
+
+Measured benchmark facts are in `phase-9-benchmark.md`: 500 Agents are the highest
+repeatably stable control-plane result. Two 1,000-Agent attempts were inconsistent
+(one reconnect lost 427 connections, one reached 1,000/1,000), so 1,000 is not
+claimed stable. 100 is the highest stable Event workload and 250 Events timed out
+at 180 seconds. These limits are not hidden or described as targets achieved.
+
+## Release status
+
+Implementation and cross-platform evidence can reach **READY FOR WINDOWS TARGET
+VALIDATION**, not release-ready. An isolated elevated Windows VM must still execute
+`scripts/windows/validate-release.ps1 -ConfirmIsolatedTestMachine` and validate SCM
+LocalSystem, real Named Pipe ACL, hosts/Firewall/process/USB behavior, Client kill,
+maintenance, recovery, and exact restore. Phase 10 is outside this document.
+
+## Final evidence — 2026-09-28
+
+- Full regression: 289 collected; 287 passed, two external-service tests skipped
+  by default, ten warnings. The skipped PostgreSQL/Redis tests were then run against
+  isolated PostgreSQL 17/Redis 7.4 containers and both passed.
+- Phase 9 HTTP/command security plus Gateway tests: 27 passed. Named Pipe/Firewall
+  targeted regression: 15 passed. Release vertical/reliability E2E: 11 passed on
+  each of three consecutive runs.
+- Ruff: passed. Frontend TypeScript lint and Vite production build: passed. NPM
+  production dependency audit: zero known vulnerabilities after compatible lockfile
+  updates.
+- API, Gateway, and Web Docker images built from final source. Web/Nginx served the
+  SPA in its expected `api` network context. Compose interpolation/config passed.
+- Ephemeral trusted HTTPS returned 200; the same self-signed endpoint was rejected
+  without its CA, and trusted WSS completed a real handshake. Temporary certificate
+  material was removed after validation.
+- The Windows validation script parses, but this host is not elevated or isolated.
+  Real SCM/LocalSystem/OS mutation remains PENDING; the verdict is **READY FOR
+  WINDOWS TARGET VALIDATION**, not release-ready.

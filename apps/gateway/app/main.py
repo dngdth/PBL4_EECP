@@ -127,10 +127,14 @@ def create_app(
     async def health() -> dict:
         connected = await connections.list_connected()
         buffer_health = actual_buffer.health() if actual_buffer is not None else None
+        queue_saturation_count = getattr(actual_uplink, "queue_saturation_count", 0)
         status_value = (
             PresenceHealth.DEGRADED
-            if buffer_health is not None
-            and buffer_health.buffer_status == PresenceHealth.DEGRADED
+            if (
+                buffer_health is not None
+                and buffer_health.buffer_status == PresenceHealth.DEGRADED
+            )
+            or queue_saturation_count > 0
             else PresenceHealth.ONLINE
         )
         value = GatewayHealth(
@@ -158,6 +162,11 @@ def create_app(
                 if buffer_health is not None
                 else PresenceHealth.ONLINE
             ),
+            outbound_queue_depth=getattr(actual_uplink, "outbound_queue_depth", None),
+            outbound_queue_capacity=getattr(
+                actual_uplink, "outbound_queue_capacity", None
+            ),
+            outbound_queue_saturation_count=queue_saturation_count,
         )
         return value.model_dump(mode="json")
 

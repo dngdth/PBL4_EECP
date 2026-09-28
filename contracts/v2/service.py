@@ -30,6 +30,12 @@ class ServiceRequest(VersionedContract):
 
     @model_validator(mode="after")
     def validate_operation_payload(self) -> ServiceRequest:
+        if (
+            self.issued_at is not None
+            and self.deadline is not None
+            and self.deadline < self.issued_at
+        ):
+            raise ValueError("deadline must not be earlier than issued_at")
         expected_payload = {
             CommandType.APPLY_POLICY: ApplyPolicyPayload,
             CommandType.RESTORE_BASELINE: RestoreBaselinePayload,

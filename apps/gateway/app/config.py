@@ -35,6 +35,7 @@ class GatewaySettings:
     event_flush_batch_size: int = 50
     agent_credentials_json: str = ""
     environment: str = "development"
+    backend_queue_max_messages: int = 4096
 
     @classmethod
     def from_env(cls) -> GatewaySettings:
@@ -88,6 +89,9 @@ class GatewaySettings:
             event_flush_batch_size=int(os.getenv("EECP_GATEWAY_EVENT_FLUSH_BATCH_SIZE", "50")),
             agent_credentials_json=os.getenv("EECP_AGENT_CREDENTIALS_JSON", "").strip(),
             environment=os.getenv("EECP_ENVIRONMENT", "development").strip().lower(),
+            backend_queue_max_messages=int(
+                os.getenv("EECP_GATEWAY_BACKEND_QUEUE_MAX_MESSAGES", "4096")
+            ),
         )
         settings.validate()
         return settings
@@ -135,6 +139,8 @@ class GatewaySettings:
             raise ValueError("Gateway event retry jitter ratio is invalid")
         if self.event_flush_interval_seconds <= 0 or self.event_flush_batch_size <= 0:
             raise ValueError("Gateway event flush settings must be positive")
+        if self.backend_queue_max_messages <= 0:
+            raise ValueError("Gateway Backend queue limit must be positive")
 
 
 def _required_env(name: str) -> str:

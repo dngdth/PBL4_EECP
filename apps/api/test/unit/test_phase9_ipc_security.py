@@ -152,6 +152,25 @@ def test_tampered_restore_and_wrong_session_are_rejected() -> None:
     assert executor.requests == []
 
 
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"session_id": "SES-TAMPERED"},
+        {"target_id": "AGT-002"},
+        {"operation": CommandType.APPLY_POLICY},
+        {"deadline": NOW + timedelta(minutes=6)},
+        {"correlation_id": "CORR-TAMPERED"},
+        {"policy_hash": "b" * 64},
+    ],
+)
+def test_each_authorized_restore_field_is_bound_against_tampering(update) -> None:
+    executor = RecordingExecutor()
+    result = _service(executor).handle(_request().model_copy(update=update))
+    assert result.status == AckStatus.REJECTED
+    assert result.error_code in {ErrorCode.INVALID_COMMAND, ErrorCode.TARGET_MISMATCH}
+    assert executor.requests == []
+
+
 def test_expired_privileged_command_is_rejected() -> None:
     executor = RecordingExecutor()
     result = _service(executor).handle(
@@ -162,6 +181,22 @@ def test_expired_privileged_command_is_rejected() -> None:
     )
     assert result.error_code == ErrorCode.COMMAND_EXPIRED
     assert executor.requests == []
+
+
+def test_service_request_rejects_deadline_before_issue_time() -> None:
+    with pytest.raises(ValueError, match="deadline"):
+        _request().model_copy(
+            update={
+                "issued_at": NOW,
+                "deadline": NOW - timedelta(seconds=1),
+            }
+        ).model_validate(
+            {
+                **_request().model_dump(),
+                "issued_at": NOW,
+                "deadline": NOW - timedelta(seconds=1),
+            }
+        )
 
 
 def test_privileged_replay_survives_service_restart(tmp_path: Path) -> None:

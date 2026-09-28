@@ -44,7 +44,9 @@ class BackendUplink:
         self._health_fields = health_fields or (lambda: {})
         self._jitter = jitter
         self._connector = connector
-        self._outbound: asyncio.Queue[GatewayEnvelope] = asyncio.Queue(maxsize=1000)
+        self._outbound: asyncio.Queue[GatewayEnvelope] = asyncio.Queue(
+            maxsize=settings.backend_queue_max_messages
+        )
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self.status = PresenceHealth.OFFLINE

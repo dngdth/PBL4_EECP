@@ -19,13 +19,13 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-import httpx
 import uvicorn
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from apps.gateway.app.config import GatewaySettings
+from apps.gateway.app.event_buffer import EventBuffer
 from apps.gateway.app.main import create_app
 from contracts.v2 import (
     Ack,
@@ -333,6 +333,7 @@ class Benchmark:
         self.gateway_server: uvicorn.Server | None = None
         self.gateway_task: asyncio.Task[None] | None = None
         self.temporary = tempfile.TemporaryDirectory(prefix="eecp-benchmark-")
+        self.event_buffer: EventBuffer | None = None
         self.agents: list[SimulatedAgent] = []
 
     async def start(self) -> None:
@@ -363,9 +364,15 @@ class Benchmark:
             event_flush_interval_seconds=0.05,
             event_flush_batch_size=50,
             environment="development",
+            backend_queue_max_messages=4096,
+        )
+        self.event_buffer = EventBuffer(
+            settings.event_buffer_path,
+            max_rows=settings.event_buffer_max_rows,
+            degraded_threshold=settings.event_buffer_degraded_threshold,
         )
         config = uvicorn.Config(
-            create_app(settings),
+            create_app(settings, event_buffer=self.event_buffer),
             host="127.0.0.1",
             port=self.gateway_port,
             log_level="error",
@@ -541,32 +548,26 @@ class Benchmark:
             *(agent.event(10_000 + index) for index, agent in enumerate(self.agents))
         )
         sent = dict(pairs)
-        async with httpx.AsyncClient() as client:
-            await _wait_until(
-                lambda: not self.backend.connected.is_set(), self.timeout, "offline state"
-            )
-            peak = 0
-            deadline = time.monotonic() + self.timeout
-            while time.monotonic() < deadline:
-                health = (
-                    await client.get(f"http://127.0.0.1:{self.gateway_port}/health")
-                ).json()
-                peak = max(peak, int(health["pending_event_count"]))
-                if peak >= len(sent):
-                    break
-                await asyncio.sleep(0.02)
-            self.backend_server = await serve(
-                self.backend.handler, "127.0.0.1", self.backend_port, compression=None
-            )
-            await asyncio.wait_for(self.backend.connected.wait(), timeout=self.timeout)
-            flush_started = time.perf_counter()
-            while time.monotonic() < deadline + self.timeout:
-                health = (
-                    await client.get(f"http://127.0.0.1:{self.gateway_port}/health")
-                ).json()
-                if int(health["pending_event_count"]) == 0:
-                    break
-                await asyncio.sleep(0.02)
+        await _wait_until(
+            lambda: not self.backend.connected.is_set(), self.timeout, "offline state"
+        )
+        assert self.event_buffer is not None
+        peak = 0
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            peak = max(peak, self.event_buffer.health().pending_event_count)
+            if peak >= len(sent):
+                break
+            await asyncio.sleep(0.02)
+        self.backend_server = await serve(
+            self.backend.handler, "127.0.0.1", self.backend_port, compression=None
+        )
+        await asyncio.wait_for(self.backend.connected.wait(), timeout=self.timeout)
+        flush_started = time.perf_counter()
+        while time.monotonic() < deadline + self.timeout:
+            if self.event_buffer.health().pending_event_count == 0:
+                break
+            await asyncio.sleep(0.02)
         await _wait_until(
             lambda: all(key in self.backend.event_times for key in sent),
             self.timeout,
@@ -624,21 +625,19 @@ class Benchmark:
 
     async def _wait_backlog_zero(self) -> None:
         deadline = time.monotonic() + self.timeout
-        async with httpx.AsyncClient() as client:
-            while time.monotonic() < deadline:
-                response = await client.get(
-                    f"http://127.0.0.1:{self.gateway_port}/health"
-                )
-                if int(response.json()["pending_event_count"]) == 0:
-                    return
-                await asyncio.sleep(0.02)
+        assert self.event_buffer is not None
+        while time.monotonic() < deadline:
+            if self.event_buffer.health().pending_event_count == 0:
+                return
+            await asyncio.sleep(0.02)
         raise TimeoutError("timed out waiting for Gateway backlog to drain")
 
 
 async def _run(args: argparse.Namespace) -> list[Result]:
     benchmark = Benchmark(args.agents, args.events_per_agent, args.timeout)
     results: list[Result] = []
-    tracemalloc.start()
+    if args.measure_memory:
+        tracemalloc.start()
     try:
         await benchmark.start()
         connection = await benchmark.connect_agents()
@@ -662,8 +661,10 @@ async def _run(args: argparse.Namespace) -> list[Result]:
                 results.append(await benchmark.events(sequence_offset=sequence))
                 sequence += args.events_per_agent
                 await asyncio.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
-        _current, peak = tracemalloc.get_traced_memory()
-        peak_mib = round(peak / 1024 / 1024, 3)
+        peak_mib = None
+        if args.measure_memory:
+            _current, peak = tracemalloc.get_traced_memory()
+            peak_mib = round(peak / 1024 / 1024, 3)
         for result in results:
             result.gateway_python_peak_mib = peak_mib
             result.wrong_target_count = max(
@@ -671,7 +672,8 @@ async def _run(args: argparse.Namespace) -> list[Result]:
                 sum(agent.wrong_target_count for agent in benchmark.agents),
             )
     finally:
-        tracemalloc.stop()
+        if args.measure_memory:
+            tracemalloc.stop()
         await benchmark.stop()
     return results
 
@@ -688,6 +690,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--events-per-agent", type=int, default=1)
     parser.add_argument("--duration", type=float, default=120.0)
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--measure-memory", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     if args.agents < 1 or args.events_per_agent < 1 or args.duration <= 0:

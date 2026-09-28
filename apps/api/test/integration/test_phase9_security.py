@@ -8,9 +8,15 @@ from app.application.dtos.agents import RegisterAgentInput
 from app.application.dtos.gateways import RegisterGatewayInput
 from app.application.dtos.session_management import CreateExamSessionInput
 from app.application.security import Principal, Role
+from app.domain.entities.operations import Command as DomainCommand
+from app.domain.value_objects.enums import CommandType as DomainCommandType
 from app.infrastructure.security import TokenService
 from app.main import create_app
+from app.presentation.api.routers.gateways import _to_contract_command
 from fastapi.testclient import TestClient
+
+from agent.client.infrastructure.gateway_control_client import _legacy_command
+from contracts.v2 import CommandType, ServiceRequest, compute_command_authorization
 
 KEY = "phase-9-http-auth-key-that-is-at-least-thirty-two-bytes"
 
@@ -92,3 +98,52 @@ def test_http_authorization_enforces_role_and_session_scope(tmp_path: Path) -> N
     assert outside_scope.status_code == 403
     assert wrong_role.status_code == 403
     assert allowed.status_code == 200
+
+
+def test_backend_signs_and_client_preserves_privileged_command_context(
+    monkeypatch,
+) -> None:
+    now = datetime.now(UTC)
+    key = "phase-9-command-key-with-sufficient-entropy"
+    monkeypatch.setenv("EECP_COMMAND_SIGNING_KEY", key)
+    domain = DomainCommand(
+        id="CMD-RESTORE-1",
+        session_id="SES-1",
+        target_id="AGT-1",
+        type=DomainCommandType.RESTORE_BASELINE,
+        payload={"baseline": "NORMAL"},
+        created_at=now,
+        expires_at=now + timedelta(minutes=1),
+    )
+
+    command = _to_contract_command(domain)
+    forwarded = _legacy_command(command)
+    request = ServiceRequest(
+        protocol_version=2,
+        request_id="REQ-1",
+        command_id=forwarded["id"],
+        operation=CommandType(forwarded["type"]),
+        session_id=forwarded["session_id"],
+        target_id=forwarded["target_id"],
+        issued_at=forwarded["issued_at"],
+        deadline=forwarded["deadline"],
+        policy_hash=None,
+        payload={"baseline": "NORMAL"},
+        correlation_id=forwarded["correlation_id"],
+        authorization=forwarded["authorization"],
+    )
+
+    expected = compute_command_authorization(
+        key,
+        protocol_version=2,
+        command_id=request.command_id,
+        operation=request.operation,
+        session_id=request.session_id,
+        target_id=request.target_id,
+        policy_hash=request.policy_hash,
+        issued_at=request.issued_at,
+        deadline=request.deadline,
+        correlation_id=request.correlation_id,
+    )
+    assert command.authorization == forwarded["authorization"] == request.authorization
+    assert request.authorization == expected

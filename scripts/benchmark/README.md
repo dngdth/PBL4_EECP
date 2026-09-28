@@ -10,6 +10,7 @@ uv run python scripts/benchmark/run.py --agents 100 --output artifacts/benchmark
 uv run python scripts/benchmark/run.py --agents 500 --scenario command
 uv run python scripts/benchmark/run.py --agents 500 --scenario wan
 uv run python scripts/benchmark/run.py --agents 100 --scenario soak --duration 180
+uv run python scripts/benchmark/run.py --agents 50 --measure-memory
 ```
 
 `all` covers connection setup, presence, exact-target command/ACK routing, Event
@@ -17,3 +18,5 @@ ingest, WAN buffering/flush, and reconnect. The timed Backend is intentionally a
 protocol peer, so PostgreSQL/Redis results must be measured separately with the
 external-service integration suite. The default soak is two minutes; use 1,800–3,600
 seconds for a manual release-host soak.
+Python allocation tracing is opt-in because it materially distorts high-concurrency
+SQLite/WebSocket timings; use `--measure-memory` as a separate diagnostic run.

@@ -14,6 +14,14 @@ from app.application.use_cases.exam_sessions.management import (
     UpdateExamSessionStatus,
 )
 from app.application.use_cases.exam_sessions.pipeline import ExamPipelineService
+from app.application.use_cases.gateways.management import (
+    BindAgentToGateway,
+    ListAgentsForGateway,
+    ListGateways,
+    RegisterGateway,
+    ResolveGatewayForAgent,
+    UpdateGatewayHealth,
+)
 from app.application.use_cases.policies.management import (
     AcknowledgeCommand,
     CreatePolicyProfile,
@@ -43,6 +51,12 @@ class Container:
     delete_policy_profile: DeletePolicyProfile
     get_pending_commands: GetPendingCommands
     acknowledge_command: AcknowledgeCommand
+    register_gateway: RegisterGateway
+    update_gateway_health: UpdateGatewayHealth
+    bind_agent_to_gateway: BindAgentToGateway
+    resolve_gateway_for_agent: ResolveGatewayForAgent
+    list_agents_for_gateway: ListAgentsForGateway
+    list_gateways: ListGateways
 
 
 def build_container(settings: Settings) -> Container:
@@ -64,4 +78,10 @@ def build_container(settings: Settings) -> Container:
         delete_policy_profile=DeletePolicyProfile(database.unit_of_work),
         get_pending_commands=GetPendingCommands(database.unit_of_work),
         acknowledge_command=AcknowledgeCommand(database.unit_of_work),
+        register_gateway=RegisterGateway(database.unit_of_work),
+        update_gateway_health=UpdateGatewayHealth(database.unit_of_work),
+        bind_agent_to_gateway=BindAgentToGateway(database.unit_of_work),
+        resolve_gateway_for_agent=ResolveGatewayForAgent(database.unit_of_work),
+        list_agents_for_gateway=ListAgentsForGateway(database.unit_of_work),
+        list_gateways=ListGateways(database.unit_of_work),
     )

@@ -7,6 +7,7 @@ from typing import Protocol
 
 from app.domain.entities.agent import Agent
 from app.domain.entities.exam_session import ExamSession
+from app.domain.entities.gateway import AgentGatewayBinding, Gateway
 from app.domain.entities.operations import AuditEvent, Command, Incident, TelemetryEvent
 from app.domain.entities.session_workstation import SessionWorkstation
 from app.domain.services.policy_profiles import PolicyProfileDefinition
@@ -18,6 +19,20 @@ class AgentRepository(Protocol):
     def find(self, agent_id: str) -> Agent | None: ...
     def save(self, agent: Agent) -> None: ...
     def list_all(self) -> list[Agent]: ...
+
+
+class GatewayRepository(Protocol):
+    def add(self, gateway: Gateway) -> None: ...
+    def get(self, gateway_id: str) -> Gateway: ...
+    def find(self, gateway_id: str) -> Gateway | None: ...
+    def save(self, gateway: Gateway) -> None: ...
+    def list_all(self) -> list[Gateway]: ...
+
+
+class AgentGatewayBindingRepository(Protocol):
+    def bind(self, binding: AgentGatewayBinding) -> None: ...
+    def find_for_agent(self, agent_id: str) -> AgentGatewayBinding | None: ...
+    def list_for_gateway(self, gateway_id: str) -> list[AgentGatewayBinding]: ...
 
 
 class SessionRepository(Protocol):
@@ -69,6 +84,8 @@ class AuditRepository(Protocol):
 
 class UnitOfWork(Protocol):
     agents: AgentRepository
+    gateways: GatewayRepository
+    agent_gateway_bindings: AgentGatewayBindingRepository
     sessions: SessionRepository
     session_workstations: SessionWorkstationRepository
     commands: CommandRepository

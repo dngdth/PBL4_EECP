@@ -1,74 +1,49 @@
 from __future__ import annotations
 
-from agent.application.policy_commands import PolicyCommandProcessor
-from agent.application.runtime import run_agent
+import argparse
+
+from agent.client.main import build_client_runtime
 from agent.config import (
     AGENT_VERSION,
-    HEARTBEAT_INTERVAL_SECONDS,
     POLICY_MODE,
     POLICY_STATE_PATH,
-    REQUEST_TIMEOUT_SECONDS,
-    SERVER_URL,
     load_agent_id,
 )
-from agent.infrastructure.control_server import AgentClient
-from agent.infrastructure.inprocess_executor import InProcessPrivilegedExecutor
-from agent.infrastructure.policy_enforcement import (
-    AuditPolicyEnforcer,
-    WindowsPolicyEnforcer,
-)
-from agent.infrastructure.system_identity import collect_identity
-from agent.infrastructure.violation_monitor import BlockedDomainMonitor
+from agent.service.runtime import AgentServiceRuntime
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="EECP in-process compatibility runner")
+    parser.add_argument(
+        "--in-process-compat",
+        action="store_true",
+        help="explicitly run Client and privileged Service code in one process",
+    )
+    args = parser.parse_args(argv)
+    if not args.in_process_compat:
+        raise SystemExit(
+            "Production uses separate processes. Run 'python -m agent.service.main' and "
+            "'python -m agent.client.main', or pass --in-process-compat for development."
+        )
     try:
         agent_id = load_agent_id()
     except RuntimeError as exc:
         raise SystemExit(f"Configuration error: {exc}") from None
 
-    identity = collect_identity(agent_id, AGENT_VERSION, SERVER_URL)
-    client = AgentClient(SERVER_URL, REQUEST_TIMEOUT_SECONDS)
-    violation_monitor = BlockedDomainMonitor(
-        lambda session_id, destination: client.report_policy_violation(
-            session_id, identity.agent_id, destination
+    try:
+        service_runtime = AgentServiceRuntime.build(
+            policy_mode=POLICY_MODE,
+            state_path=POLICY_STATE_PATH,
+            service_version=AGENT_VERSION,
         )
-    )
-    if POLICY_MODE == "audit":
-        enforcer = AuditPolicyEnforcer(POLICY_STATE_PATH)
-    elif POLICY_MODE == "enforce":
-        enforcer = WindowsPolicyEnforcer(POLICY_STATE_PATH)
-    else:
-        raise SystemExit(
-            "Configuration error: EECP_POLICY_MODE must be 'enforce' or 'audit'"
-        )
-    violation_monitor.start()
-    privileged_executor = InProcessPrivilegedExecutor(enforcer, AGENT_VERSION)
-    command_processor = PolicyCommandProcessor(
-        client,
-        identity.agent_id,
-        privileged_executor,
-        monitor=violation_monitor,
-    )
-
-    def process_control_cycle() -> None:
-        command_processor.process_pending()
-        active_policy = client.active_policy(identity.agent_id)
-        if active_policy is None:
-            violation_monitor.deactivate()
-        else:
-            session_id, policy = active_policy
-            violation_monitor.activate(session_id, policy)
+    except ValueError as exc:
+        raise SystemExit(f"Configuration error: {exc}") from None
+    client_runtime = build_client_runtime(agent_id, service_runtime.execution_service)
 
     try:
-        run_agent(
-            client,
-            identity,
-            HEARTBEAT_INTERVAL_SECONDS,
-            process_commands=process_control_cycle,
-        )
+        client_runtime.run()
     except KeyboardInterrupt:
-        print(f"Stopped agent {identity.agent_id}")
+        print(f"Stopped agent {agent_id}")
 
 
 if __name__ == "__main__":

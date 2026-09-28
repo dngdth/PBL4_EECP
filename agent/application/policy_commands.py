@@ -55,7 +55,6 @@ class PolicyCommandProcessor:
     def process_pending(self) -> None:
         for command in self._client.pending_commands(self._agent_id):
             self._execute(command)
-        self._privileged_executor.maintain()
 
     def _execute(self, command: dict[str, Any]) -> None:
         command_id = str(command.get("id", ""))

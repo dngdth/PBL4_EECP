@@ -113,7 +113,7 @@ def test_command_processor_applies_and_acknowledges_policy(tmp_path: Path) -> No
             },
         )
     ]
-    assert executor.maintained is True
+    assert executor.maintained is False
     assert executor.requests[0].operation == CommandType.APPLY_POLICY
     assert executor.requests[0].payload.policy.policy_hash == POLICY_HASH
     assert lifecycle == [("activate", "ses-1", POLICY_HASH)]

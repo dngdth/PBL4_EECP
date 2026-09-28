@@ -7,6 +7,7 @@ from datetime import datetime
 
 from app.domain.entities.agent import Agent
 from app.domain.entities.exam_session import ExamSession
+from app.domain.entities.gateway import AgentGatewayBinding, Gateway, GatewayStatus
 from app.domain.entities.operations import AuditEvent, Command, Incident, TelemetryEvent
 from app.domain.entities.session_workstation import SessionWorkstation
 from app.domain.exceptions.errors import ConcurrencyError, EntityNotFoundError
@@ -94,6 +95,127 @@ class SqliteAgentRepository:
             agent_version=row["agent_version"],
             last_seen=datetime.fromisoformat(row["last_seen"]),
             created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteGatewayRepository:
+    def __init__(self, connection: sqlite3.Connection):
+        self._connection = connection
+
+    def add(self, gateway: Gateway) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO gateways(
+                id, room_id, status, version, last_seen, created_at,
+                connected_agent_count, backend_uplink_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            self._values(gateway),
+        )
+
+    def get(self, gateway_id: str) -> Gateway:
+        gateway = self.find(gateway_id)
+        if gateway is None:
+            raise EntityNotFoundError(f"gateway not found: {gateway_id}")
+        return gateway
+
+    def find(self, gateway_id: str) -> Gateway | None:
+        row = self._connection.execute(
+            "SELECT * FROM gateways WHERE id = ?", (gateway_id,)
+        ).fetchone()
+        return self._from_row(row) if row is not None else None
+
+    def save(self, gateway: Gateway) -> None:
+        cursor = self._connection.execute(
+            """
+            UPDATE gateways
+               SET room_id = ?, status = ?, version = ?, last_seen = ?, created_at = ?,
+                   connected_agent_count = ?, backend_uplink_status = ?
+             WHERE id = ?
+            """,
+            (
+                gateway.room_id,
+                gateway.status.value,
+                gateway.version,
+                gateway.last_seen.isoformat(),
+                gateway.created_at.isoformat(),
+                gateway.connected_agent_count,
+                gateway.backend_uplink_status.value,
+                gateway.id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise EntityNotFoundError(f"gateway not found: {gateway.id}")
+
+    def list_all(self) -> list[Gateway]:
+        rows = self._connection.execute("SELECT * FROM gateways ORDER BY id").fetchall()
+        return [self._from_row(row) for row in rows]
+
+    @staticmethod
+    def _values(gateway: Gateway) -> tuple:
+        return (
+            gateway.id,
+            gateway.room_id,
+            gateway.status.value,
+            gateway.version,
+            gateway.last_seen.isoformat(),
+            gateway.created_at.isoformat(),
+            gateway.connected_agent_count,
+            gateway.backend_uplink_status.value,
+        )
+
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> Gateway:
+        return Gateway(
+            id=row["id"],
+            room_id=row["room_id"],
+            status=GatewayStatus(row["status"]),
+            version=row["version"],
+            last_seen=datetime.fromisoformat(row["last_seen"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            connected_agent_count=row["connected_agent_count"],
+            backend_uplink_status=GatewayStatus(row["backend_uplink_status"]),
+        )
+
+
+class SqliteAgentGatewayBindingRepository:
+    def __init__(self, connection: sqlite3.Connection):
+        self._connection = connection
+
+    def bind(self, binding: AgentGatewayBinding) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO agent_gateway_bindings(agent_id, gateway_id, bound_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(agent_id) DO UPDATE SET
+                gateway_id = excluded.gateway_id,
+                bound_at = excluded.bound_at
+            """,
+            (binding.agent_id, binding.gateway_id, binding.bound_at.isoformat()),
+        )
+
+    def find_for_agent(self, agent_id: str) -> AgentGatewayBinding | None:
+        row = self._connection.execute(
+            "SELECT * FROM agent_gateway_bindings WHERE agent_id = ?", (agent_id,)
+        ).fetchone()
+        return self._from_row(row) if row is not None else None
+
+    def list_for_gateway(self, gateway_id: str) -> list[AgentGatewayBinding]:
+        rows = self._connection.execute(
+            """
+            SELECT * FROM agent_gateway_bindings
+             WHERE gateway_id = ? ORDER BY agent_id
+            """,
+            (gateway_id,),
+        ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> AgentGatewayBinding:
+        return AgentGatewayBinding(
+            agent_id=row["agent_id"],
+            gateway_id=row["gateway_id"],
+            bound_at=datetime.fromisoformat(row["bound_at"]),
         )
 
 
@@ -576,6 +698,10 @@ class SqliteUnitOfWork:
         self._connection = self._database.connect()
         self._connection.execute("BEGIN IMMEDIATE")
         self.agents = SqliteAgentRepository(self._connection)
+        self.gateways = SqliteGatewayRepository(self._connection)
+        self.agent_gateway_bindings = SqliteAgentGatewayBindingRepository(
+            self._connection
+        )
         self.sessions = SqliteSessionRepository(self._connection)
         self.session_workstations = SqliteSessionWorkstationRepository(self._connection)
         self.commands = SqliteCommandRepository(self._connection)

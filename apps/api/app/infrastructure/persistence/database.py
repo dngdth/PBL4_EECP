@@ -29,6 +29,29 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS ix_agents_status_last_seen ON agents(status, last_seen);
 
+CREATE TABLE IF NOT EXISTS gateways (
+    id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    version TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    connected_agent_count INTEGER NOT NULL DEFAULT 0,
+    backend_uplink_status TEXT NOT NULL DEFAULT 'OFFLINE'
+);
+CREATE INDEX IF NOT EXISTS ix_gateways_status_last_seen
+    ON gateways(status, last_seen);
+
+CREATE TABLE IF NOT EXISTS agent_gateway_bindings (
+    agent_id TEXT PRIMARY KEY,
+    gateway_id TEXT NOT NULL,
+    bound_at TEXT NOT NULL,
+    FOREIGN KEY(agent_id) REFERENCES agents(id),
+    FOREIGN KEY(gateway_id) REFERENCES gateways(id)
+);
+CREATE INDEX IF NOT EXISTS ix_agent_gateway_bindings_gateway
+    ON agent_gateway_bindings(gateway_id, agent_id);
+
 CREATE TABLE IF NOT EXISTS session_workstations (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -123,6 +146,7 @@ class SqliteDatabase:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
             self._migrate_commands(connection)
+            self._migrate_gateways(connection)
             self._seed_policy_profiles(connection)
             connection.commit()
 
@@ -149,6 +173,22 @@ class SqliteDatabase:
                 ON commands(target_id, status, next_retry_at)
             """
         )
+
+    @staticmethod
+    def _migrate_gateways(connection: sqlite3.Connection) -> None:
+        existing = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(gateways)").fetchall()
+        }
+        additions = {
+            "connected_agent_count": "INTEGER NOT NULL DEFAULT 0",
+            "backend_uplink_status": "TEXT NOT NULL DEFAULT 'OFFLINE'",
+        }
+        for name, definition in additions.items():
+            if name not in existing:
+                connection.execute(
+                    f"ALTER TABLE gateways ADD COLUMN {name} {definition}"
+                )
 
     @staticmethod
     def _seed_policy_profiles(connection: sqlite3.Connection) -> None:

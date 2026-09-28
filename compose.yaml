@@ -9,6 +9,7 @@ services:
       - eecp-data:/service/data
     environment:
       EECP_DATABASE_PATH: /service/data/eecp.db
+      EECP_GATEWAY_BOOTSTRAP_TOKEN: ${EECP_GATEWAY_BOOTSTRAP_TOKEN:-}
 
   web:
     build:
@@ -20,6 +21,23 @@ services:
       - "3000:3000"
     environment:
       EECP_API_URL: http://api:8000
+
+  local-gateway:
+    profiles: ["gateway"]
+    build:
+      context: .
+      dockerfile: apps/gateway/Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "8443:8443"
+    environment:
+      EECP_GATEWAY_ID: ${EECP_GATEWAY_ID:-}
+      EECP_GATEWAY_ROOM_ID: ${EECP_GATEWAY_ROOM_ID:-}
+      EECP_GATEWAY_BACKEND_WS_URL: ws://api:8000/api/v2/gateways/ws
+      EECP_GATEWAY_ALLOW_PLAINTEXT_WS: "true"
+      EECP_GATEWAY_BOOTSTRAP_TOKEN: ${EECP_GATEWAY_BOOTSTRAP_TOKEN:-}
+      EECP_AGENT_GATEWAY_TOKEN: ${EECP_AGENT_GATEWAY_TOKEN:-}
 
 volumes:
   eecp-data:

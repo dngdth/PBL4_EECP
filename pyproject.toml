@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.11,<3.0",
+    "websockets>=15,<18",
 ]
 
 [dependency-groups]
@@ -20,7 +21,7 @@ dev = [
 package = false
 
 [tool.uv.workspace]
-members = ["apps/api"]
+members = ["apps/api", "apps/gateway"]
 
 [tool.pytest.ini_options]
 testpaths = ["apps/api/test"]

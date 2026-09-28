@@ -9,6 +9,14 @@ from contracts.v2.command import (
 from contracts.v2.common import PROTOCOL_VERSION
 from contracts.v2.errors import ERROR_DESCRIPTIONS, ErrorCode
 from contracts.v2.event import Event, EventType
+from contracts.v2.gateway import (
+    AgentHello,
+    DeliveryFailure,
+    GatewayEnvelope,
+    GatewayHealth,
+    GatewayHello,
+    GatewayMessageType,
+)
 from contracts.v2.policy import (
     ApplicationRules,
     DeviceRules,
@@ -28,15 +36,21 @@ __all__ = [
     "PROTOCOL_VERSION",
     "Ack",
     "AckStatus",
+    "AgentHello",
     "ApplicationRules",
     "ApplyPolicyPayload",
     "Command",
     "CommandType",
     "DeviceRules",
+    "DeliveryFailure",
     "ErrorCode",
     "Event",
     "EventType",
     "HealthCheckPayload",
+    "GatewayEnvelope",
+    "GatewayHealth",
+    "GatewayHello",
+    "GatewayMessageType",
     "NetworkCategory",
     "NetworkRules",
     "PolicyEnvelope",

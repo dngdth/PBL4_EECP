@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -46,28 +47,41 @@ def test_main_stops_before_registration_when_agent_id_is_missing(
 ) -> None:
     monkeypatch.delenv("EECP_AGENT_ID", raising=False)
     monkeypatch.setattr(
-        agent_main,
-        "collect_identity",
-        lambda *_args: pytest.fail("identity must not be collected without an agent id"),
+        agent_main.AgentServiceRuntime,
+        "build",
+        lambda **_kwargs: pytest.fail("service must not start without an agent id"),
     )
 
     with pytest.raises(SystemExit, match="EECP_AGENT_ID is required"):
-        agent_main.main()
+        agent_main.main(["--in-process-compat"])
+
+
+def test_legacy_same_process_runner_requires_explicit_compatibility_flag() -> None:
+    with pytest.raises(SystemExit, match="Production uses separate processes"):
+        agent_main.main([])
 
 
 def test_main_uses_configured_agent_id(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EECP_AGENT_ID", "PC02")
     captured_id = None
 
-    def collect(agent_id, *_args):
+    class ClientRuntime:
+        def run(self):
+            raise KeyboardInterrupt
+
+    def build_client(agent_id, _executor):
         nonlocal captured_id
         captured_id = agent_id
-        raise KeyboardInterrupt
+        return ClientRuntime()
 
-    monkeypatch.setattr(agent_main, "collect_identity", collect)
+    monkeypatch.setattr(
+        agent_main.AgentServiceRuntime,
+        "build",
+        lambda **_kwargs: SimpleNamespace(execution_service=object()),
+    )
+    monkeypatch.setattr(agent_main, "build_client_runtime", build_client)
 
-    with pytest.raises(KeyboardInterrupt):
-        agent_main.main()
+    agent_main.main(["--in-process-compat"])
 
     assert captured_id == "PC02"
 

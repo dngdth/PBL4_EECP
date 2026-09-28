@@ -145,15 +145,22 @@ class AcknowledgeCommand:
                     self._record_failure(session, command, data.error)
                     uow.sessions.save(session)
                     uow.commands.save(command)
+                    verification_failure = _policy_verification_failure(data.error)
                     uow.audits.append(
                         session.id,
                         actor=data.actor,
-                        action="COMMAND_FAILED",
+                        action=(
+                            "POLICY_VERIFICATION_FAILED"
+                            if verification_failure
+                            else "COMMAND_FAILED"
+                        ),
                         target=command.target_id,
                         details={
                             "command_id": command.id,
                             "type": command.type,
                             "error": command.error,
+                            "decision": "DENY" if verification_failure else "FAILED",
+                            "reason_code": verification_failure,
                         },
                     )
                     uow.commit()
@@ -234,6 +241,15 @@ def _record_timeout(
             "attempt_count": command.attempt_count,
         },
     )
+
+
+def _policy_verification_failure(error: str | None) -> str | None:
+    normalized = (error or "").lower()
+    if "signature" in normalized:
+        return "INVALID_POLICY_SIGNATURE"
+    if "policy has expired" in normalized or "policy expired" in normalized:
+        return "POLICY_EXPIRED"
+    return None
 
 
 def _profile_details(profile: PolicyProfileDefinition) -> PolicyProfileDetails:

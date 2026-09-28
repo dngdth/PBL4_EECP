@@ -1,4 +1,4 @@
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Request, status
 
 from app.application.dtos.agents import RegisterAgentInput
 from app.presentation.api.deps import (
@@ -40,5 +40,35 @@ def heartbeat_agent(
 
 
 @router.get("", response_model=list[AgentView])
-def list_agents(use_case: ListAgentsUseCase) -> list[AgentView]:
-    return [AgentView.model_validate(agent) for agent in use_case()]
+def list_agents(use_case: ListAgentsUseCase, request: Request) -> list[AgentView]:
+    values = []
+    latest_by_agent = {}
+    with request.app.state.container.database.unit_of_work() as uow:
+        for session in uow.sessions.list_all():
+            for incident in uow.incidents.list_for_session(session.id):
+                agent_id = incident.workstation_id
+                current = latest_by_agent.get(agent_id)
+                if agent_id and (current is None or incident.created_at > current.created_at):
+                    latest_by_agent[agent_id] = incident
+    for agent in use_case():
+        presence = request.app.state.presence.get_agent(agent.id) or {}
+        latest = latest_by_agent.get(agent.id)
+        values.append(
+            AgentView.model_validate(
+                {
+                    "id": agent.id,
+                    "hostname": agent.hostname,
+                    "ip_address": agent.ip_address,
+                    "status": agent.status,
+                    "agent_version": agent.agent_version,
+                    "last_seen": agent.last_seen,
+                    "created_at": agent.created_at,
+                    "presence_health": presence.get("health"),
+                    "service_health": presence.get("service_health"),
+                    "active_policy_hash": presence.get("active_policy_hash"),
+                    "gateway_id": presence.get("gateway_id"),
+                    "latest_incident": latest,
+                }
+            )
+        )
+    return values

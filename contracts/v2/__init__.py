@@ -12,6 +12,8 @@ from contracts.v2.event import Event, EventType
 from contracts.v2.gateway import (
     AgentHello,
     DeliveryFailure,
+    EventReceipt,
+    EventReceiptStatus,
     GatewayEnvelope,
     GatewayHealth,
     GatewayHello,
@@ -27,6 +29,8 @@ from contracts.v2.policy import (
     UsbAccess,
     canonical_policy_json,
     compute_policy_hash,
+    compute_policy_signature,
+    verify_policy_signature,
 )
 from contracts.v2.presence import Presence, PresenceHealth, ServiceHealth
 from contracts.v2.service import ServiceRequest, ServiceResult
@@ -43,6 +47,8 @@ __all__ = [
     "CommandType",
     "DeviceRules",
     "DeliveryFailure",
+    "EventReceipt",
+    "EventReceiptStatus",
     "ErrorCode",
     "Event",
     "EventType",
@@ -64,4 +70,6 @@ __all__ = [
     "UsbAccess",
     "canonical_policy_json",
     "compute_policy_hash",
+    "compute_policy_signature",
+    "verify_policy_signature",
 ]

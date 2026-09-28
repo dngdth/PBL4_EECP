@@ -23,6 +23,12 @@ class PolicyMonitor(Protocol):
     def deactivate(self) -> None: ...
 
 
+class SensorSuite(Protocol):
+    def activate(self, session_id: str, payload: dict[str, Any]) -> None: ...
+    def deactivate(self) -> None: ...
+    def poll(self) -> None: ...
+
+
 class AgentClientRuntime:
     """Own backend communication, monitoring, and command orchestration."""
 
@@ -33,12 +39,14 @@ class AgentClientRuntime:
         command_processor: PolicyCommandProcessor,
         monitor: PolicyMonitor,
         heartbeat_interval_seconds: int,
+        sensors: SensorSuite | None = None,
     ):
         self._backend = backend
         self._identity = identity
         self._command_processor = command_processor
         self._monitor = monitor
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        self._sensors = sensors
 
     def run(
         self,
@@ -60,6 +68,12 @@ class AgentClientRuntime:
         active_policy = self._backend.active_policy(self._identity.agent_id)
         if active_policy is None:
             self._monitor.deactivate()
+            if self._sensors is not None:
+                self._sensors.deactivate()
         else:
             session_id, policy = active_policy
             self._monitor.activate(session_id, policy)
+            if self._sensors is not None:
+                self._sensors.activate(session_id, policy)
+        if self._sensors is not None:
+            self._sensors.poll()

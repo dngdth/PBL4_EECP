@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import secrets
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
@@ -13,9 +15,9 @@ router = APIRouter()
 @router.websocket("/ws/agents")
 async def agent_websocket(websocket: WebSocket) -> None:
     state = websocket.app.state
-    expected = f"Bearer {state.settings.agent_bootstrap_token}"
     supplied = websocket.headers.get("authorization", "")
-    if not secrets.compare_digest(supplied, expected):
+    supplied_secret = supplied[7:] if supplied.startswith("Bearer ") else ""
+    if not supplied_secret:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     await websocket.accept()
@@ -27,6 +29,27 @@ async def agent_websocket(websocket: WebSocket) -> None:
         hello = AgentHello.model_validate(first.payload)
         if first.source_id != hello.agent_id:
             raise ValueError("Agent hello identity mismatch")
+        if state.settings.agent_credentials_json:
+            records = json.loads(state.settings.agent_credentials_json)
+            record = records.get(hello.agent_id, {})
+            actual = hashlib.sha256(supplied_secret.encode()).hexdigest()
+            if record.get("revoked") is True:
+                await state.router.report_security_audit(
+                    hello.agent_id, "REVOKED_CREDENTIAL"
+                )
+                raise ValueError("Agent credential is revoked")
+            if not secrets.compare_digest(actual, str(record.get("secret_sha256", ""))):
+                await state.router.report_security_audit(
+                    hello.agent_id, "INVALID_CREDENTIAL"
+                )
+                raise ValueError("Agent credential does not match identity")
+        elif not secrets.compare_digest(
+            supplied_secret, state.settings.agent_bootstrap_token
+        ):
+            await state.router.report_security_audit(
+                hello.agent_id, "INVALID_CREDENTIAL"
+            )
+            raise ValueError("Agent credential is invalid")
         agent_id = hello.agent_id
         await state.connections.connect(agent_id, websocket)
         await state.router.agent_connected(hello)

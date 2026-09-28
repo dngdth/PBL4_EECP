@@ -79,6 +79,33 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
           </div>
         </div>
 
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+          <div className="border border-border rounded-sm p-2">
+            <span className="text-text-muted">Gateway</span>
+            <div className="font-mono mt-1">{workstation.gateway_id || 'Không có dữ liệu'}</div>
+          </div>
+          <div className="border border-border rounded-sm p-2">
+            <span className="text-text-muted">Agent Service</span>
+            <div className="font-mono mt-1">{workstation.service_health || 'Không có dữ liệu'}</div>
+          </div>
+          <div className="border border-border rounded-sm p-2 min-w-0">
+            <span className="text-text-muted">Policy hash</span>
+            <div className="font-mono mt-1 truncate" title={workstation.active_policy_hash || ''}>
+              {workstation.active_policy_hash || 'Không có dữ liệu'}
+            </div>
+          </div>
+        </div>
+
+        <div className="border border-border rounded-sm p-3 text-xs">
+          <span className="text-text-muted">Latest incident</span>
+          {workstation.latest_incident ? (
+            <div className="mt-1 space-y-1">
+              <div className="font-mono">{workstation.latest_incident.category} / {workstation.latest_incident.severity}</div>
+              <div className="text-text-muted">{workstation.latest_incident.status} / {formatDateTime(workstation.latest_incident.created_at)}</div>
+            </div>
+          ) : <div className="mt-1 text-text-muted">Unavailable</div>}
+        </div>
+
         {/* Diagnostic Spec Items */}
         <div className="space-y-2.5">
           <h4 className="text-xs sm:text-sm font-sans font-bold uppercase tracking-wider text-text">Ma trận chẩn đoán tiền kiểm</h4>

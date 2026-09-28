@@ -126,5 +126,6 @@ def _legacy_policy_payload(payload: ApplyPolicyPayload) -> dict[str, Any]:
         "policy_hash": policy.policy_hash,
         "version": policy.policy_version,
         "profile": policy.policy_id,
+        "session_id": policy.session_id,
         "rules": policy.rules.model_dump(mode="json", exclude_none=True),
     }

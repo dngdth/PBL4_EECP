@@ -95,9 +95,10 @@ def test_apply_policy_delegates_legacy_payload_and_returns_result() -> None:
             {
                 "format": "eecp-policy/v1",
                 "policy_hash": HASH,
-                "version": 1,
-                "profile": "INTERNET_NO_AI",
-                "rules": RULES,
+                    "version": 1,
+                    "profile": "INTERNET_NO_AI",
+                    "session_id": "ses-1",
+                    "rules": RULES,
             },
         )
     ]

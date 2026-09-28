@@ -526,6 +526,26 @@ class SqliteTelemetryRepository:
             ),
         )
 
+    def find(self, event_id: str) -> TelemetryEvent | None:
+        row = self._connection.execute(
+            "SELECT * FROM telemetry_events WHERE id = ?", (event_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return TelemetryEvent(
+            id=row["id"],
+            session_id=row["session_id"],
+            workstation_id=row["workstation_id"],
+            event_type=row["event_type"],
+            severity=Severity(row["severity"]),
+            category=row["category"],
+            action=row["action"],
+            destination=row["destination"],
+            correlation_id=row["correlation_id"],
+            payload=json.loads(row["payload"]),
+            occurred_at=datetime.fromisoformat(row["occurred_at"]),
+        )
+
     def list_for_session(self, session_id: str) -> list[TelemetryEvent]:
         rows = self._connection.execute(
             "SELECT * FROM telemetry_events WHERE session_id = ? ORDER BY occurred_at, id",
@@ -600,15 +620,9 @@ class SqliteAuditRepository:
         self._connection = connection
 
     def append(
-        self, session_id: str, actor: str, action: str, target: str, details: dict
+        self, session_id: str | None, actor: str, action: str, target: str, details: dict
     ) -> AuditEvent:
-        previous = self._connection.execute(
-            """
-            SELECT chain_hash FROM audit_events
-             WHERE session_id = ? ORDER BY sequence DESC LIMIT 1
-            """,
-            (session_id,),
-        ).fetchone()
+        previous = self._last_for_scope(session_id)
         previous_hash = previous["chain_hash"] if previous else self.GENESIS_HASH
         occurred_at = utc_now()
         payload = {
@@ -650,11 +664,16 @@ class SqliteAuditRepository:
         )
         return event
 
-    def list_for_session(self, session_id: str) -> list[AuditEvent]:
-        rows = self._connection.execute(
-            "SELECT * FROM audit_events WHERE session_id = ? ORDER BY sequence",
-            (session_id,),
-        ).fetchall()
+    def list_for_session(self, session_id: str | None) -> list[AuditEvent]:
+        if session_id is None:
+            rows = self._connection.execute(
+                "SELECT * FROM audit_events WHERE session_id IS NULL ORDER BY sequence"
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM audit_events WHERE session_id = ? ORDER BY sequence",
+                (session_id,),
+            ).fetchall()
         return [
             AuditEvent(
                 id=row["id"],
@@ -670,7 +689,7 @@ class SqliteAuditRepository:
             for row in rows
         ]
 
-    def verify_chain(self, session_id: str) -> bool:
+    def verify_chain(self, session_id: str | None) -> bool:
         previous_hash = self.GENESIS_HASH
         for event in self.list_for_session(session_id):
             if event.previous_hash != previous_hash:
@@ -687,6 +706,18 @@ class SqliteAuditRepository:
                 return False
             previous_hash = event.chain_hash
         return True
+
+    def _last_for_scope(self, session_id: str | None):
+        if session_id is None:
+            return self._connection.execute(
+                "SELECT chain_hash FROM audit_events WHERE session_id IS NULL "
+                "ORDER BY sequence DESC LIMIT 1"
+            ).fetchone()
+        return self._connection.execute(
+            "SELECT chain_hash FROM audit_events WHERE session_id = ? "
+            "ORDER BY sequence DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
 
 
 class SqliteUnitOfWork:

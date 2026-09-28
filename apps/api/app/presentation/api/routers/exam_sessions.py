@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Request, status
 
 from app.application.dtos.exam_pipeline import (
     CreateSessionInput,
@@ -14,6 +14,7 @@ from app.application.dtos.session_management import (
     ExamSessionDetails,
     UpdateExamSessionStatusInput,
 )
+from app.application.security import Permission
 from app.domain.entities.exam_session import ExamSession, PreflightCheck
 from app.presentation.api.deps import (
     CreateExamSessionUseCase,
@@ -21,6 +22,7 @@ from app.presentation.api.deps import (
     ListExamSessionsUseCase,
     Service,
     UpdateExamSessionStatusUseCase,
+    authorize,
 )
 from app.presentation.schemas.exam_pipeline import (
     AssignedAgentView,
@@ -70,7 +72,9 @@ def update_session_status(
     session_id: str,
     body: UpdateSessionStatusRequest,
     use_case: UpdateExamSessionStatusUseCase,
+    request: Request,
 ) -> SessionDetailView:
+    authorize(request, Permission.CONTROL_AGENT, session_id=session_id)
     details = use_case(UpdateExamSessionStatusInput(session_id=session_id, **body.model_dump()))
     return _session_detail_view(details)
 
@@ -88,7 +92,15 @@ def deploy_policy(
     session_id: str,
     body: DeployPolicyRequest,
     service: Service,
+    request: Request,
 ) -> SessionView:
+    current = service.get_session(session_id)
+    authorize(
+        request,
+        Permission.CONTROL_AGENT,
+        session_id=session_id,
+        session_state=current.state.value,
+    )
     session = service.deploy_policy(DeployPolicyInput(session_id=session_id, **body.model_dump()))
     return _session_view(session)
 
@@ -120,7 +132,15 @@ def start_session(
     session_id: str,
     body: StartSessionRequest,
     service: Service,
+    request: Request,
 ) -> SessionView:
+    current = service.get_session(session_id)
+    authorize(
+        request,
+        Permission.CONTROL_AGENT,
+        session_id=session_id,
+        session_state=current.state.value,
+    )
     session = service.start_session(StartSessionInput(session_id=session_id, **body.model_dump()))
     return _session_view(session)
 
@@ -146,7 +166,15 @@ def finish_session(
     session_id: str,
     body: FinishSessionRequest,
     service: Service,
+    request: Request,
 ) -> SessionView:
+    current = service.get_session(session_id)
+    authorize(
+        request,
+        Permission.CONTROL_AGENT,
+        session_id=session_id,
+        session_state=current.state.value,
+    )
     return _session_view(service.finish_session(session_id, body.actor))
 
 

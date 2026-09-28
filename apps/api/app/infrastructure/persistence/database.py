@@ -54,7 +54,7 @@ CREATE INDEX IF NOT EXISTS ix_agent_gateway_bindings_gateway
 
 CREATE TABLE IF NOT EXISTS session_workstations (
     id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
+    session_id TEXT,
     agent_id TEXT NOT NULL,
     assigned_at TEXT NOT NULL,
     UNIQUE(session_id, agent_id),
@@ -147,6 +147,7 @@ class SqliteDatabase:
             connection.executescript(SCHEMA)
             self._migrate_commands(connection)
             self._migrate_gateways(connection)
+            self._migrate_audit_events(connection)
             self._seed_policy_profiles(connection)
             connection.commit()
 
@@ -189,6 +190,35 @@ class SqliteDatabase:
                 connection.execute(
                     f"ALTER TABLE gateways ADD COLUMN {name} {definition}"
                 )
+
+    @staticmethod
+    def _migrate_audit_events(connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]: row for row in connection.execute("PRAGMA table_info(audit_events)")
+        }
+        if not columns or not columns["session_id"]["notnull"]:
+            return
+        connection.executescript(
+            """
+            ALTER TABLE audit_events RENAME TO audit_events_legacy;
+            CREATE TABLE audit_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT UNIQUE NOT NULL,
+                session_id TEXT,
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                target TEXT NOT NULL,
+                details TEXT NOT NULL,
+                previous_hash TEXT NOT NULL,
+                chain_hash TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                FOREIGN KEY(session_id) REFERENCES exam_sessions(id)
+            );
+            INSERT INTO audit_events SELECT * FROM audit_events_legacy;
+            DROP TABLE audit_events_legacy;
+            CREATE INDEX ix_audit_session ON audit_events(session_id, sequence);
+            """
+        )
 
     @staticmethod
     def _seed_policy_profiles(connection: sqlite3.Connection) -> None:

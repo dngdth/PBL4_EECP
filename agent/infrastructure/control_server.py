@@ -7,6 +7,7 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 from agent.domain.identity import WorkstationIdentity
+from contracts.v2 import EventType, ServiceHealth
 
 
 class AgentClient:
@@ -62,6 +63,7 @@ class AgentClient:
         policy_hash: str | None = None,
         error: str | None = None,
         actor: str,
+        service_version: str | None = None,
     ) -> None:
         self._post(
             f"/api/v1/commands/{command_id}/acknowledge",
@@ -91,6 +93,31 @@ class AgentClient:
                 "payload": {"source": "agent-loopback-monitor"},
             },
         )
+
+    def report_event(
+        self,
+        session_id: str,
+        agent_id: str,
+        event_type: EventType,
+        payload: dict[str, Any],
+    ) -> None:
+        self._post(
+            f"/api/v1/sessions/{session_id}/telemetry",
+            {
+                "workstation_id": agent_id,
+                "event_type": event_type.value,
+                "severity": str(payload.get("severity", "WARNING")),
+                "category": str(payload.get("category", event_type.value)),
+                "action": str(payload.get("action", "OBSERVED")),
+                "destination": payload.get("destination"),
+                "payload": payload,
+            },
+        )
+
+    def set_service_health(
+        self, _service_health: ServiceHealth, _active_policy_hash: str | None
+    ) -> None:
+        return
 
     def _post(self, path: str, payload: dict[str, Any]) -> Any:
         return self._request("POST", path, payload)

@@ -27,6 +27,7 @@ class CommandClient(Protocol):
         policy_hash: str | None = None,
         error: str | None = None,
         actor: str,
+        service_version: str | None = None,
     ) -> None: ...
 
 
@@ -66,7 +67,13 @@ class PolicyCommandProcessor:
             return
 
         try:
-            request = self._build_service_request(command_id, session_id, command_type, payload)
+            request = self._build_service_request(
+                command_id,
+                session_id,
+                command_type,
+                payload,
+                correlation_id=command.get("correlation_id"),
+            )
             result = self._privileged_executor.execute(request)
             if result.status != AckStatus.SUCCEEDED:
                 error = (result.error_message or result.error_code or "execution failed")
@@ -76,6 +83,7 @@ class PolicyCommandProcessor:
                     success=False,
                     error=error,
                     actor=self._agent_id,
+                    service_version=result.service_version,
                 )
                 self._log(f"Policy command {command_id} failed: {error}")
                 return
@@ -106,6 +114,7 @@ class PolicyCommandProcessor:
             success=True,
             policy_hash=policy_hash,
             actor=self._agent_id,
+            service_version=result.service_version,
         )
         self._log(f"Policy command {command_id} applied successfully")
 
@@ -115,12 +124,18 @@ class PolicyCommandProcessor:
         session_id: str,
         command_type: object,
         payload: dict[str, Any],
+        *,
+        correlation_id: object = None,
     ) -> ServiceRequest:
         try:
             operation = CommandType(command_type)
         except ValueError:
             raise ValueError(f"unsupported command type: {command_type}") from None
-        correlation_id = command_id
+        preserved_correlation_id = (
+            correlation_id
+            if isinstance(correlation_id, str) and correlation_id.strip()
+            else command_id
+        )
         request_id = f"req_{command_id}"
 
         if operation == CommandType.APPLY_POLICY:
@@ -143,6 +158,11 @@ class PolicyCommandProcessor:
                 session_id=session_id,
                 issued_at=self._clock(),
                 rules=rules,
+                signature=(
+                    payload.get("signature")
+                    if isinstance(payload.get("signature"), str)
+                    else None
+                ),
             )
             service_payload = ApplyPolicyPayload(policy=policy)
         elif operation == CommandType.RESTORE_BASELINE:
@@ -164,5 +184,5 @@ class PolicyCommandProcessor:
             session_id=session_id,
             policy_hash=policy_hash,
             payload=service_payload,
-            correlation_id=correlation_id,
+            correlation_id=preserved_correlation_id,
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import random
 import threading
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -26,6 +27,7 @@ from contracts.v2 import (
     GatewayMessageType,
     Presence,
     PresenceHealth,
+    ServiceHealth,
 )
 
 
@@ -77,6 +79,9 @@ class GatewayControlClient:
         self._command_index: dict[str, Command] = {}
         self._active_policy: tuple[str, dict[str, Any]] | None = None
         self._state_lock = threading.Lock()
+        self._event_sequence = 0
+        self._service_health = ServiceHealth.HEALTHY
+        self._service_policy_hash: str | None = None
 
     def register(self, identity: WorkstationIdentity) -> None:
         self._identity = identity
@@ -99,7 +104,13 @@ class GatewayControlClient:
             protocol_version=2,
             agent_id=agent_id,
             last_seen=datetime.now(UTC),
-            health=PresenceHealth.ONLINE,
+            health=(
+                PresenceHealth.ONLINE
+                if self._service_health == ServiceHealth.HEALTHY
+                else PresenceHealth.DEGRADED
+            ),
+            active_policy_hash=self._service_policy_hash,
+            service_health=self._service_health,
             agent_version=self._agent_version,
         )
         self._queue(
@@ -126,6 +137,7 @@ class GatewayControlClient:
         policy_hash: str | None = None,
         error: str | None = None,
         actor: str,
+        service_version: str | None = None,
     ) -> None:
         self._require_identity(actor)
         command = self._command_index.get(command_id)
@@ -136,7 +148,7 @@ class GatewayControlClient:
             command_id=command_id,
             status=AckStatus.SUCCEEDED if success else AckStatus.FAILED,
             applied_hash=policy_hash,
-            service_version=self._agent_version,
+            service_version=service_version or self._agent_version,
             error_code=None if success else ErrorCode.EXECUTION_FAILED,
             error_message=None if success else error or "execution failed",
             occurred_at=datetime.now(UTC),
@@ -158,6 +170,7 @@ class GatewayControlClient:
                                 "rules": policy.rules.model_dump(
                                     mode="json", exclude_none=True
                                 ),
+                                "signature": policy.signature,
                             },
                         )
                 elif command.command_type == CommandType.RESTORE_BASELINE:
@@ -177,22 +190,41 @@ class GatewayControlClient:
     def report_policy_violation(
         self, session_id: str, agent_id: str, destination: str
     ) -> None:
-        self._require_identity(agent_id)
-        event = Event(
-            protocol_version=2,
-            event_id=f"evt_{agent_id}_{int(datetime.now(UTC).timestamp() * 1000)}",
-            session_id=session_id,
-            agent_id=agent_id,
-            event_type=EventType.POLICY_VIOLATION,
-            occurred_at=datetime.now(UTC),
-            payload={
+        self.report_event(
+            session_id,
+            agent_id,
+            EventType.POLICY_VIOLATION,
+            {
                 "severity": "WARNING",
                 "category": "PROHIBITED_WEBSITE",
                 "action": "BLOCKED",
                 "destination": destination,
                 "source": "agent-loopback-monitor",
             },
-            correlation_id=f"violation_{session_id}",
+        )
+
+    def report_event(
+        self,
+        session_id: str,
+        agent_id: str,
+        event_type: EventType,
+        payload: dict[str, Any],
+    ) -> None:
+        self._require_identity(agent_id)
+        with self._state_lock:
+            self._event_sequence += 1
+            sequence = self._event_sequence
+        event_id = f"evt_{uuid.uuid4().hex}"
+        event = Event(
+            protocol_version=2,
+            event_id=event_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            event_type=event_type,
+            occurred_at=datetime.now(UTC),
+            sequence=sequence,
+            payload=payload,
+            correlation_id=f"event_{session_id}",
         )
         self._queue(
             GatewayMessageType.EVENT,
@@ -200,6 +232,13 @@ class GatewayControlClient:
             event.model_dump(mode="json", exclude_none=True),
             correlation_id=event.correlation_id or event.event_id,
         )
+
+    def set_service_health(
+        self, service_health: ServiceHealth, active_policy_hash: str | None
+    ) -> None:
+        with self._state_lock:
+            self._service_health = service_health
+            self._service_policy_hash = active_policy_hash
 
     def close(self) -> None:
         self._stop.set()
@@ -271,6 +310,8 @@ class GatewayControlClient:
         command = Command.model_validate(envelope.payload)
         if self._identity is None or command.target_id != self._identity.agent_id:
             raise ValueError("Gateway command target does not match Agent identity")
+        if envelope.correlation_id != command.correlation_id:
+            raise ValueError("Gateway command correlation does not match payload")
         self._command_index[command.command_id] = command
         self._commands.put_nowait(command)
 
@@ -314,6 +355,7 @@ def _legacy_command(command: Command) -> dict[str, Any]:
             "version": policy.policy_version,
             "profile": policy.policy_id,
             "rules": policy.rules.model_dump(mode="json", exclude_none=True),
+            "signature": policy.signature,
         }
     else:
         legacy_payload = payload.model_dump(mode="json", exclude_none=True)
@@ -322,4 +364,5 @@ def _legacy_command(command: Command) -> dict[str, Any]:
         "session_id": command.session_id,
         "type": command.command_type.value,
         "payload": legacy_payload,
+        "correlation_id": command.correlation_id,
     }

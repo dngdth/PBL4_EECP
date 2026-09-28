@@ -106,11 +106,12 @@ def test_command_processor_applies_and_acknowledges_policy(tmp_path: Path) -> No
     assert acknowledgements == [
         (
             "cmd-1",
-            {
-                "success": True,
-                "policy_hash": POLICY_HASH,
-                "actor": "PC01",
-            },
+                {
+                    "success": True,
+                    "policy_hash": POLICY_HASH,
+                    "actor": "PC01",
+                    "service_version": "test",
+                },
         )
     ]
     assert executor.maintained is False
@@ -172,7 +173,12 @@ def test_command_processor_restores_and_preserves_ack_semantics() -> None:
     assert acknowledgements == [
         (
             "cmd-restore",
-            {"success": True, "policy_hash": None, "actor": "PC01"},
+                {
+                    "success": True,
+                    "policy_hash": None,
+                    "actor": "PC01",
+                    "service_version": "test",
+                },
         )
     ]
     assert lifecycle == ["deactivate"]
@@ -223,7 +229,12 @@ def test_command_processor_maps_execution_failure_to_existing_ack() -> None:
     assert acknowledgements == [
         (
             "cmd-1",
-            {"success": False, "error": "access denied", "actor": "PC01"},
+                {
+                    "success": False,
+                    "error": "access denied",
+                    "actor": "PC01",
+                    "service_version": "test",
+                },
         )
     ]
 

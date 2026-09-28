@@ -7,4 +7,4 @@ COPY contracts ./contracts
 RUN pip install --no-cache-dir /service/apps/gateway
 
 ENV PYTHONPATH=/service
-CMD ["uv", "run", "python", "-m", "apps.gateway.app.main"]
+CMD ["python", "-m", "apps.gateway.app.main"]

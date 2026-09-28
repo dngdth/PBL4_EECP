@@ -7,6 +7,7 @@ API_APP = ROOT / "apps" / "api" / "app"
 AGENT = ROOT / "agent"
 AGENT_CLIENT = AGENT / "client"
 AGENT_SERVICE = AGENT / "service"
+AGENT_SENSORS = AGENT_CLIENT / "sensors"
 NAMED_PIPE_EXECUTOR = AGENT_CLIENT / "infrastructure" / "named_pipe_executor.py"
 CONTRACTS = ROOT / "contracts"
 WEB_FEATURES = ROOT / "apps" / "web" / "features"
@@ -63,11 +64,41 @@ def test_agent_domain_and_application_depend_inward_only() -> None:
 def test_agent_client_does_not_depend_on_privileged_implementation() -> None:
     forbidden = (
         "agent.infrastructure.policy_enforcement",
+        "agent.infrastructure.windows",
         "agent.infrastructure.inprocess_executor",
         "agent.service",
     )
     violations = []
     for path in AGENT_CLIENT.rglob("*.py"):
+        for imported in _python_imports(path):
+            if imported.startswith(forbidden):
+                violations.append(f"{path.relative_to(ROOT)} -> {imported}")
+
+    assert violations == []
+
+
+def test_agent_sensors_cannot_import_privileged_actuators() -> None:
+    forbidden = (
+        "agent.infrastructure.policy_enforcement",
+        "agent.infrastructure.windows",
+        "agent.infrastructure.inprocess_executor",
+        "agent.service",
+        "winreg",
+    )
+    violations = []
+    for path in AGENT_SENSORS.rglob("*.py"):
+        for imported in _python_imports(path):
+            if imported.startswith(forbidden):
+                violations.append(f"{path.relative_to(ROOT)} -> {imported}")
+
+    assert violations == []
+
+
+def test_gateway_buffer_cannot_import_agent_service_or_enforcement() -> None:
+    forbidden = ("agent.service", "agent.infrastructure.policy_enforcement")
+    violations = []
+    for filename in ("event_buffer.py", "event_flusher.py"):
+        path = LOCAL_GATEWAY / "app" / filename
         for imported in _python_imports(path):
             if imported.startswith(forbidden):
                 violations.append(f"{path.relative_to(ROOT)} -> {imported}")
@@ -122,6 +153,7 @@ def test_policy_command_processor_does_not_trigger_maintenance() -> None:
 def test_local_gateway_cannot_depend_on_privileged_or_backend_persistence() -> None:
     forbidden = (
         "agent.infrastructure.policy_enforcement",
+        "agent.infrastructure.windows",
         "agent.ipc.named_pipe_server",
         "app.infrastructure.persistence",
         "app.infrastructure.repositories",
@@ -130,7 +162,19 @@ def test_local_gateway_cannot_depend_on_privileged_or_backend_persistence() -> N
     violations = []
     for path in LOCAL_GATEWAY.rglob("*.py"):
         for imported in _python_imports(path):
+            if imported == "sqlite3" and path.name == "event_buffer.py":
+                continue
             if imported.startswith(forbidden):
+                violations.append(f"{path.relative_to(ROOT)} -> {imported}")
+
+    assert violations == []
+
+
+def test_backend_cannot_depend_on_windows_firewall_infrastructure() -> None:
+    violations = []
+    for path in API_APP.rglob("*.py"):
+        for imported in _python_imports(path):
+            if imported.startswith("agent.infrastructure.windows"):
                 violations.append(f"{path.relative_to(ROOT)} -> {imported}")
 
     assert violations == []

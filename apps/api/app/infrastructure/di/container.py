@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.application.security_audit import SecurityAuditService
 from app.application.use_cases.agents.management import (
     HeartbeatAgent,
     ListAgents,
@@ -32,11 +33,12 @@ from app.application.use_cases.policies.management import (
 )
 from app.config import Settings
 from app.infrastructure.persistence.database import SqliteDatabase
+from app.infrastructure.persistence.postgres import PostgresDatabase
 
 
 @dataclass(frozen=True, slots=True)
 class Container:
-    database: SqliteDatabase
+    database: SqliteDatabase | PostgresDatabase
     pipeline_service: ExamPipelineService
     register_agent: RegisterAgent
     heartbeat_agent: HeartbeatAgent
@@ -57,11 +59,16 @@ class Container:
     resolve_gateway_for_agent: ResolveGatewayForAgent
     list_agents_for_gateway: ListAgentsForGateway
     list_gateways: ListGateways
+    security_audit: SecurityAuditService
 
 
 def build_container(settings: Settings) -> Container:
-    database = SqliteDatabase(settings.database_path)
-    database.initialize()
+    if settings.database_url:
+        database = PostgresDatabase(settings.database_url)
+        database.require_schema()
+    else:
+        database = SqliteDatabase(settings.database_path)
+        database.initialize()
     return Container(
         database=database,
         pipeline_service=ExamPipelineService(database.unit_of_work),
@@ -84,4 +91,5 @@ def build_container(settings: Settings) -> Container:
         resolve_gateway_for_agent=ResolveGatewayForAgent(database.unit_of_work),
         list_agents_for_gateway=ListAgentsForGateway(database.unit_of_work),
         list_gateways=ListGateways(database.unit_of_work),
+        security_audit=SecurityAuditService(database.unit_of_work),
     )

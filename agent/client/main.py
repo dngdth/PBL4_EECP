@@ -8,6 +8,9 @@ from agent.application.privileged_execution import PrivilegedExecutionPort
 from agent.client.infrastructure.gateway_control_client import GatewayControlClient
 from agent.client.infrastructure.named_pipe_executor import NamedPipePrivilegedExecutor
 from agent.client.runtime import AgentClientRuntime
+from agent.client.sensors.process_sensor import ProcessSensor
+from agent.client.sensors.service_health_sensor import ServiceHealthSensor
+from agent.client.sensors.suite import SensorSuite
 from agent.config import (
     AGENT_VERSION,
     GATEWAY_ALLOW_PLAINTEXT_WS,
@@ -21,6 +24,7 @@ from agent.config import (
     IPC_REQUEST_TIMEOUT_SECONDS,
     REQUEST_TIMEOUT_SECONDS,
     SERVER_URL,
+    SERVICE_HEALTH_INTERVAL_SECONDS,
     load_agent_gateway_token,
     load_agent_id,
 )
@@ -28,6 +32,7 @@ from agent.infrastructure.control_server import AgentClient
 from agent.infrastructure.system_identity import collect_identity
 from agent.infrastructure.violation_monitor import BlockedDomainMonitor
 from agent.ipc.named_pipe_client import NamedPipeClient, NamedPipeClientConfig
+from contracts.v2 import EventType
 
 
 def build_client_runtime(
@@ -51,6 +56,50 @@ def build_client_runtime(
         )
     )
     monitor.start()
+    process_sensor = ProcessSensor(
+        lambda session_id, process_name: backend.report_event(
+            session_id,
+            identity.agent_id,
+            EventType.FORBIDDEN_PROCESS_DETECTED,
+            {
+                "severity": "WARNING",
+                "category": "FORBIDDEN_PROCESS",
+                "action": "DETECTED",
+                "process_name": process_name,
+            },
+        )
+    )
+    health_sensor = ServiceHealthSensor(
+        privileged_executor,
+        lambda session_id, state: backend.report_event(
+            session_id,
+            identity.agent_id,
+            EventType.SERVICE_HEALTH,
+            {
+                "severity": "WARNING" if state == "UNAVAILABLE" else "INFO",
+                "category": "SERVICE_HEALTH",
+                "action": state,
+            },
+        ),
+        lambda session_id, expected, actual: backend.report_event(
+            session_id,
+            identity.agent_id,
+            EventType.POLICY_INTEGRITY,
+            {
+                "severity": "WARNING",
+                "category": "POLICY_INTEGRITY",
+                "action": "MISMATCH",
+                "expected_hash": expected,
+                "actual_hash": actual,
+            },
+        ),
+        interval_seconds=SERVICE_HEALTH_INTERVAL_SECONDS,
+    )
+    sensors = SensorSuite(
+        (process_sensor, health_sensor),
+        health_sensor=health_sensor,
+        health_update=getattr(backend, "set_service_health", None),
+    )
     processor = PolicyCommandProcessor(
         backend,
         identity.agent_id,
@@ -63,6 +112,7 @@ def build_client_runtime(
         processor,
         monitor,
         HEARTBEAT_INTERVAL_SECONDS,
+        sensors=sensors,
     )
 
 

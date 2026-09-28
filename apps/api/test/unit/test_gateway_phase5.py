@@ -194,6 +194,7 @@ def test_ack_event_presence_roundtrip_and_identity_spoof_rejection() -> None:
             update={
                 "message_type": GatewayMessageType.EVENT,
                 "message_id": "EVT-001",
+                "correlation_id": "CORR-002",
                 "payload": event.model_dump(mode="json"),
             }
         )

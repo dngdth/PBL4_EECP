@@ -13,6 +13,9 @@ from contracts.v2 import (
     GatewayEnvelope,
     GatewayMessageType,
     HealthCheckPayload,
+    Presence,
+    PresenceHealth,
+    ServiceHealth,
 )
 
 NOW = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
@@ -152,4 +155,27 @@ def test_agent_gateway_client_reconnects_with_backoff() -> None:
     assert GatewayEnvelope.model_validate_json(connection.sent[0]).message_type == (
         GatewayMessageType.AGENT_HELLO
     )
+    client.close()
+
+
+def test_agent_presence_is_degraded_when_service_is_unavailable() -> None:
+    connection = FakeConnection()
+    client = GatewayControlClient(
+        "ws://gateway/ws/agents",
+        "agent-token",
+        "1.1.0",
+        allow_plaintext_ws=True,
+        connector=lambda *_args, **_kwargs: connection,
+    )
+    client.register(WorkstationIdentity("AGT-001", "HOST", "192.0.2.1", "1.1.0"))
+    client.set_service_health(ServiceHealth.UNAVAILABLE, None)
+    client.heartbeat("AGT-001")
+    deadline = time.monotonic() + 1
+    while len(connection.sent) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    envelope = GatewayEnvelope.model_validate_json(connection.sent[-1])
+    presence = Presence.model_validate(envelope.payload)
+    assert presence.health == PresenceHealth.DEGRADED
+    assert presence.service_health == ServiceHealth.UNAVAILABLE
     client.close()

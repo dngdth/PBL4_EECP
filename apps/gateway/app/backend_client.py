@@ -20,6 +20,7 @@ from contracts.v2 import (
 MessageHandler = Callable[[GatewayEnvelope], Awaitable[None]]
 ConnectedHandler = Callable[[], Awaitable[None]]
 ConnectedCount = Callable[[], Awaitable[int]]
+HealthFields = Callable[[], dict]
 
 
 class BackendUplink:
@@ -32,6 +33,7 @@ class BackendUplink:
         on_connected: ConnectedHandler,
         connected_agent_count: ConnectedCount,
         *,
+        health_fields: HealthFields | None = None,
         jitter: Callable[[], float] = random.random,
         connector=connect,
     ):
@@ -39,6 +41,7 @@ class BackendUplink:
         self._on_message = on_message
         self._on_connected = on_connected
         self._connected_agent_count = connected_agent_count
+        self._health_fields = health_fields or (lambda: {})
         self._jitter = jitter
         self._connector = connector
         self._outbound: asyncio.Queue[GatewayEnvelope] = asyncio.Queue(maxsize=1000)
@@ -135,6 +138,7 @@ class BackendUplink:
         )
 
     def _health(self, connected_agent_count: int) -> GatewayEnvelope:
+        fields = self._health_fields()
         health = GatewayHealth(
             protocol_version=2,
             gateway_id=self._settings.gateway_id,
@@ -143,6 +147,11 @@ class BackendUplink:
             last_seen=datetime.now(UTC),
             connected_agent_count=connected_agent_count,
             backend_uplink_status=PresenceHealth.ONLINE,
+            pending_event_count=fields.get("pending_event_count"),
+            oldest_pending_event_age=fields.get("oldest_pending_event_age"),
+            last_flush_success_at=fields.get("last_flush_success_at"),
+            last_flush_error=fields.get("last_flush_error"),
+            buffer_status=fields.get("buffer_status"),
         )
         return GatewayEnvelope(
             protocol_version=2,

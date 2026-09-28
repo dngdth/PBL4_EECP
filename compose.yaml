@@ -1,43 +1,99 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: eecp
+      POSTGRES_USER: eecp
+      POSTGRES_PASSWORD: ${EECP_POSTGRES_PASSWORD:?set EECP_POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eecp -d eecp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["python", "-m", "app.infrastructure.persistence.migrate"]
+    environment:
+      DATABASE_URL: postgresql://eecp:${EECP_POSTGRES_PASSWORD}@postgres:5432/eecp
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    ports:
-      - "8000:8000"
-    volumes:
-      - eecp-data:/service/data
+    ports: ["8000:8000"]
     environment:
-      EECP_DATABASE_PATH: /service/data/eecp.db
-      EECP_GATEWAY_BOOTSTRAP_TOKEN: ${EECP_GATEWAY_BOOTSTRAP_TOKEN:-}
+      EECP_ENVIRONMENT: production-like
+      DATABASE_URL: postgresql://eecp:${EECP_POSTGRES_PASSWORD}@postgres:5432/eecp
+      REDIS_URL: redis://redis:6379/0
+      EECP_AUTH_SIGNING_KEY: ${EECP_AUTH_SIGNING_KEY:?set EECP_AUTH_SIGNING_KEY}
+      EECP_EXAMINER_USERNAME: ${EECP_EXAMINER_USERNAME:?set EECP_EXAMINER_USERNAME}
+      EECP_EXAMINER_ROLE: ${EECP_EXAMINER_ROLE:-EXAMINER}
+      EECP_EXAMINER_PASSWORD_HASH: ${EECP_EXAMINER_PASSWORD_HASH:?set EECP_EXAMINER_PASSWORD_HASH}
+      EECP_GATEWAY_CREDENTIALS_JSON: ${EECP_GATEWAY_CREDENTIALS_JSON:?set EECP_GATEWAY_CREDENTIALS_JSON}
+      EECP_GATEWAY_BOOTSTRAP_TOKEN: ${EECP_GATEWAY_BOOTSTRAP_TOKEN:?set EECP_GATEWAY_BOOTSTRAP_TOKEN}
+      EECP_POLICY_SIGNING_KEY: ${EECP_POLICY_SIGNING_KEY:?set EECP_POLICY_SIGNING_KEY}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
   web:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-    depends_on:
-      - api
-    ports:
-      - "3000:3000"
-    environment:
-      EECP_API_URL: http://api:8000
+    depends_on: [api]
+    ports: ["3000:8080"]
 
   local-gateway:
     profiles: ["gateway"]
     build:
       context: .
       dockerfile: apps/gateway/Dockerfile
-    depends_on:
-      - api
-    ports:
-      - "8443:8443"
+    depends_on: [api]
+    ports: ["8443:8443"]
     environment:
-      EECP_GATEWAY_ID: ${EECP_GATEWAY_ID:-}
-      EECP_GATEWAY_ROOM_ID: ${EECP_GATEWAY_ROOM_ID:-}
-      EECP_GATEWAY_BACKEND_WS_URL: ws://api:8000/api/v2/gateways/ws
-      EECP_GATEWAY_ALLOW_PLAINTEXT_WS: "true"
-      EECP_GATEWAY_BOOTSTRAP_TOKEN: ${EECP_GATEWAY_BOOTSTRAP_TOKEN:-}
-      EECP_AGENT_GATEWAY_TOKEN: ${EECP_AGENT_GATEWAY_TOKEN:-}
+      EECP_ENVIRONMENT: production-like
+      EECP_GATEWAY_ID: ${EECP_GATEWAY_ID:?set EECP_GATEWAY_ID}
+      EECP_GATEWAY_ROOM_ID: ${EECP_GATEWAY_ROOM_ID:?set EECP_GATEWAY_ROOM_ID}
+      EECP_GATEWAY_BACKEND_WS_URL: ${EECP_GATEWAY_BACKEND_WS_URL:?use a wss URL}
+      EECP_GATEWAY_BOOTSTRAP_TOKEN: ${EECP_GATEWAY_BOOTSTRAP_TOKEN:?set EECP_GATEWAY_BOOTSTRAP_TOKEN}
+      EECP_AGENT_GATEWAY_TOKEN: ${EECP_AGENT_GATEWAY_TOKEN:?set EECP_AGENT_GATEWAY_TOKEN}
+      EECP_AGENT_CREDENTIALS_JSON: ${EECP_AGENT_CREDENTIALS_JSON:?set EECP_AGENT_CREDENTIALS_JSON}
+      EECP_GATEWAY_TLS_CERTFILE: /run/secrets/gateway.crt
+      EECP_GATEWAY_TLS_KEYFILE: /run/secrets/gateway.key
+      EECP_GATEWAY_EVENT_BUFFER_PATH: /service/data/gateway-events.db
+    volumes:
+      - gateway-buffer:/service/data
+    secrets:
+      - source: gateway_tls_cert
+        target: gateway.crt
+      - source: gateway_tls_key
+        target: gateway.key
 
 volumes:
-  eecp-data:
+  postgres-data:
+  gateway-buffer:
+
+secrets:
+  gateway_tls_cert:
+    file: ${EECP_GATEWAY_TLS_CERTFILE_HOST:?set Gateway TLS certificate path}
+  gateway_tls_key:
+    file: ${EECP_GATEWAY_TLS_KEYFILE_HOST:?set Gateway TLS private-key path}

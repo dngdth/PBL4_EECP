@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import ipaddress
 import json
 from datetime import datetime
 from enum import StrEnum
@@ -57,6 +59,9 @@ class NetworkRules(ContractModel):
     block: tuple[NetworkCategory, ...] | None = None
     blocked_categories: tuple[NetworkCategory, ...] | None = None
     allow_domains: tuple[RuleValue, ...] | None = None
+    blocked_domains: tuple[RuleValue, ...] | None = None
+    blocked_ips: tuple[RuleValue, ...] | None = None
+    blocked_cidrs: tuple[RuleValue, ...] | None = None
 
     @model_validator(mode="after")
     def validate_unique_categories(self) -> NetworkRules:
@@ -66,8 +71,25 @@ class NetworkRules(ContractModel):
         if len(categories) != len(set(categories)):
             raise ValueError("network category values must be unique")
         domains = self.allow_domains or ()
-        if len(domains) != len(set(domains)):
-            raise ValueError("network.allow_domains values must be unique")
+        blocked_domains = self.blocked_domains or ()
+        for field, values in (
+            ("allow_domains", domains),
+            ("blocked_domains", blocked_domains),
+            ("blocked_ips", self.blocked_ips or ()),
+            ("blocked_cidrs", self.blocked_cidrs or ()),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"network.{field} values must be unique")
+        for value in self.blocked_ips or ():
+            try:
+                ipaddress.ip_address(value)
+            except ValueError as exc:
+                raise ValueError(f"invalid blocked IP address: {value}") from exc
+        for value in self.blocked_cidrs or ():
+            try:
+                ipaddress.ip_network(value, strict=True)
+            except ValueError as exc:
+                raise ValueError(f"invalid blocked CIDR network: {value}") from exc
         return self
 
 
@@ -111,6 +133,33 @@ def compute_policy_hash(
     return hashlib.sha256(
         canonical_policy_json(policy_id, policy_version, rules).encode("utf-8")
     ).hexdigest()
+
+
+def compute_policy_signature(
+    signing_key: str,
+    policy_id: str,
+    policy_version: int,
+    rules: PolicyRules,
+    session_id: str,
+) -> str:
+    if not signing_key:
+        raise ValueError("policy signing key must not be empty")
+    content = f"{canonical_policy_json(policy_id, policy_version, rules)}|{session_id}"
+    digest = hmac.new(signing_key.encode(), content.encode(), hashlib.sha256).hexdigest()
+    return f"hmac-sha256:{digest}"
+
+
+def verify_policy_signature(policy: PolicyEnvelope, verification_key: str) -> bool:
+    if policy.signature is None or not verification_key:
+        return False
+    expected = compute_policy_signature(
+        verification_key,
+        policy.policy_id,
+        policy.policy_version,
+        policy.rules,
+        policy.session_id,
+    )
+    return hmac.compare_digest(policy.signature, expected)
 
 
 class PolicyEnvelope(VersionedContract):

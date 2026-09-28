@@ -3,14 +3,23 @@ from __future__ import annotations
 import argparse
 import time
 from collections.abc import Sequence
+from functools import partial
 
 from agent.config import (
     AGENT_VERSION,
+    GATEWAY_URL,
     IPC_MAX_MESSAGE_BYTES,
     IPC_PIPE_NAME,
     POLICY_MODE,
     POLICY_STATE_PATH,
+    POLICY_VERIFICATION_KEY,
+    REQUIRE_SIGNED_POLICY,
     SERVICE_MAINTENANCE_INTERVAL_SECONDS,
+)
+from agent.infrastructure.policy_enforcement import WindowsPolicyEnforcer
+from agent.infrastructure.windows.firewall_enforcer import (
+    WindowsFirewallEnforcer,
+    resolve_gateway_addresses,
 )
 from agent.ipc.named_pipe_server import NamedPipeServer
 from agent.ipc.protocol import ServiceProtocolHandler
@@ -18,12 +27,22 @@ from agent.service.runtime import AgentServiceRuntime
 
 
 def build_service_runtime() -> AgentServiceRuntime:
+    windows_factory = WindowsPolicyEnforcer
+    if POLICY_MODE == "enforce":
+        protected_endpoints = resolve_gateway_addresses(GATEWAY_URL)
+        windows_factory = partial(
+            WindowsPolicyEnforcer,
+            firewall=WindowsFirewallEnforcer(protected_endpoints),
+        )
     return AgentServiceRuntime.build(
         policy_mode=POLICY_MODE,
         state_path=POLICY_STATE_PATH,
         service_version=AGENT_VERSION,
         server=NamedPipeServer(IPC_PIPE_NAME, IPC_MAX_MESSAGE_BYTES),
         maintenance_interval_seconds=SERVICE_MAINTENANCE_INTERVAL_SECONDS,
+        windows_factory=windows_factory,
+        policy_verification_key=POLICY_VERIFICATION_KEY,
+        require_signed_policy=REQUIRE_SIGNED_POLICY,
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -10,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from agent.domain.policy import PolicySpecification, parse_policy_payload
+from agent.infrastructure.windows.firewall_enforcer import (
+    FirewallEnforcer,
+    FirewallRule,
+    WindowsFirewallEnforcer,
+)
 
 POLICY_MARKER_START = "# BEGIN EECP MANAGED POLICY"
 POLICY_MARKER_END = "# END EECP MANAGED POLICY"
@@ -34,6 +40,7 @@ CATEGORY_DOMAINS = {
     },
     "vpn_proxy": {"nordvpn.com", "protonvpn.com", "surfshark.com"},
 }
+LOGGER = logging.getLogger(__name__)
 
 
 class AuditPolicyEnforcer:
@@ -63,6 +70,7 @@ class WindowsPolicyEnforcer:
         state_path: Path,
         hosts_path: Path | None = None,
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        firewall: FirewallEnforcer | None = None,
     ):
         self._state_path = state_path
         self._hosts_path = hosts_path or (
@@ -73,34 +81,78 @@ class WindowsPolicyEnforcer:
             / "hosts"
         )
         self._runner = runner
+        self._firewall = firewall or WindowsFirewallEnforcer(runner=runner)
 
     def apply(self, payload: dict[str, Any]) -> str:
         specification = parse_policy_payload(payload)
         current = self._load_state()
+        desired_rules = self._firewall.plan(
+            specification.session_id,
+            specification.blocked_ips,
+            specification.blocked_cidrs,
+        )
+        LOGGER.info(
+            "policy operation=apply session_id=%s policy_hash=%s firewall_rules=%d",
+            specification.session_id,
+            specification.policy_hash,
+            len(desired_rules),
+        )
         if (
             current
             and current.get("mode") == "enforce"
             and current.get("policy_hash") == specification.policy_hash
+            and "managed_firewall_rules" in current
         ):
             self.maintain()
             return specification.policy_hash
-        if current:
-            if current.get("mode") == "enforce":
-                self.restore()
-            else:
-                self._state_path.unlink(missing_ok=True)
-
         state = _state_from_specification(specification, mode="enforce")
-        state["usb_previous"] = self._read_usb_start() if specification.usb_deny else None
-        _write_state(self._state_path, state)
+        state["managed_firewall_rules"] = [rule.name for rule in desired_rules]
+        previous_usb_deny = bool(
+            current and current.get("mode") == "enforce" and current.get("usb_deny")
+        )
+        usb_before = None
+        if previous_usb_deny != specification.usb_deny:
+            usb_before = self._read_usb_start()
+        if specification.usb_deny and previous_usb_deny:
+            state["usb_previous"] = current.get("usb_previous")
+        elif specification.usb_deny:
+            state["usb_previous"] = usb_before
+        else:
+            state["usb_previous"] = None
+        previous_hosts = self._read_hosts()
+        previous_rules = self._rules_from_state(current)
+        current_names = self._managed_rule_names(current)
         try:
             self._write_blocked_domains(state["blocked_domains"])
-            if specification.usb_deny:
+            self._firewall.reconcile(desired_rules, current_names)
+            if specification.usb_deny and not previous_usb_deny:
                 self._set_usb_start(4)
+            elif previous_usb_deny and not specification.usb_deny:
+                previous = current.get("usb_previous") if current else None
+                self._set_usb_start(previous if isinstance(previous, int) else 3)
             self._terminate_denied(list(specification.denied_applications))
-        except OSError as exc:
-            with suppress(OSError):
-                self.restore()
+            _write_state(self._state_path, state)
+            LOGGER.info(
+                "policy operation=apply session_id=%s policy_hash=%s result=succeeded",
+                specification.session_id,
+                specification.policy_hash,
+            )
+        except (OSError, ValueError) as exc:
+            with suppress(OSError, ValueError):
+                self._write_hosts(previous_hosts)
+            with suppress(OSError, ValueError):
+                self._firewall.reconcile(
+                    previous_rules,
+                    tuple(rule.name for rule in desired_rules),
+                )
+            if usb_before is not None:
+                with suppress(OSError):
+                    self._set_usb_start(usb_before)
+            LOGGER.error(
+                "policy operation=apply session_id=%s policy_hash=%s result=failed",
+                specification.session_id,
+                specification.policy_hash,
+            )
             raise exc
         return specification.policy_hash
 
@@ -113,11 +165,16 @@ class WindowsPolicyEnforcer:
         if state and state.get("usb_deny"):
             previous = state.get("usb_previous")
             self._set_usb_start(previous if isinstance(previous, int) else 3)
+        self._firewall.remove_rules(self._managed_rule_names(state))
         self._state_path.unlink(missing_ok=True)
 
     def maintain(self) -> None:
         state = self._load_state()
         if state:
+            if state.get("mode") != "enforce":
+                return
+            rules = self._rules_from_state(state)
+            self._firewall.reconcile(rules, self._managed_rule_names(state))
             denied = state.get("denied_applications", [])
             if isinstance(denied, list):
                 self._terminate_denied(denied)
@@ -133,9 +190,38 @@ class WindowsPolicyEnforcer:
             raise OSError("EECP policy state is invalid")
         return value
 
+    def _read_hosts(self) -> str:
+        try:
+            return self._hosts_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise OSError("cannot read Windows hosts policy") from exc
+
+    def _write_hosts(self, content: str) -> None:
+        try:
+            self._hosts_path.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            raise OSError("cannot restore Windows hosts policy") from exc
+        self._runner(["ipconfig", "/flushdns"], capture_output=True, text=True, check=False)
+
+    @staticmethod
+    def _managed_rule_names(state: dict[str, Any] | None) -> tuple[str, ...]:
+        values = state.get("managed_firewall_rules", []) if state else []
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise OSError("EECP managed Firewall state is invalid")
+        return tuple(values)
+
+    def _rules_from_state(self, state: dict[str, Any] | None) -> tuple[FirewallRule, ...]:
+        if not state or state.get("mode") != "enforce":
+            return ()
+        return self._firewall.plan(
+            str(state.get("session_id", "")),
+            _state_string_list(state, "blocked_ips"),
+            _state_string_list(state, "blocked_cidrs"),
+        )
+
     def _write_blocked_domains(self, domains: list[str]) -> None:
         try:
-            content = self._hosts_path.read_text(encoding="utf-8")
+            content = self._read_hosts()
             cleaned = _remove_managed_hosts_block(content).rstrip()
             if domains:
                 entries = []
@@ -212,14 +298,18 @@ def _state_from_specification(
             for category in specification.blocked_categories
             for domain in CATEGORY_DOMAINS[category]
         }
+        | set(specification.blocked_domains)
     )
     return {
         "mode": mode,
         "policy_hash": specification.policy_hash,
         "profile": specification.profile,
         "version": specification.version,
+        "session_id": specification.session_id,
         "denied_applications": list(specification.denied_applications),
         "blocked_domains": domains,
+        "blocked_ips": list(specification.blocked_ips),
+        "blocked_cidrs": list(specification.blocked_cidrs),
         "usb_deny": specification.usb_deny,
     }
 
@@ -240,3 +330,10 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
         temporary.replace(path)
     except OSError as exc:
         raise OSError(f"cannot persist EECP policy state: {exc}") from exc
+
+
+def _state_string_list(state: dict[str, Any], key: str) -> tuple[str, ...]:
+    values = state.get(key, [])
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise OSError(f"EECP policy state field {key} is invalid")
+    return tuple(values)

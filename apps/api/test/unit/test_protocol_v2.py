@@ -15,6 +15,8 @@ from contracts.v2 import (
     CommandType,
     ErrorCode,
     Event,
+    EventReceipt,
+    EventReceiptStatus,
     HealthCheckPayload,
     PolicyEnvelope,
     PolicyRules,
@@ -165,6 +167,40 @@ def test_policy_hash_is_stable_for_key_order_and_unicode() -> None:
     )
 
 
+def test_optional_firewall_fields_validate_without_changing_legacy_hash() -> None:
+    legacy = PolicyRules.model_validate(RULES)
+    assert compute_policy_hash("INTERNET_NO_AI", 1, legacy) == HASH
+
+    firewall_rules = PolicyRules.model_validate(
+        {
+            "network": {
+                "blocked_domains": ["example.com"],
+                "blocked_ips": ["203.0.113.10", "2001:db8::10"],
+                "blocked_cidrs": ["198.51.100.0/24", "2001:db8:1::/64"],
+            }
+        }
+    )
+    assert firewall_rules.network is not None
+    assert firewall_rules.network.blocked_ips == (
+        "203.0.113.10",
+        "2001:db8::10",
+    )
+
+
+@pytest.mark.parametrize(
+    "network",
+    [
+        {"blocked_ips": ["999.1.1.1"]},
+        {"blocked_ips": ["203.0.113.10; powershell evil"]},
+        {"blocked_cidrs": ["10.0.0.1/500"]},
+        {"blocked_cidrs": ["198.51.100.1/24"]},
+    ],
+)
+def test_policy_contract_rejects_invalid_firewall_addresses(network: dict) -> None:
+    with pytest.raises(ValidationError):
+        PolicyRules.model_validate({"network": network})
+
+
 @pytest.mark.parametrize("command_type", list(CommandType))
 def test_allowlisted_commands_validate_and_round_trip(command_type: CommandType) -> None:
     command = _command(command_type)
@@ -178,6 +214,24 @@ def test_command_rejects_unknown_or_arbitrary_operation() -> None:
         payload["command_type"] = operation
         with pytest.raises(ValidationError):
             Command.model_validate(payload)
+
+
+def test_event_receipt_is_distinct_from_command_ack() -> None:
+    receipt = EventReceipt(
+        protocol_version=2,
+        event_id="EVT-001",
+        status=EventReceiptStatus.ACCEPTED,
+        received_at=NOW,
+    )
+
+    assert receipt.status == EventReceiptStatus.ACCEPTED
+    with pytest.raises(ValidationError, match="requires error_code"):
+        EventReceipt(
+            protocol_version=2,
+            event_id="EVT-002",
+            status=EventReceiptStatus.REJECTED,
+            received_at=NOW,
+        )
 
 
 def test_command_requires_identity_and_valid_deadline() -> None:

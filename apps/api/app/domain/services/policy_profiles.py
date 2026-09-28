@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import re
 from copy import deepcopy
 from dataclasses import dataclass
@@ -110,12 +111,29 @@ def _normalize_rules(value: dict[str, Any]) -> dict[str, Any]:
 
     if "network" in value:
         network = _mapping(value["network"], "network")
-        unknown = sorted(set(network) - {"block"})
+        unknown = sorted(
+            set(network)
+            - {
+                "block",
+                "blocked_domains",
+                "blocked_ips",
+                "blocked_cidrs",
+            }
+        )
         if unknown:
             raise PolicyValidationError(f"unknown network rules: {', '.join(unknown)}")
-        normalized["network"] = {
+        normalized_network = {
             "block": _string_list(network.get("block", []), "network.block")
         }
+        for field in ("blocked_domains", "blocked_ips", "blocked_cidrs"):
+            if field in network:
+                values = _string_list(network[field], f"network.{field}")
+                if field == "blocked_ips":
+                    values = _ip_list(values)
+                elif field == "blocked_cidrs":
+                    values = _cidr_list(values)
+                normalized_network[field] = values
+        normalized["network"] = normalized_network
 
     if "devices" in value:
         devices = _mapping(value["devices"], "devices")
@@ -145,6 +163,20 @@ def _string_list(value: Any, field: str) -> list[str]:
     if len(normalized) != len(set(normalized)):
         raise PolicyValidationError(f"{field} values must be unique")
     return normalized
+
+
+def _ip_list(values: list[str]) -> list[str]:
+    try:
+        return [str(ipaddress.ip_address(value)) for value in values]
+    except ValueError as exc:
+        raise PolicyValidationError(f"invalid blocked IP address: {exc}") from exc
+
+
+def _cidr_list(values: list[str]) -> list[str]:
+    try:
+        return [str(ipaddress.ip_network(value, strict=True)) for value in values]
+    except ValueError as exc:
+        raise PolicyValidationError(f"invalid blocked CIDR network: {exc}") from exc
 
 
 BUILT_IN_POLICY_PROFILES = PolicyProfileCatalog(

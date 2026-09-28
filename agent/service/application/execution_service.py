@@ -13,6 +13,7 @@ from contracts.v2 import (
     ErrorCode,
     ServiceRequest,
     ServiceResult,
+    verify_policy_signature,
 )
 
 
@@ -26,13 +27,19 @@ class ExecutionService(PrivilegedExecutionPort):
         service_version: str = "service",
         replay_capacity: int = 1024,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        policy_verification_key: str = "",
+        require_signed_policy: bool = False,
     ):
         if replay_capacity < 1:
             raise ValueError("replay_capacity must be positive")
+        if require_signed_policy and not policy_verification_key:
+            raise ValueError("policy verification key is required for signed-policy mode")
         self._executor = executor
         self._service_version = service_version
         self._replay_capacity = replay_capacity
         self._clock = clock
+        self._policy_verification_key = policy_verification_key
+        self._require_signed_policy = require_signed_policy
         self._processed: OrderedDict[str, tuple[str, ServiceResult]] = OrderedDict()
         self._active_policy_hash: str | None = None
         self._active_session_id: str | None = None
@@ -113,6 +120,16 @@ class ExecutionService(PrivilegedExecutionPort):
                     request,
                     ErrorCode.POLICY_EXPIRED,
                     "policy has expired",
+                    rejected=True,
+                )
+            policy = request.payload.policy
+            if self._require_signed_policy and not verify_policy_signature(
+                policy, self._policy_verification_key
+            ):
+                return self._failure(
+                    request,
+                    ErrorCode.INVALID_POLICY,
+                    "policy signature verification failed",
                     rejected=True,
                 )
         return None

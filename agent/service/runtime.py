@@ -70,6 +70,8 @@ class AgentServiceRuntime:
         replay_capacity: int = IPC_REPLAY_CACHE_SIZE,
         audit_factory: EnforcerFactory = AuditPolicyEnforcer,
         windows_factory: EnforcerFactory = WindowsPolicyEnforcer,
+        policy_verification_key: str = "",
+        require_signed_policy: bool = False,
     ) -> AgentServiceRuntime:
         if policy_mode == "audit":
             enforcer = audit_factory(state_path)
@@ -82,6 +84,8 @@ class AgentServiceRuntime:
             privileged_executor,
             service_version=service_version,
             replay_capacity=replay_capacity,
+            policy_verification_key=policy_verification_key,
+            require_signed_policy=require_signed_policy,
         )
         return cls(
             enforcer,

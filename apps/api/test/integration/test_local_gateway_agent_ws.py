@@ -1,5 +1,8 @@
+import hashlib
+import json
 import time
 from contextlib import ExitStack, suppress
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
@@ -142,3 +145,51 @@ def test_three_agent_websocket_connections_are_tracked_independently() -> None:
             count = client.get("/health").json()["connected_agent_count"]
             time.sleep(0.01)
         assert count == 3
+
+
+def test_revoked_agent_authentication_is_reported_to_backend() -> None:
+    uplink = FakeUplink()
+    digest = hashlib.sha256(b"revoked-agent-secret").hexdigest()
+    settings = replace(
+        _settings(),
+        agent_credentials_json=json.dumps(
+            {"AGT-REVOKED": {"secret_sha256": digest, "revoked": True}}
+        ),
+    )
+    with (
+        TestClient(create_app(settings, uplink)) as client,
+        client.websocket_connect(
+            "/ws/agents",
+            headers={"Authorization": "Bearer revoked-agent-secret"},
+        ) as websocket,
+    ):
+        hello = AgentHello(
+            protocol_version=2,
+            agent_id="AGT-REVOKED",
+            hostname="HOST-REVOKED",
+            ip_address="192.0.2.99",
+            agent_version="1.1.0",
+        )
+        websocket.send_text(
+            GatewayEnvelope(
+                protocol_version=2,
+                message_type=GatewayMessageType.AGENT_HELLO,
+                message_id="hello-revoked",
+                correlation_id="hello-revoked",
+                source_id="AGT-REVOKED",
+                target_id="gateway",
+                payload=hello.model_dump(mode="json"),
+            ).to_json()
+        )
+        with suppress(Exception):
+            websocket.receive_text()
+
+    security = [
+        item for item in uplink.messages if item.message_type == GatewayMessageType.SECURITY_AUDIT
+    ]
+    assert len(security) == 1
+    assert security[0].payload == {
+        "actor_id": "AGT-REVOKED",
+        "reason_code": "REVOKED_CREDENTIAL",
+    }
+    assert "revoked-agent-secret" not in security[0].to_json()

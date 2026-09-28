@@ -11,32 +11,21 @@ import {
  */
 function mapAgentToWorkstation(agent: any): Workstation {
   const isOnline = agent.status === 'ONLINE';
-  const isApplied = agent.policy_status === 'APPLIED' || agent.policy_status === 'RESTORED';
   const isFailed = agent.policy_status === 'FAILED';
 
   const status: Workstation['status'] = isFailed ? 'FAILED' : isOnline ? 'READY' : 'PENDING';
-  const preflight_status: Workstation['preflight_status'] = isFailed
-    ? 'FAILED'
-    : isApplied
-    ? 'PASSED'
-    : isOnline
-    ? 'PASSED'
-    : 'PENDING';
+  const preflight_status: Workstation['preflight_status'] = isFailed ? 'FAILED' : 'PENDING';
 
   return {
     id: agent.id,
-    ip: agent.ip_address || '127.0.0.1',
+    ip: agent.ip_address || 'unknown',
     status,
     preflight_status,
-    preflight_details: {
-      os_lockdown: isApplied,
-      network_firewall: isApplied,
-      agent_health: isOnline,
-      peripheral_check: true,
-      notes: agent.policy_status ? `Chính sách: ${agent.policy_status}` : undefined,
-    },
-    last_heartbeat: agent.last_seen || new Date().toISOString(),
-    agent_version: agent.agent_version || 'v1.0.0',
+    last_heartbeat: agent.last_seen || '',
+    agent_version: agent.agent_version || 'unknown',
+    gateway_id: agent.gateway_id || null,
+    service_health: agent.service_health || null,
+    active_policy_hash: agent.active_policy_hash || null,
   };
 }
 
@@ -51,11 +40,11 @@ function mapLegacyWorkstations(workstationsDict: Record<string, any>): Workstati
 
     return {
       id: wsId,
-      ip: '127.0.0.1',
+      ip: 'unknown',
       status: readiness === 'READY' ? 'READY' : readiness === 'WARNING' ? 'WARNING' : 'FAILED',
-      preflight_status: passedAll ? 'PASSED' : 'FAILED',
-      last_heartbeat: new Date().toISOString(),
-      agent_version: 'v1.0.0',
+      preflight_status: checks.length ? (passedAll ? 'PASSED' : 'FAILED') : 'PENDING',
+      last_heartbeat: '',
+      agent_version: 'unknown',
     };
   });
 }
@@ -93,7 +82,7 @@ function mapActivityLog(raw: any): ActivityItem[] {
     raw.violations.forEach((v: any, idx: number) => {
       logs.push({
         id: `act-viol-${idx}`,
-        timestamp: v.occurred_at || new Date().toISOString(),
+        timestamp: v.occurred_at || '',
         level: 'WARNING',
         message: `Máy ${v.workstation_id} vi phạm: ${v.category}${v.destination ? ` -> ${v.destination}` : ''}`,
         source: 'AGENT',
@@ -167,7 +156,7 @@ export function normalizeSession(raw: any): ExamSession {
     agent_count: raw.agent_count ?? (Array.isArray(raw.agents) ? raw.agents.length : workstations.length),
     policy: mapPolicy(raw.policy),
     activity_log: mapActivityLog(raw),
-    created_at: raw.created_at || new Date().toISOString(),
-    updated_at: raw.updated_at || new Date().toISOString(),
+    created_at: raw.created_at || '',
+    updated_at: raw.updated_at || '',
   };
 }

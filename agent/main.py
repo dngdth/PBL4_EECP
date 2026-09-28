@@ -12,6 +12,7 @@ from agent.config import (
     load_agent_id,
 )
 from agent.infrastructure.control_server import AgentClient
+from agent.infrastructure.inprocess_executor import InProcessPrivilegedExecutor
 from agent.infrastructure.policy_enforcement import (
     AuditPolicyEnforcer,
     WindowsPolicyEnforcer,
@@ -42,10 +43,11 @@ def main() -> None:
             "Configuration error: EECP_POLICY_MODE must be 'enforce' or 'audit'"
         )
     violation_monitor.start()
+    privileged_executor = InProcessPrivilegedExecutor(enforcer, AGENT_VERSION)
     command_processor = PolicyCommandProcessor(
         client,
         identity.agent_id,
-        enforcer,
+        privileged_executor,
         monitor=violation_monitor,
     )
 

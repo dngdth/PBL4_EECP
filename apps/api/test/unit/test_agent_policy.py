@@ -1,6 +1,7 @@
 import json
 import ssl
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -15,8 +16,26 @@ from agent.infrastructure.violation_monitor import (
     BlockedDomainMonitor,
     extract_requested_hostname,
 )
+from contracts.v2 import (
+    AckStatus,
+    CommandType,
+    ErrorCode,
+    PolicyRules,
+    ServiceResult,
+    compute_policy_hash,
+)
 
-POLICY_HASH = "a" * 64
+NOW = datetime(2026, 9, 28, 10, 20, 31, tzinfo=UTC)
+RULES = {
+    "applications": {"deny": ["AnyDesk.exe"]},
+    "network": {"block": ["generative_ai"]},
+    "devices": {"usb": "deny"},
+}
+POLICY_HASH = compute_policy_hash(
+    "INTERNET_NO_AI",
+    1,
+    PolicyRules.model_validate(RULES),
+)
 
 
 def _payload() -> dict:
@@ -25,11 +44,7 @@ def _payload() -> dict:
         "policy_hash": POLICY_HASH,
         "version": 1,
         "profile": "INTERNET_NO_AI",
-        "rules": {
-            "applications": {"deny": ["AnyDesk.exe"]},
-            "network": {"block": ["generative_ai"]},
-            "devices": {"usb": "deny"},
-        },
+        "rules": RULES,
     }
 
 
@@ -51,15 +66,22 @@ def test_command_processor_applies_and_acknowledges_policy(tmp_path: Path) -> No
         def acknowledge_command(self, command_id, **values):
             acknowledgements.append((command_id, values))
 
-    class Enforcer:
+    class Executor:
         maintained = False
+        requests = []
 
-        def apply(self, payload):
-            assert payload["profile"] == "INTERNET_NO_AI"
-            return payload["policy_hash"]
-
-        def restore(self):
-            raise AssertionError("restore was not requested")
+        def execute(self, request):
+            self.requests.append(request)
+            return ServiceResult(
+                protocol_version=2,
+                request_id=request.request_id,
+                command_id=request.command_id,
+                status=AckStatus.SUCCEEDED,
+                applied_hash=request.policy_hash,
+                service_version="test",
+                occurred_at=NOW,
+                correlation_id=request.correlation_id,
+            )
 
         def maintain(self):
             self.maintained = True
@@ -71,13 +93,14 @@ def test_command_processor_applies_and_acknowledges_policy(tmp_path: Path) -> No
         def deactivate(self):
             lifecycle.append(("deactivate",))
 
-    enforcer = Enforcer()
+    executor = Executor()
     PolicyCommandProcessor(
         Client(),
         "PC01",
-        enforcer,
+        executor,
         monitor=Monitor(),
         log=lambda _message: None,
+        clock=lambda: NOW,
     ).process_pending()
 
     assert acknowledgements == [
@@ -90,8 +113,119 @@ def test_command_processor_applies_and_acknowledges_policy(tmp_path: Path) -> No
             },
         )
     ]
-    assert enforcer.maintained is True
+    assert executor.maintained is True
+    assert executor.requests[0].operation == CommandType.APPLY_POLICY
+    assert executor.requests[0].payload.policy.policy_hash == POLICY_HASH
     assert lifecycle == [("activate", "ses-1", POLICY_HASH)]
+
+
+def test_command_processor_restores_and_preserves_ack_semantics() -> None:
+    acknowledgements = []
+    lifecycle = []
+
+    class Client:
+        def pending_commands(self, _agent_id):
+            return [
+                {
+                    "id": "cmd-restore",
+                    "session_id": "ses-1",
+                    "type": "RESTORE_BASELINE",
+                    "payload": {"baseline": "NORMAL"},
+                }
+            ]
+
+        def acknowledge_command(self, command_id, **values):
+            acknowledgements.append((command_id, values))
+
+    class Executor:
+        def execute(self, request):
+            assert request.operation == CommandType.RESTORE_BASELINE
+            return ServiceResult(
+                protocol_version=2,
+                request_id=request.request_id,
+                command_id=request.command_id,
+                status=AckStatus.SUCCEEDED,
+                service_version="test",
+                occurred_at=NOW,
+                correlation_id=request.correlation_id,
+            )
+
+        def maintain(self):
+            return
+
+    class Monitor:
+        def activate(self, _session_id, _payload):
+            raise AssertionError("restore must not activate monitoring")
+
+        def deactivate(self):
+            lifecycle.append("deactivate")
+
+    PolicyCommandProcessor(
+        Client(),
+        "PC01",
+        Executor(),
+        monitor=Monitor(),
+        log=lambda _message: None,
+        clock=lambda: NOW,
+    ).process_pending()
+
+    assert acknowledgements == [
+        (
+            "cmd-restore",
+            {"success": True, "policy_hash": None, "actor": "PC01"},
+        )
+    ]
+    assert lifecycle == ["deactivate"]
+
+
+def test_command_processor_maps_execution_failure_to_existing_ack() -> None:
+    acknowledgements = []
+
+    class Client:
+        def pending_commands(self, _agent_id):
+            return [
+                {
+                    "id": "cmd-1",
+                    "session_id": "ses-1",
+                    "type": "APPLY_POLICY",
+                    "payload": _payload(),
+                }
+            ]
+
+        def acknowledge_command(self, command_id, **values):
+            acknowledgements.append((command_id, values))
+
+    class Executor:
+        def execute(self, request):
+            return ServiceResult(
+                protocol_version=2,
+                request_id=request.request_id,
+                command_id=request.command_id,
+                status=AckStatus.FAILED,
+                service_version="test",
+                error_code=ErrorCode.EXECUTION_FAILED,
+                error_message="access denied",
+                occurred_at=NOW,
+                correlation_id=request.correlation_id,
+            )
+
+        def maintain(self):
+            return
+
+    PolicyCommandProcessor(
+        Client(),
+        "PC01",
+        Executor(),
+        log=lambda _message: None,
+        clock=lambda: NOW,
+    ).process_pending()
+
+    assert acknowledgements == [
+        (
+            "cmd-1",
+            {"success": False, "error": "access denied", "actor": "PC01"},
+        )
+    ]
 
 
 def test_violation_monitor_reports_blocked_domain_once_per_debounce_window() -> None:

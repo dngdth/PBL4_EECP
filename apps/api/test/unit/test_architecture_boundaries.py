@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 API_APP = ROOT / "apps" / "api" / "app"
 AGENT = ROOT / "agent"
+CONTRACTS = ROOT / "contracts"
 WEB_FEATURES = ROOT / "apps" / "web" / "features"
 
 
@@ -51,6 +52,17 @@ def test_agent_domain_and_application_depend_inward_only() -> None:
             for imported in _python_imports(path):
                 if imported.startswith(forbidden):
                     violations.append(f"{path.relative_to(ROOT)} -> {imported}")
+
+    assert violations == []
+
+
+def test_shared_contracts_do_not_depend_on_runtime_layers() -> None:
+    forbidden = ("app", "agent", "fastapi", "sqlite3")
+    violations = []
+    for path in CONTRACTS.rglob("*.py"):
+        for imported in _python_imports(path):
+            if imported.startswith(forbidden):
+                violations.append(f"{path.relative_to(ROOT)} -> {imported}")
 
     assert violations == []
 

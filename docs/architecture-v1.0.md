@@ -1,6 +1,12 @@
 # EECP Architecture Specification v1.0 (Enhanced Baseline)
 **Enterprise Exam Control & Proctoring Platform**
 
+> **TARGET / PLANNED EECP v2 — NOT CURRENT IMPLEMENTATION.** The current Phase 0
+> implementation is documented in `docs/v2/phase-0-baseline.md`. In particular,
+> the repository does not currently implement a Local Gateway, WebSocket/gRPC
+> transport, PostgreSQL, Redis, a split Agent Client/Windows Service, or Windows
+> Firewall enforcement.
+
 ---
 
 ## 0. Architecture Decision Summary

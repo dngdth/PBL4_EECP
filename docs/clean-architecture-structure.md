@@ -94,9 +94,9 @@ app → features → components/lib
 | Repository/Unit of Work adapter | `apps/api/app/infrastructure/repositories` |
 | FastAPI endpoint/dependency/error mapping | `apps/api/app/presentation/api` |
 | Pydantic HTTP contract | `apps/api/app/presentation/schemas` |
-| Next.js route | `apps/web/app` |
-| UI/query/type theo nghiệp vụ | `apps/web/features/<feature>` |
-| UI/API client dùng chung | `apps/web/components` hoặc `apps/web/lib` |
+| React Router route/page | `apps/web/src/app`, `apps/web/src/pages` |
+| UI/query/type theo nghiệp vụ | `apps/web/src/features/<feature>` |
+| UI/API client dùng chung | `apps/web/src/components` hoặc `apps/web/src/shared` |
 
 ## Worker
 
@@ -132,12 +132,12 @@ Các quyết định quan trọng:
 - `ExamPipelineService` chỉ điều phối gateway pipeline; ACK dùng chung nằm trong policy use case và dispatch theo loại session.
 - SQLite profile và command repositories vẫn là output adapters của ports trong domain.
 
-Frontend tuân theo `app -> features -> components/lib`:
+Frontend tuân theo `app/pages -> features -> domain/shared/components`:
 
-- Server Actions của exam session nằm trong `features/exam-sessions/actions.ts`.
-- Server Actions quản lý profile nằm trong `features/policy-profiles/actions.ts`.
+- REST client của exam session nằm trong `src/features/exam-sessions/services/sessionApi.ts`.
+- REST client quản lý policy profile nằm trong `src/features/security-policy/services/policyApi.ts`.
 - Feature không import `app` và không import nội bộ của feature khác.
-- Auto refresh dùng chung nằm trong `components/ui/auto-refresh.tsx`.
+- Các page cần dữ liệu mới tự polling bằng `POLL_INTERVAL_MS` từ `src/shared/api/config.ts`.
 
 Workstation Agent cũng dùng ports-and-adapters thu gọn:
 

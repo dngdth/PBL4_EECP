@@ -1,6 +1,6 @@
 # Exam Environment Control Platform (EECP)
 
-Monorepo tách rõ backend FastAPI và frontend Next.js, tổ chức theo Clean Architecture.
+Monorepo tách rõ backend FastAPI và frontend React/Vite, tổ chức theo Clean Architecture.
 
 ```text
 PBL4_EECP/
@@ -17,11 +17,11 @@ PBL4_EECP/
 │   │   ├── test/
 │   │   ├── Dockerfile
 │   │   └── pyproject.toml
-│   └── web/                    # Frontend Next.js, feature-first
-│       ├── app/
-│       ├── features/
-│       ├── components/
-│       ├── lib/
+│   └── web/                    # Frontend React/Vite, feature-first
+│       ├── src/app/
+│       ├── src/features/
+│       ├── src/components/
+│       ├── src/shared/
 │       ├── Dockerfile
 │       └── package.json
 ├── docs/
@@ -34,11 +34,12 @@ Không có `worker/` vì pipeline hiện tại được xử lý đồng bộ tr
 
 ## Pipeline đã triển khai
 
-`Create → Deploy Policy → Agent/Gateway ACK → Preflight → Start → Telemetry/Incident → Finish → Restore → Summary`
+`Create → Deploy Policy → command target ACK → Preflight → Start → Telemetry/Incident → Finish → Restore → Summary`
 
 - State machine: `CREATED → DEPLOYING → PREFLIGHT → READY/DEGRADED → RUNNING → RESTORING → NORMAL`.
 - Policy có version và SHA-256 hash.
-- Agent/Gateway poll command và ACK đúng policy hash.
+- Agent (và logical `gateway_id` trong legacy pipeline) poll command và ACK đúng policy hash.
+- Repository hiện không có Local Gateway service; `gateway_id` chỉ là target của legacy pipeline/API demo.
 - Preflight tính `READY/WARNING/FAILED` từ critical/non-critical check.
 - Ba lỗi DNS trên ba máy được gom thành incident `INFRASTRUCTURE_DNS`.
 - Blocked event không tự động được coi là bằng chứng gian lận.
@@ -72,11 +73,12 @@ npm run dev
 
 Frontend: <http://127.0.0.1:3000>
 
-## Chạy bằng Docker
+## Trạng thái Docker
 
-```powershell
-docker compose up --build
-```
+`compose.yaml` và các Dockerfile hiện có, nhưng web Dockerfile vẫn tham chiếu output
+Next.js cũ (`.next`) trong khi frontend đã dùng Vite (`dist`). Vì vậy đường chạy
+`docker compose up --build` hiện chưa phải baseline đã xác minh. Dùng các lệnh local
+ở trên cho Phase 0; xem `docs/v2/phase-0-baseline.md`.
 
 ## Kiểm tra
 
@@ -85,7 +87,7 @@ uv run ruff check apps/api
 uv run pytest
 
 cd apps/web
-npm run typecheck
+npm run lint
 npm run build
 ```
 
@@ -103,7 +105,6 @@ uv run --package eecp-api uvicorn app.main:app --app-dir apps/api --host 0.0.0.0
 In another PowerShell terminal:
 
 ```powershell
-$env:EECP_API_URL="http://192.168.3.50:8000"
 cd apps/web
 npm install
 npm run dev -- --hostname 0.0.0.0
@@ -177,7 +178,6 @@ assignment (`id`, `session_id`, `agent_id`, `assigned_at`), enforces unique
 In a second PowerShell terminal, start the frontend:
 
 ```powershell
-$env:EECP_API_URL="http://192.168.3.50:8000"
 Set-Location apps/web
 npm install
 npm run dev -- --hostname 0.0.0.0

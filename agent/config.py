@@ -15,6 +15,7 @@ SERVER_URL = os.getenv("EECP_SERVER_URL", "http://172.20.10.3:8000").rstrip("/")
 GATEWAY_URL = os.getenv(
     "EECP_GATEWAY_URL", "wss://127.0.0.1:8443/ws/agents"
 ).strip()
+GATEWAY_CA_FILE = os.getenv("EECP_GATEWAY_CA_FILE", "").strip() or None
 GATEWAY_ALLOW_PLAINTEXT_WS = os.getenv(
     "EECP_GATEWAY_ALLOW_PLAINTEXT_WS", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}

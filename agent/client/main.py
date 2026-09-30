@@ -14,6 +14,7 @@ from agent.client.sensors.suite import SensorSuite
 from agent.config import (
     AGENT_VERSION,
     GATEWAY_ALLOW_PLAINTEXT_WS,
+    GATEWAY_CA_FILE,
     GATEWAY_RECONNECT_INITIAL_SECONDS,
     GATEWAY_RECONNECT_MAX_SECONDS,
     GATEWAY_URL,
@@ -46,6 +47,7 @@ def build_client_runtime(
         GATEWAY_URL,
         load_agent_gateway_token(),
         AGENT_VERSION,
+        ca_file=GATEWAY_CA_FILE,
         allow_plaintext_ws=GATEWAY_ALLOW_PLAINTEXT_WS,
         reconnect_initial_seconds=GATEWAY_RECONNECT_INITIAL_SECONDS,
         reconnect_max_seconds=GATEWAY_RECONNECT_MAX_SECONDS,

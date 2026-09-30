@@ -16,3 +16,7 @@ node_modules/
 .tmp_doc_review/
 doc_review_pages/
 .worktrees/
+.env
+local-secrets/
+compose.local.yaml
+.runtime/

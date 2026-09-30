@@ -15,11 +15,18 @@ class _CompatConnection:
         self._pool = pool
 
     def execute(self, query: str, params: tuple = ()):
-        return self._connection.execute(query.replace("?", "%s"), params)
+        return self._connection.execute(self._postgres_query(query), params)
 
     def executemany(self, query: str, params_seq):
         with self._connection.cursor() as cursor:
-            cursor.executemany(query.replace("?", "%s"), params_seq)
+            cursor.executemany(self._postgres_query(query), params_seq)
+
+    @staticmethod
+    def _postgres_query(query: str) -> str:
+        return query.replace("?", "%s").replace(
+            "ORDER BY rowid DESC",
+            "ORDER BY ((payload::jsonb)->>'created_at')::timestamptz DESC, id DESC",
+        )
 
     def commit(self) -> None:
         self._connection.commit()

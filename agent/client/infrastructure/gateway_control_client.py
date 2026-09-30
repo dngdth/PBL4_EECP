@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import random
+import ssl
 import threading
 import uuid
 from collections.abc import Callable
@@ -50,6 +51,7 @@ class GatewayControlClient:
         bootstrap_token: str,
         agent_version: str,
         *,
+        ca_file: str | None = None,
         allow_plaintext_ws: bool = False,
         reconnect_initial_seconds: float = 1.0,
         reconnect_max_seconds: float = 30.0,
@@ -66,6 +68,11 @@ class GatewayControlClient:
         self._gateway_url = gateway_url
         self._bootstrap_token = bootstrap_token
         self._agent_version = agent_version
+        self._ssl_context = (
+            ssl.create_default_context(cafile=ca_file)
+            if scheme == "wss" and ca_file is not None
+            else None
+        )
         self._reconnect_initial = reconnect_initial_seconds
         self._reconnect_max = reconnect_max_seconds
         self._connector = connector
@@ -251,12 +258,17 @@ class GatewayControlClient:
         delay = self._reconnect_initial
         while not self._stop.is_set():
             try:
-                with self._connector(
-                    self._gateway_url,
-                    additional_headers={
+                connection_options = {
+                    "additional_headers": {
                         "Authorization": f"Bearer {self._bootstrap_token}"
                     },
-                    open_timeout=5,
+                    "open_timeout": 5,
+                }
+                if self._ssl_context is not None:
+                    connection_options["ssl"] = self._ssl_context
+                with self._connector(
+                    self._gateway_url,
+                    **connection_options,
                 ) as websocket:
                     websocket.send(self._hello().to_json())
                     self._connected.set()

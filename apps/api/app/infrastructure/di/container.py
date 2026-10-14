@@ -19,6 +19,7 @@ from app.application.use_cases.gateways.management import (
     BindAgentToGateway,
     ListAgentsForGateway,
     ListGateways,
+    RecordGatewayDeliveryFailure,
     RegisterGateway,
     ResolveGatewayForAgent,
     UpdateGatewayHealth,
@@ -60,6 +61,7 @@ class Container:
     list_agents_for_gateway: ListAgentsForGateway
     list_gateways: ListGateways
     security_audit: SecurityAuditService
+    record_gateway_delivery_failure: RecordGatewayDeliveryFailure
 
 
 def build_container(settings: Settings) -> Container:
@@ -92,4 +94,5 @@ def build_container(settings: Settings) -> Container:
         list_agents_for_gateway=ListAgentsForGateway(database.unit_of_work),
         list_gateways=ListGateways(database.unit_of_work),
         security_audit=SecurityAuditService(database.unit_of_work),
+        record_gateway_delivery_failure=RecordGatewayDeliveryFailure(database.unit_of_work),
     )

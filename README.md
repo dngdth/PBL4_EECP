@@ -67,6 +67,11 @@ npm run dev
 
 Run the Local Gateway with the required `EECP_GATEWAY_*` configuration:
 
+For one server and a room of 30 workstations, see
+[`docs/v2/gateway-on-server.md`](docs/v2/gateway-on-server.md). The optional
+`compose.gateway-server.yaml` runs the Gateway on the same host with a private
+TLS Backend uplink and a persistent Event-buffer volume.
+
 ```powershell
 uv run python -m apps.gateway.app.main
 ```

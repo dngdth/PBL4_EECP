@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import Protocol
 
 
 class GatewaySocket(Protocol):
     async def send_text(self, data: str) -> None: ...
+    async def close(self, code: int = 1000, reason: str | None = None) -> None: ...
 
 
 class GatewayConnectionRegistry:
@@ -17,12 +19,18 @@ class GatewayConnectionRegistry:
 
     async def connect(self, gateway_id: str, socket: GatewaySocket) -> None:
         async with self._lock:
+            previous = self._connections.get(gateway_id)
             self._connections[gateway_id] = socket
+        if previous is not None and previous is not socket:
+            with suppress(RuntimeError):
+                await previous.close(code=4001, reason="replaced by newer Gateway connection")
 
-    async def disconnect(self, gateway_id: str, socket: GatewaySocket) -> None:
+    async def disconnect(self, gateway_id: str, socket: GatewaySocket) -> bool:
         async with self._lock:
             if self._connections.get(gateway_id) is socket:
                 self._connections.pop(gateway_id, None)
+                return True
+            return False
 
     async def send(self, gateway_id: str, message: str) -> bool:
         async with self._lock:

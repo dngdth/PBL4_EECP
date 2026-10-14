@@ -3,35 +3,15 @@ from __future__ import annotations
 import sqlite3
 import threading
 from contextlib import closing
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from apps.gateway.app.application.models import BufferedEvent, EventBufferHealth
 from contracts.v2 import Event, GatewayEnvelope, GatewayMessageType, PresenceHealth
 
 
 class EventBufferFullError(ValueError):
     pass
-
-
-@dataclass(frozen=True, slots=True)
-class BufferedEvent:
-    event_id: str
-    envelope: GatewayEnvelope
-    state: str
-    attempt_count: int
-    next_attempt_at: datetime
-    last_error: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class EventBufferHealth:
-    pending_event_count: int
-    oldest_pending_event_age: float | None
-    last_flush_success_at: datetime | None
-    last_flush_error: str | None
-    buffer_status: PresenceHealth
-    terminal_failed_count: int
 
 
 class EventBuffer:
@@ -145,9 +125,7 @@ class EventBuffer:
             )
             connection.commit()
 
-    def schedule_retry(
-        self, event_id: str, next_attempt_at: datetime, error: str
-    ) -> None:
+    def schedule_retry(self, event_id: str, next_attempt_at: datetime, error: str) -> None:
         with self._lock, closing(self._connect()) as connection:
             connection.execute(
                 """

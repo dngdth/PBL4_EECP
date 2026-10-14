@@ -10,7 +10,11 @@ from pydantic import ValidationError
 
 from app.application.dtos.agents import RegisterAgentInput
 from app.application.dtos.exam_pipeline import TelemetryInput
-from app.application.dtos.gateways import BindAgentToGatewayInput, RegisterGatewayInput
+from app.application.dtos.gateways import (
+    BindAgentToGatewayInput,
+    GatewayDeliveryFailureInput,
+    RegisterGatewayInput,
+)
 from app.application.dtos.policies import AcknowledgeCommandInput
 from app.application.security import Permission
 from app.domain.entities.gateway import GatewayStatus
@@ -164,8 +168,9 @@ async def gateway_uplink(websocket: WebSocket, gateway_id: str) -> None:
         pass
     finally:
         if connected:
-            await registry.disconnect(gateway_id, websocket)
-            container.update_gateway_health(gateway_id, online=False)
+            removed = await registry.disconnect(gateway_id, websocket)
+            if removed:
+                container.update_gateway_health(gateway_id, online=False)
 
 
 async def _handle_gateway_message(
@@ -179,6 +184,7 @@ async def _handle_gateway_message(
             gateway_id,
             connected_agent_count=health.connected_agent_count,
             backend_uplink_status=GatewayStatus(health.backend_uplink_status.value),
+            status=GatewayStatus(health.status.value),
         )
         if presence_store is not None:
             presence_store.set_gateway(gateway_id, health.model_dump(mode="json"))
@@ -213,6 +219,21 @@ async def _handle_gateway_message(
         )
         container.bind_agent_to_gateway(
             BindAgentToGatewayInput(hello.agent_id, gateway_id)
+        )
+        return
+
+    if envelope.message_type == GatewayMessageType.DELIVERY_FAILURE:
+        if envelope.source_id != gateway_id or envelope.target_id != "backend":
+            raise ValueError("delivery failure source is not the authenticated Gateway")
+        failure = DeliveryFailure.model_validate(envelope.payload)
+        container.record_gateway_delivery_failure(
+            GatewayDeliveryFailureInput(
+                gateway_id=gateway_id,
+                agent_id=failure.agent_id,
+                command_id=failure.command_id,
+                correlation_id=envelope.correlation_id,
+                reason=failure.reason,
+            )
         )
         return
 
@@ -293,18 +314,6 @@ async def _handle_gateway_message(
                 else EventReceiptStatus.ACCEPTED
             ),
         )
-
-    if envelope.message_type == GatewayMessageType.DELIVERY_FAILURE:
-        failure = DeliveryFailure.model_validate(envelope.payload)
-        container.acknowledge_command(
-            AcknowledgeCommandInput(
-                command_id=failure.command_id,
-                success=False,
-                error=failure.reason,
-                actor=gateway_id,
-            )
-        )
-        return
 
     raise ValueError(f"unsupported gateway message: {envelope.message_type}")
 

@@ -170,6 +170,21 @@ def test_local_gateway_cannot_depend_on_privileged_or_backend_persistence() -> N
     assert violations == []
 
 
+def test_gateway_application_depends_on_ports_not_transport_or_sqlite_adapters() -> None:
+    forbidden = (
+        "fastapi", "starlette", "uvicorn", "websockets", "sqlite3",
+        "apps.gateway.app.backend_client", "apps.gateway.app.connections",
+        "apps.gateway.app.event_buffer", "apps.gateway.app.presence",
+        "apps.gateway.app.config", "apps.gateway.app.main",
+    )
+    violations = []
+    for path in (LOCAL_GATEWAY / "application").rglob("*.py"):
+        for imported in _python_imports(path):
+            if imported.startswith(forbidden):
+                violations.append(f"{path.relative_to(ROOT)} -> {imported}")
+    assert violations == []
+
+
 def test_backend_cannot_depend_on_windows_firewall_infrastructure() -> None:
     violations = []
     for path in API_APP.rglob("*.py"):

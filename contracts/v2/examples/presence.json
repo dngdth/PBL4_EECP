@@ -1,0 +1,10 @@
+{
+  "protocol_version": 2,
+  "agent_id": "PC01",
+  "gateway_id": null,
+  "last_seen": "2026-09-28T10:20:31Z",
+  "health": "ONLINE",
+  "active_policy_hash": "ae93cd20cf6d57da96425807a77f4ddf6570f746a3a4a361f05fd8992787045c",
+  "service_health": null,
+  "agent_version": "1.1.0"
+}

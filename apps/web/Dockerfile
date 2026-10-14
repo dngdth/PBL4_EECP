@@ -7,11 +7,8 @@ FROM dependencies AS builder
 COPY apps/web ./
 RUN npm run build
 
-FROM node:24-alpine AS runner
-ENV NODE_ENV=production
-WORKDIR /web
-COPY --from=builder /web/.next/standalone ./
-COPY --from=builder /web/.next/static ./.next/static
-EXPOSE 3000
-CMD ["node", "server.js"]
+FROM nginx:1.27-alpine AS runner
+COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /web/dist /usr/share/nginx/html
+EXPOSE 8080
 

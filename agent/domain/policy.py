@@ -1,5 +1,4 @@
-from __future__ import annotations
-
+import ipaddress
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,8 +14,12 @@ class PolicySpecification:
     policy_hash: str
     profile: str
     version: int
+    session_id: str
     denied_applications: tuple[str, ...]
     blocked_categories: tuple[str, ...]
+    blocked_domains: tuple[str, ...]
+    blocked_ips: tuple[str, ...]
+    blocked_cidrs: tuple[str, ...]
     usb_deny: bool
 
 
@@ -38,6 +41,9 @@ def parse_policy_payload(payload: dict[str, Any]) -> PolicySpecification:
 
     denied = applications.get("deny", [])
     categories = network.get("block", network.get("blocked_categories", []))
+    blocked_domains = network.get("blocked_domains", [])
+    blocked_ips = network.get("blocked_ips", [])
+    blocked_cidrs = network.get("blocked_cidrs", [])
     usb = devices.get("usb", devices.get("usb_storage", "allow"))
     if not isinstance(denied, list) or not all(isinstance(item, str) for item in denied):
         raise ValueError("applications.deny must be a string list")
@@ -45,6 +51,15 @@ def parse_policy_payload(payload: dict[str, Any]) -> PolicySpecification:
         isinstance(item, str) for item in categories
     ):
         raise ValueError("network.block must be a string list")
+    for name, values in (
+        ("blocked_domains", blocked_domains),
+        ("blocked_ips", blocked_ips),
+        ("blocked_cidrs", blocked_cidrs),
+    ):
+        if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+            raise ValueError(f"network.{name} must be a string list")
+        if len(values) != len(set(values)):
+            raise ValueError(f"network.{name} values must be unique")
 
     normalized_categories = tuple(item.strip().lower() for item in categories)
     unknown = sorted(set(normalized_categories) - SUPPORTED_NETWORK_CATEGORIES)
@@ -53,6 +68,19 @@ def parse_policy_payload(payload: dict[str, Any]) -> PolicySpecification:
     if usb not in {"allow", "deny"}:
         raise ValueError("devices.usb must be allow or deny")
 
+    normalized_ips: list[str] = []
+    for value in blocked_ips:
+        try:
+            normalized_ips.append(str(ipaddress.ip_address(value)))
+        except ValueError as exc:
+            raise ValueError(f"invalid blocked IP address: {value}") from exc
+    normalized_cidrs: list[str] = []
+    for value in blocked_cidrs:
+        try:
+            normalized_cidrs.append(str(ipaddress.ip_network(value, strict=True)))
+        except ValueError as exc:
+            raise ValueError(f"invalid blocked CIDR network: {value}") from exc
+
     version = payload.get("version")
     if not isinstance(version, int) or version < 1:
         raise ValueError("policy version must be a positive integer")
@@ -60,8 +88,12 @@ def parse_policy_payload(payload: dict[str, Any]) -> PolicySpecification:
         policy_hash=policy_hash,
         profile=str(payload.get("profile", "")),
         version=version,
+        session_id=str(payload.get("session_id") or f"legacy-{policy_hash[:12]}"),
         denied_applications=tuple(_application_name(item) for item in denied),
         blocked_categories=normalized_categories,
+        blocked_domains=tuple(item.strip().lower() for item in blocked_domains),
+        blocked_ips=tuple(normalized_ips),
+        blocked_cidrs=tuple(normalized_cidrs),
         usb_deny=usb == "deny",
     )
 

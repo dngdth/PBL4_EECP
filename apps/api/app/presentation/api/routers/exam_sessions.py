@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Request, status
 
 from app.application.dtos.exam_pipeline import (
     CreateSessionInput,
@@ -14,6 +14,7 @@ from app.application.dtos.session_management import (
     ExamSessionDetails,
     UpdateExamSessionStatusInput,
 )
+from app.application.security import Permission
 from app.domain.entities.exam_session import ExamSession, PreflightCheck
 from app.presentation.api.deps import (
     CreateExamSessionUseCase,
@@ -21,6 +22,7 @@ from app.presentation.api.deps import (
     ListExamSessionsUseCase,
     Service,
     UpdateExamSessionStatusUseCase,
+    authorize,
 )
 from app.presentation.schemas.exam_pipeline import (
     AssignedAgentView,
@@ -51,7 +53,9 @@ def create_session(
     service: Service,
     create_management: CreateExamSessionUseCase,
     get_management: GetExamSessionUseCase,
+    request: Request,
 ) -> SessionDetailView:
+    authorize(request, Permission.CONTROL_AGENT)
     if isinstance(body, CreatePipelineSessionRequest):
         session = service.create_session(CreateSessionInput(**body.model_dump()))
     else:
@@ -61,8 +65,15 @@ def create_session(
 
 
 @router.get("/sessions", response_model=list[SessionDetailView])
-def list_sessions(use_case: ListExamSessionsUseCase) -> list[SessionDetailView]:
-    return [_session_detail_view(details) for details in use_case()]
+def list_sessions(
+    use_case: ListExamSessionsUseCase, request: Request
+) -> list[SessionDetailView]:
+    authorize(request, Permission.VIEW_SESSION)
+    details = use_case()
+    principal = getattr(request.state, "principal", None)
+    if principal is not None and principal.role.value != "ADMIN":
+        details = [item for item in details if item.session.id in principal.session_scope]
+    return [_session_detail_view(item) for item in details]
 
 
 @router.patch("/sessions/{session_id}/status", response_model=SessionDetailView)
@@ -70,7 +81,9 @@ def update_session_status(
     session_id: str,
     body: UpdateSessionStatusRequest,
     use_case: UpdateExamSessionStatusUseCase,
+    request: Request,
 ) -> SessionDetailView:
+    authorize(request, Permission.CONTROL_AGENT, session_id=session_id)
     details = use_case(UpdateExamSessionStatusInput(session_id=session_id, **body.model_dump()))
     return _session_detail_view(details)
 
@@ -79,7 +92,9 @@ def update_session_status(
 def get_session(
     session_id: str,
     use_case: GetExamSessionUseCase,
+    request: Request,
 ) -> SessionDetailView:
+    authorize(request, Permission.VIEW_SESSION, session_id=session_id)
     return _session_detail_view(use_case(session_id))
 
 
@@ -88,7 +103,15 @@ def deploy_policy(
     session_id: str,
     body: DeployPolicyRequest,
     service: Service,
+    request: Request,
 ) -> SessionView:
+    current = service.get_session(session_id)
+    authorize(
+        request,
+        Permission.CONTROL_AGENT,
+        session_id=session_id,
+        session_state=current.state.value,
+    )
     session = service.deploy_policy(DeployPolicyInput(session_id=session_id, **body.model_dump()))
     return _session_view(session)
 
@@ -102,7 +125,9 @@ def submit_preflight(
     workstation_id: str,
     body: SubmitPreflightRequest,
     service: Service,
+    request: Request,
 ) -> SessionView:
+    authorize(request, Permission.CONTROL_AGENT, session_id=session_id)
     checks = [PreflightCheck(**check.model_dump()) for check in body.checks]
     session = service.submit_preflight(
         SubmitPreflightInput(
@@ -120,7 +145,15 @@ def start_session(
     session_id: str,
     body: StartSessionRequest,
     service: Service,
+    request: Request,
 ) -> SessionView:
+    current = service.get_session(session_id)
+    authorize(
+        request,
+        Permission.CONTROL_AGENT,
+        session_id=session_id,
+        session_state=current.state.value,
+    )
     session = service.start_session(StartSessionInput(session_id=session_id, **body.model_dump()))
     return _session_view(session)
 
@@ -134,7 +167,9 @@ def ingest_telemetry(
     session_id: str,
     body: TelemetryRequest,
     service: Service,
+    request: Request,
 ) -> TelemetryAcceptedView:
+    authorize(request, Permission.CONTROL_AGENT, session_id=session_id)
     event, incident_id = service.ingest_telemetry(
         TelemetryInput(session_id=session_id, **body.model_dump())
     )
@@ -146,12 +181,21 @@ def finish_session(
     session_id: str,
     body: FinishSessionRequest,
     service: Service,
+    request: Request,
 ) -> SessionView:
+    current = service.get_session(session_id)
+    authorize(
+        request,
+        Permission.CONTROL_AGENT,
+        session_id=session_id,
+        session_state=current.state.value,
+    )
     return _session_view(service.finish_session(session_id, body.actor))
 
 
 @router.get("/sessions/{session_id}/summary")
-def get_summary(session_id: str, service: Service) -> dict:
+def get_summary(session_id: str, service: Service, request: Request) -> dict:
+    authorize(request, Permission.VIEW_INCIDENT, session_id=session_id)
     return service.get_summary(session_id)
 
 

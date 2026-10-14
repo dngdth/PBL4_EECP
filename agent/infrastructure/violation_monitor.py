@@ -47,7 +47,7 @@ class BlockedDomainMonitor:
             domain
             for category in specification.blocked_categories
             for domain in CATEGORY_DOMAINS[category]
-        }
+        } | set(specification.blocked_domains)
         with self._lock:
             if (
                 self._session_id == session_id

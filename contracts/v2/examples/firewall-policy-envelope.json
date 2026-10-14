@@ -1,0 +1,15 @@
+{
+  "protocol_version": 2,
+  "policy_id": "NETWORK_TEST",
+  "policy_version": 1,
+  "policy_hash": "73cf337eac989e9c7449caa407dba1964ef94437b474901ec6f66ae8f1856edc",
+  "session_id": "ses-firewall-1",
+  "issued_at": "2026-09-28T10:20:31Z",
+  "rules": {
+    "network": {
+      "blocked_domains": ["example.com"],
+      "blocked_ips": ["203.0.113.10"],
+      "blocked_cidrs": ["198.51.100.0/24"]
+    }
+  }
+}

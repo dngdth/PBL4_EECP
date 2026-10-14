@@ -19,6 +19,7 @@ from app.domain.value_objects.enums import (
     IncidentStatus,
     SessionState,
 )
+from app.domain.value_objects.primitives import new_id
 
 
 class ExamPipelineService:
@@ -122,7 +123,14 @@ class ExamPipelineService:
             return session
 
     def ingest_telemetry(self, data: TelemetryInput) -> tuple[TelemetryEvent, str | None]:
+        event, incident_id, _duplicate = self.ingest_protocol_event(data)
+        return event, incident_id
+
+    def ingest_protocol_event(
+        self, data: TelemetryInput
+    ) -> tuple[TelemetryEvent, str | None, bool]:
         event = TelemetryEvent(
+            id=data.event_id or new_id("evt"),
             session_id=data.session_id,
             workstation_id=data.workstation_id,
             event_type=data.event_type,
@@ -132,8 +140,13 @@ class ExamPipelineService:
             destination=data.destination,
             correlation_id=data.correlation_id,
             payload=data.payload,
+            occurred_at=data.occurred_at or datetime.now(UTC),
         )
         with self._uow_factory() as uow:
+            if data.event_id:
+                existing = uow.telemetry.find(data.event_id)
+                if existing is not None:
+                    return existing, None, True
             session = uow.sessions.get(data.session_id)
             if session.state != SessionState.RUNNING:
                 raise InvalidStateTransitionError("telemetry is accepted only for RUNNING sessions")
@@ -156,7 +169,7 @@ class ExamPipelineService:
                     details={"category": incident.category, "evidence": incident.evidence},
                 )
             uow.commit()
-            return event, incident.id if incident else None
+            return event, incident.id if incident else None, False
 
     def finish_session(self, session_id: str, actor: str) -> ExamSession:
         with self._uow_factory() as uow:

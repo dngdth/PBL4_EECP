@@ -85,7 +85,7 @@ class Incident:
 
 @dataclass(frozen=True, slots=True)
 class AuditEvent:
-    session_id: str
+    session_id: str | None
     actor: str
     action: str
     target: str

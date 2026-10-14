@@ -62,7 +62,7 @@ export async function updateSessionStatus(
 export async function deployPolicy(
   sessionId: string,
   data: DeployPolicyRequest
-): Promise<{ message: string; session: ExamSession; command_id: string }> {
+): Promise<{ message: string; session: ExamSession; command_id?: string }> {
   const payload = {
     profile: data.policy_name || 'STANDARD_EXAM_POLICY',
     rules: {
@@ -88,7 +88,6 @@ export async function deployPolicy(
   return {
     message: 'Đã triển khai chính sách thành công.',
     session,
-    command_id: `cmd-deploy-${Date.now()}`,
   };
 }
 

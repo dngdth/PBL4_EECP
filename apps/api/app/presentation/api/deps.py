@@ -1,7 +1,8 @@
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request, status
 
+from app.application.security import AuthorizationDeniedError, Permission
 from app.application.use_cases.agents.management import (
     HeartbeatAgent,
     ListAgents,
@@ -115,3 +116,36 @@ GetPendingCommandsUseCase = Annotated[
 AcknowledgeCommandUseCase = Annotated[
     AcknowledgeCommand, Depends(get_acknowledge_command)
 ]
+
+
+def authorize(
+    request: Request,
+    permission: Permission,
+    *,
+    session_id: str | None = None,
+    session_state: str | None = None,
+) -> None:
+    if request.app.state.settings.environment != "production-like":
+        return
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "authentication required")
+    try:
+        request.app.state.authorization.require(
+            principal,
+            permission,
+            session_id=session_id,
+            session_state=session_state,
+        )
+    except AuthorizationDeniedError as exc:
+        request.app.state.container.security_audit.record(
+            action="AUTHORIZATION_DENIED",
+            actor=principal.subject,
+            actor_type=principal.role.value,
+            resource_type="SESSION" if session_id else "API_RESOURCE",
+            resource_id=session_id or permission.value,
+            reason_code=str(exc).upper().replace(" ", "_")[:128],
+            session_id=session_id,
+            correlation_id=request.headers.get("x-correlation-id"),
+        )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc

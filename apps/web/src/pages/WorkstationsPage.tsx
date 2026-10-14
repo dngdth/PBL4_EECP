@@ -56,21 +56,17 @@ export const WorkstationsPage: React.FC = () => {
   // Convert Agent to Workstation ViewModel for Grid
   const workstations: Workstation[] = useMemo(() => {
     return agents.map((agent) => {
-      const isOnline = agent.status === 'ONLINE';
       return {
         id: agent.id,
-        ip: agent.ip_address || '127.0.0.1',
-        status: isOnline ? 'READY' : 'FAILED',
-        preflight_status: isOnline ? 'PASSED' : 'FAILED',
-        preflight_details: {
-          os_lockdown: isOnline,
-          network_firewall: isOnline,
-          agent_health: isOnline,
-          peripheral_check: isOnline,
-          notes: isOnline ? 'Máy trạm đang trực tuyến và sẵn sàng.' : 'Máy trạm đang ngoại tuyến.',
-        },
-        last_heartbeat: agent.last_seen || new Date().toISOString(),
-        agent_version: agent.agent_version || 'v1.0.0',
+        ip: agent.ip_address || 'unknown',
+        status: agent.presence_health || agent.status || 'UNKNOWN',
+        preflight_status: 'UNKNOWN',
+        last_heartbeat: agent.last_seen || '',
+        agent_version: agent.agent_version || 'unknown',
+        gateway_id: agent.gateway_id,
+        service_health: agent.service_health,
+        active_policy_hash: agent.active_policy_hash,
+        latest_incident: agent.latest_incident,
       };
     });
   }, [agents]);

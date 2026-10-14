@@ -1,0 +1,38 @@
+# Same-host deployment: API and Local Gateway run on the same physical server.
+# TLS terminates on a private Docker-network endpoint for the Backend uplink.
+services:
+  api:
+    restart: unless-stopped
+  web:
+    restart: unless-stopped
+  postgres:
+    restart: unless-stopped
+  redis:
+    restart: unless-stopped
+
+  gateway-backend-tls:
+    image: nginx:alpine
+    profiles: ["gateway"]
+    depends_on: [api]
+    volumes:
+      - ./deployment/gateway-server/backend-tls.conf:/etc/nginx/conf.d/default.conf:ro
+    secrets:
+      - source: gateway_tls_cert
+        target: server.crt
+      - source: gateway_tls_key
+        target: server.key
+    restart: unless-stopped
+
+  local-gateway:
+    depends_on: [api, gateway-backend-tls]
+    environment:
+      EECP_GATEWAY_BACKEND_WS_URL: wss://gateway-backend-tls:9443/api/v2/gateways/ws
+      EECP_GATEWAY_BACKEND_CA_FILE: /run/secrets/backend-ca.crt
+    secrets:
+      - source: gateway_backend_ca
+        target: backend-ca.crt
+    restart: unless-stopped
+
+secrets:
+  gateway_backend_ca:
+    file: ${EECP_GATEWAY_BACKEND_CA_FILE_HOST:?set trusted Backend CA certificate path}

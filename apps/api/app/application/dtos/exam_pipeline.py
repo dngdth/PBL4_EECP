@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from app.domain.entities.exam_session import PreflightCheck
@@ -49,3 +50,5 @@ class TelemetryInput:
     destination: str | None = None
     correlation_id: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
+    event_id: str | None = None
+    occurred_at: datetime | None = None

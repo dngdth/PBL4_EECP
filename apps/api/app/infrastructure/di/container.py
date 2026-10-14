@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.application.security_audit import SecurityAuditService
 from app.application.use_cases.agents.management import (
     HeartbeatAgent,
     ListAgents,
@@ -14,6 +15,15 @@ from app.application.use_cases.exam_sessions.management import (
     UpdateExamSessionStatus,
 )
 from app.application.use_cases.exam_sessions.pipeline import ExamPipelineService
+from app.application.use_cases.gateways.management import (
+    BindAgentToGateway,
+    ListAgentsForGateway,
+    ListGateways,
+    RecordGatewayDeliveryFailure,
+    RegisterGateway,
+    ResolveGatewayForAgent,
+    UpdateGatewayHealth,
+)
 from app.application.use_cases.policies.management import (
     AcknowledgeCommand,
     CreatePolicyProfile,
@@ -24,11 +34,12 @@ from app.application.use_cases.policies.management import (
 )
 from app.config import Settings
 from app.infrastructure.persistence.database import SqliteDatabase
+from app.infrastructure.persistence.postgres import PostgresDatabase
 
 
 @dataclass(frozen=True, slots=True)
 class Container:
-    database: SqliteDatabase
+    database: SqliteDatabase | PostgresDatabase
     pipeline_service: ExamPipelineService
     register_agent: RegisterAgent
     heartbeat_agent: HeartbeatAgent
@@ -43,11 +54,23 @@ class Container:
     delete_policy_profile: DeletePolicyProfile
     get_pending_commands: GetPendingCommands
     acknowledge_command: AcknowledgeCommand
+    register_gateway: RegisterGateway
+    update_gateway_health: UpdateGatewayHealth
+    bind_agent_to_gateway: BindAgentToGateway
+    resolve_gateway_for_agent: ResolveGatewayForAgent
+    list_agents_for_gateway: ListAgentsForGateway
+    list_gateways: ListGateways
+    security_audit: SecurityAuditService
+    record_gateway_delivery_failure: RecordGatewayDeliveryFailure
 
 
 def build_container(settings: Settings) -> Container:
-    database = SqliteDatabase(settings.database_path)
-    database.initialize()
+    if settings.database_url:
+        database = PostgresDatabase(settings.database_url)
+        database.require_schema()
+    else:
+        database = SqliteDatabase(settings.database_path)
+        database.initialize()
     return Container(
         database=database,
         pipeline_service=ExamPipelineService(database.unit_of_work),
@@ -64,4 +87,12 @@ def build_container(settings: Settings) -> Container:
         delete_policy_profile=DeletePolicyProfile(database.unit_of_work),
         get_pending_commands=GetPendingCommands(database.unit_of_work),
         acknowledge_command=AcknowledgeCommand(database.unit_of_work),
+        register_gateway=RegisterGateway(database.unit_of_work),
+        update_gateway_health=UpdateGatewayHealth(database.unit_of_work),
+        bind_agent_to_gateway=BindAgentToGateway(database.unit_of_work),
+        resolve_gateway_for_agent=ResolveGatewayForAgent(database.unit_of_work),
+        list_agents_for_gateway=ListAgentsForGateway(database.unit_of_work),
+        list_gateways=ListGateways(database.unit_of_work),
+        security_audit=SecurityAuditService(database.unit_of_work),
+        record_gateway_delivery_failure=RecordGatewayDeliveryFailure(database.unit_of_work),
     )

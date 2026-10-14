@@ -1,0 +1,14 @@
+{$EECP_SITE_ADDRESS:https://localhost} {
+	encode zstd gzip
+
+	@backend path /api/* /health /docs* /redoc* /openapi.json
+	reverse_proxy @backend api:8000
+
+	header {
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+	}
+
+	reverse_proxy web:80
+}

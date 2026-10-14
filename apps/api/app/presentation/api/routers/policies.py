@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Request, Response, status
 
 from app.application.dtos.policies import (
     AcknowledgeCommandInput,
@@ -6,6 +6,7 @@ from app.application.dtos.policies import (
     PolicyProfileDetails,
     UpdatePolicyProfileInput,
 )
+from app.application.security import Permission
 from app.domain.entities.exam_session import ExamSession
 from app.domain.entities.operations import Command
 from app.presentation.api.deps import (
@@ -15,6 +16,7 @@ from app.presentation.api.deps import (
     GetPendingCommandsUseCase,
     ListPolicyProfilesUseCase,
     UpdatePolicyProfileUseCase,
+    authorize,
 )
 from app.presentation.schemas.exam_pipeline import SessionView
 from app.presentation.schemas.policies import (
@@ -30,7 +32,10 @@ router = APIRouter(prefix="/api/v1", tags=["policies"])
 
 
 @router.get("/policy-profiles", response_model=list[PolicyProfileView])
-def policy_profiles(use_case: ListPolicyProfilesUseCase) -> list[PolicyProfileView]:
+def policy_profiles(
+    use_case: ListPolicyProfilesUseCase, request: Request
+) -> list[PolicyProfileView]:
+    authorize(request, Permission.VIEW_SESSION)
     return [_policy_profile_view(profile) for profile in use_case()]
 
 
@@ -42,7 +47,9 @@ def policy_profiles(use_case: ListPolicyProfilesUseCase) -> list[PolicyProfileVi
 def create_policy_profile(
     body: CreatePolicyProfileRequest,
     use_case: CreatePolicyProfileUseCase,
+    request: Request,
 ) -> PolicyProfileView:
+    authorize(request, Permission.MANAGE_POLICY)
     profile = use_case(CreatePolicyProfileInput(**body.model_dump()))
     return _policy_profile_view(profile)
 
@@ -52,7 +59,9 @@ def update_policy_profile(
     profile_id: str,
     body: UpdatePolicyProfileRequest,
     use_case: UpdatePolicyProfileUseCase,
+    request: Request,
 ) -> PolicyProfileView:
+    authorize(request, Permission.MANAGE_POLICY)
     profile = use_case(
         UpdatePolicyProfileInput(id=profile_id, **body.model_dump())
     )
@@ -66,15 +75,18 @@ def update_policy_profile(
 def delete_policy_profile(
     profile_id: str,
     use_case: DeletePolicyProfileUseCase,
+    request: Request,
 ) -> Response:
+    authorize(request, Permission.MANAGE_POLICY)
     use_case(profile_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/agents/{target_id}/commands", response_model=list[CommandView])
 def pending_commands(
-    target_id: str, use_case: GetPendingCommandsUseCase
+    target_id: str, use_case: GetPendingCommandsUseCase, request: Request
 ) -> list[CommandView]:
+    authorize(request, Permission.CONTROL_AGENT)
     return [_command_view(command) for command in use_case(target_id)]
 
 
@@ -83,7 +95,9 @@ def acknowledge_command(
     command_id: str,
     body: AcknowledgeCommandRequest,
     use_case: AcknowledgeCommandUseCase,
+    request: Request,
 ) -> SessionView:
+    authorize(request, Permission.CONTROL_AGENT)
     session = use_case(
         AcknowledgeCommandInput(command_id=command_id, **body.model_dump())
     )

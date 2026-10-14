@@ -284,6 +284,29 @@ def test_backend_persistent_dedupe_survives_restart_without_duplicate_incident(
     assert sum(event.action == "INCIDENT_CREATED" for event in audits) == 1
 
 
+def test_backend_rejects_event_for_wrong_session_with_explicit_receipt(
+    tmp_path: Path,
+) -> None:
+    container = _backend(tmp_path / "wrong-session.db")
+    envelope = _event().model_copy(
+        update={
+            "payload": Event.model_validate(_event().payload)
+            .model_copy(update={"session_id": "SES-UNKNOWN"})
+            .model_dump(mode="json"),
+        }
+    )
+
+    receipt_envelope = asyncio.run(
+        _handle_gateway_message("GW-A", envelope, container)
+    )
+
+    assert receipt_envelope is not None
+    receipt = EventReceipt.model_validate(receipt_envelope.payload)
+    assert receipt.status == EventReceiptStatus.REJECTED
+    assert receipt.error_code == ErrorCode.SESSION_MISMATCH
+    assert receipt.error_message
+
+
 def test_backend_preserves_out_of_order_occurrence_time(tmp_path: Path) -> None:
     container = _backend(tmp_path / "out-of-order.db")
     later = _event("EVT-LATER", occurred_at=NOW + timedelta(minutes=1))

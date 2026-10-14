@@ -32,6 +32,13 @@ class SubmitPreflightInput:
 
 
 @dataclass(frozen=True, slots=True)
+class RequestPreflightInput:
+    session_id: str
+    workstation_id: str
+    actor: str = "teacher"
+
+
+@dataclass(frozen=True, slots=True)
 class StartSessionInput:
     session_id: str
     actor: str

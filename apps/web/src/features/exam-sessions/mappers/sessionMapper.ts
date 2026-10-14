@@ -9,18 +9,45 @@ import {
 /**
  * Maps an AssignedAgentView from Backend management API into a Workstation entity for UI.
  */
-function mapAgentToWorkstation(agent: any): Workstation {
+function mapAgentToWorkstation(agent: any, sessionWorkstation?: any): Workstation {
   const isOnline = agent.status === 'ONLINE';
   const isFailed = agent.policy_status === 'FAILED';
 
   const status: Workstation['status'] = isFailed ? 'FAILED' : isOnline ? 'READY' : 'PENDING';
-  const preflight_status: Workstation['preflight_status'] = isFailed ? 'FAILED' : 'PENDING';
+  const readiness = sessionWorkstation?.readiness;
+  const preflight_status: Workstation['preflight_status'] = isFailed || readiness === 'FAILED'
+    ? 'FAILED'
+    : readiness === 'READY'
+      ? 'PASSED'
+      : readiness === 'WARNING'
+        ? 'WARNING'
+        : 'PENDING';
+  const checks = Array.isArray(sessionWorkstation?.preflight_checks)
+    ? sessionWorkstation.preflight_checks
+    : [];
+  const checkPassed = (...names: string[]) => {
+    const match = checks.find((check: any) => names.includes(check.name));
+    return match ? Boolean(match.passed) : false;
+  };
+  const preflight_details = checks.length
+    ? {
+        os_lockdown: checkPassed('os_lockdown', 'exam_app', 'kiosk_mode'),
+        network_firewall: checkPassed('network_firewall', 'dns_policy', 'policy_compliant'),
+        agent_health: checkPassed('agent_health', 'agent_online'),
+        peripheral_check: checkPassed('peripheral_check', 'display_peripherals'),
+        notes: checks
+          .filter((check: any) => check.details)
+          .map((check: any) => check.details)
+          .join('; ') || undefined,
+      }
+    : undefined;
 
   return {
     id: agent.id,
     ip: agent.ip_address || 'unknown',
     status,
     preflight_status,
+    preflight_details,
     last_heartbeat: agent.last_seen || '',
     agent_version: agent.agent_version || 'unknown',
     gateway_id: agent.gateway_id || null,
@@ -80,11 +107,14 @@ function mapActivityLog(raw: any): ActivityItem[] {
   // 1. Violations from Backend PolicyViolationView
   if (Array.isArray(raw.violations)) {
     raw.violations.forEach((v: any, idx: number) => {
+      const isObserved = v.action === 'OBSERVED';
       logs.push({
         id: `act-viol-${idx}`,
         timestamp: v.occurred_at || '',
         level: 'WARNING',
-        message: `Máy ${v.workstation_id} vi phạm: ${v.category}${v.destination ? ` -> ${v.destination}` : ''}`,
+        message: isObserved
+          ? `Audit DNS trên máy ${v.workstation_id} quan sát thấy tên miền bị cấm${v.destination ? `: ${v.destination}` : ''}`
+          : `Máy ${v.workstation_id} bị chặn truy cập${v.destination ? `: ${v.destination}` : ''}`,
         source: 'AGENT',
       });
     });
@@ -134,7 +164,9 @@ export function normalizeSession(raw: any): ExamSession {
   // Extract workstations: prefer raw.agents (Management API), then raw.workstations
   let workstations: Workstation[] = [];
   if (Array.isArray(raw.agents) && raw.agents.length > 0) {
-    workstations = raw.agents.map(mapAgentToWorkstation);
+    workstations = raw.agents.map((agent: any) =>
+      mapAgentToWorkstation(agent, raw.workstations?.[agent.id])
+    );
   } else if (Array.isArray(raw.workstations)) {
     workstations = raw.workstations;
   } else if (raw.workstations && typeof raw.workstations === 'object') {

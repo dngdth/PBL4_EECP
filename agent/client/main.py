@@ -8,6 +8,7 @@ from agent.application.privileged_execution import PrivilegedExecutionPort
 from agent.client.infrastructure.gateway_control_client import GatewayControlClient
 from agent.client.infrastructure.named_pipe_executor import NamedPipePrivilegedExecutor
 from agent.client.runtime import AgentClientRuntime
+from agent.client.sensors.dns_audit_sensor import DnsAuditSensor
 from agent.client.sensors.process_sensor import ProcessSensor
 from agent.client.sensors.service_health_sensor import ServiceHealthSensor
 from agent.client.sensors.suite import SensorSuite
@@ -23,6 +24,7 @@ from agent.config import (
     IPC_MAX_MESSAGE_BYTES,
     IPC_PIPE_NAME,
     IPC_REQUEST_TIMEOUT_SECONDS,
+    POLICY_MODE,
     REQUEST_TIMEOUT_SECONDS,
     SERVER_URL,
     SERVICE_HEALTH_INTERVAL_SECONDS,
@@ -97,8 +99,28 @@ def build_client_runtime(
         ),
         interval_seconds=SERVICE_HEALTH_INTERVAL_SECONDS,
     )
+    polling_sensors = [process_sensor, health_sensor]
+    if POLICY_MODE == "audit":
+        polling_sensors.insert(
+            0,
+            DnsAuditSensor(
+                lambda session_id, destination: backend.report_event(
+                    session_id,
+                    identity.agent_id,
+                    EventType.POLICY_VIOLATION,
+                    {
+                        "severity": "WARNING",
+                        "category": "PROHIBITED_WEBSITE",
+                        "action": "OBSERVED",
+                        "destination": destination,
+                        "enforcement_mode": "audit",
+                        "source": "windows-dns-cache",
+                    },
+                )
+            ),
+        )
     sensors = SensorSuite(
-        (process_sensor, health_sensor),
+        tuple(polling_sensors),
         health_sensor=health_sensor,
         health_update=getattr(backend, "set_service_health", None),
     )
@@ -136,7 +158,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.check:
         print(
             f"component=agent-client control_transport=gateway-ws "
-            f"privileged_transport=named-pipe pipe={IPC_PIPE_NAME}"
+            f"privileged_transport=named-pipe pipe={IPC_PIPE_NAME} "
+            f"policy_mode={POLICY_MODE}"
         )
         return
     try:
@@ -157,6 +180,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         else None
     )
     try:
+        print(
+            f"component=agent-client status=starting agent_id={agent_id} "
+            f"policy_mode={POLICY_MODE} "
+            f"control_transport={'direct-http' if args.direct_backend_compat else 'gateway-ws'}"
+        )
         runtime = build_client_runtime(
             agent_id,
             NamedPipePrivilegedExecutor(transport, AGENT_VERSION),

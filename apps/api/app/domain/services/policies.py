@@ -20,7 +20,11 @@ class IncidentPolicy:
         session_events: Sequence[TelemetryEvent],
         open_incident_categories: set[str],
     ) -> Incident | None:
-        if current.event_type == "POLICY_VIOLATION" and current.action == "BLOCKED":
+        if (
+            current.event_type == "POLICY_VIOLATION"
+            and current.action in {"BLOCKED", "OBSERVED"}
+            and "POLICY_VIOLATION" not in open_incident_categories
+        ):
             return Incident(
                 session_id=current.session_id,
                 workstation_id=current.workstation_id,

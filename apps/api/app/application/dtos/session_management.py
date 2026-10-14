@@ -26,6 +26,7 @@ class AssignedAgentDetails:
     id: str
     hostname: str | None
     ip_address: str | None
+    agent_version: str | None
     status: AgentStatus | None
     last_seen: datetime | None
     assigned_at: datetime | None
@@ -37,6 +38,7 @@ class PolicyViolationDetails:
     workstation_id: str
     destination: str | None
     category: str
+    action: str
     occurred_at: datetime
 
 

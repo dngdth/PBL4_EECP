@@ -10,7 +10,11 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from agent.domain.policy import PolicySpecification, parse_policy_payload
+from agent.domain.policy import (
+    CATEGORY_DOMAINS,
+    PolicySpecification,
+    parse_policy_payload,
+)
 from agent.infrastructure.windows.firewall_enforcer import (
     FirewallEnforcer,
     FirewallRule,
@@ -21,25 +25,6 @@ POLICY_MARKER_START = "# BEGIN EECP MANAGED POLICY"
 POLICY_MARKER_END = "# END EECP MANAGED POLICY"
 USBSTOR_KEY = r"HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR"
 
-CATEGORY_DOMAINS = {
-    "generative_ai": {
-        "chatgpt.com",
-        "claude.ai",
-        "copilot.microsoft.com",
-        "gemini.google.com",
-        "openai.com",
-        "perplexity.ai",
-    },
-    "social_network": {
-        "facebook.com",
-        "instagram.com",
-        "reddit.com",
-        "tiktok.com",
-        "twitter.com",
-        "x.com",
-    },
-    "vpn_proxy": {"nordvpn.com", "protonvpn.com", "surfshark.com"},
-}
 LOGGER = logging.getLogger(__name__)
 
 

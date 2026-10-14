@@ -42,7 +42,16 @@ export async function retryWorkstationPreflight(
   sessionId: string,
   workstationId: string
 ): Promise<{ message: string; workstation: Workstation; session: ExamSession }> {
-  // The Dashboard cannot attest endpoint checks. The Agent must submit them.
+  const queued = await apiClient<{ command_id: string }>(
+    `/sessions/${sessionId}/workstations/${encodeURIComponent(workstationId)}/preflight/retry`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ actor: 'dashboard' }),
+    }
+  );
+
+  // The command ACK is asynchronous. The session page keeps polling and will
+  // pick up the resulting operational state without the Dashboard attesting it.
   const raw = await apiClient<any>(`/sessions/${sessionId}`);
 
   const session = normalizeSession(raw);
@@ -50,7 +59,7 @@ export async function retryWorkstationPreflight(
   if (!workstation) throw new Error(`Backend did not return workstation ${workstationId}`);
 
   return {
-    message: `Đã làm mới trạng thái tiền kiểm thực tế của ${workstationId}.`,
+    message: `Đã gửi HEALTH_CHECK ${queued.command_id} tới ${workstationId}.`,
     workstation,
     session,
   };

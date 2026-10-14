@@ -158,7 +158,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.check:
         print(
             f"component=agent-client control_transport=gateway-ws "
-            f"privileged_transport=named-pipe pipe={IPC_PIPE_NAME}"
+            f"privileged_transport=named-pipe pipe={IPC_PIPE_NAME} "
+            f"policy_mode={POLICY_MODE}"
         )
         return
     try:
@@ -179,6 +180,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         else None
     )
     try:
+        print(
+            f"component=agent-client status=starting agent_id={agent_id} "
+            f"policy_mode={POLICY_MODE} "
+            f"control_transport={'direct-http' if args.direct_backend_compat else 'gateway-ws'}"
+        )
         runtime = build_client_runtime(
             agent_id,
             NamedPipePrivilegedExecutor(transport, AGENT_VERSION),

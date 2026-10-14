@@ -58,7 +58,10 @@ def run_service_forever() -> None:
     runtime = build_service_runtime()
     handler = ServiceProtocolHandler(runtime.execution_service.handle, AGENT_VERSION)
     runtime.start(handler)
-    print(f"component=agent-service status=ready transport=named-pipe pipe={IPC_PIPE_NAME}")
+    print(
+        f"component=agent-service status=ready transport=named-pipe "
+        f"pipe={IPC_PIPE_NAME} policy_mode={POLICY_MODE}"
+    )
     try:
         while True:
             time.sleep(1.0)
@@ -104,7 +107,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
             print(
                 f"component=agent-service status=config-valid "
-                f"transport=named-pipe pipe={IPC_PIPE_NAME}"
+                f"transport=named-pipe pipe={IPC_PIPE_NAME} policy_mode={POLICY_MODE}"
             )
             return
         run_service_forever()

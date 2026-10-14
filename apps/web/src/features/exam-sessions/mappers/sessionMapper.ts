@@ -113,7 +113,7 @@ function mapActivityLog(raw: any): ActivityItem[] {
         timestamp: v.occurred_at || '',
         level: 'WARNING',
         message: isObserved
-          ? `Máy ${v.workstation_id} đã truy cập tên miền bị cấm (audit)${v.destination ? `: ${v.destination}` : ''}`
+          ? `Audit DNS trên máy ${v.workstation_id} quan sát thấy tên miền bị cấm${v.destination ? `: ${v.destination}` : ''}`
           : `Máy ${v.workstation_id} bị chặn truy cập${v.destination ? `: ${v.destination}` : ''}`,
         source: 'AGENT',
       });

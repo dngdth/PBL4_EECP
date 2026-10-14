@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import secrets
 from datetime import UTC, datetime
@@ -45,6 +46,7 @@ from contracts.v2 import (
 )
 
 router = APIRouter(prefix="/api/v2/gateways", tags=["gateways"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("")
@@ -277,6 +279,16 @@ async def _handle_gateway_message(
                 )
             )
         except DomainError as exc:
+            logger.warning(
+                "event=EVENT_REJECTED gateway_id=%s agent_id=%s session_id=%s "
+                "event_id=%s correlation_id=%s reason=%s",
+                gateway_id,
+                event.agent_id,
+                event.session_id,
+                event.event_id,
+                event.correlation_id,
+                str(exc)[:500],
+            )
             return _event_receipt_envelope(
                 gateway_id,
                 event,
@@ -284,14 +296,25 @@ async def _handle_gateway_message(
                 error_code=ErrorCode.SESSION_MISMATCH,
                 error_message=str(exc)[:500],
             )
+        status_value = (
+            EventReceiptStatus.ALREADY_PROCESSED
+            if duplicate
+            else EventReceiptStatus.ACCEPTED
+        )
+        logger.info(
+            "event=EVENT_ACCEPTED gateway_id=%s agent_id=%s session_id=%s "
+            "event_id=%s correlation_id=%s status=%s",
+            gateway_id,
+            event.agent_id,
+            event.session_id,
+            event.event_id,
+            event.correlation_id,
+            status_value.value,
+        )
         return _event_receipt_envelope(
             gateway_id,
             event,
-            (
-                EventReceiptStatus.ALREADY_PROCESSED
-                if duplicate
-                else EventReceiptStatus.ACCEPTED
-            ),
+            status_value,
         )
 
     if envelope.message_type == GatewayMessageType.DELIVERY_FAILURE:

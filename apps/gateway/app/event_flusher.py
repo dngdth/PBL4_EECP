@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from collections.abc import Callable
 from contextlib import suppress
@@ -14,6 +15,8 @@ from contracts.v2 import (
     GatewayEnvelope,
     PresenceHealth,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class EventUplink(Protocol):
@@ -92,12 +95,26 @@ class EventFlusher:
             self.events_delivered += 1
             if receipt.status == EventReceiptStatus.ALREADY_PROCESSED:
                 self.events_duplicate_accepted += 1
+            logger.info(
+                "event=EVENT_ACCEPTED event_id=%s correlation_id=%s status=%s",
+                receipt.event_id,
+                envelope.correlation_id,
+                receipt.status.value,
+            )
         else:
             self._buffer.mark_terminal(
                 receipt.event_id,
                 receipt.error_message or str(receipt.error_code or "terminal rejection"),
             )
             self.events_failed_terminal += 1
+            logger.warning(
+                "event=EVENT_REJECTED event_id=%s correlation_id=%s "
+                "error_code=%s error_message=%s",
+                receipt.event_id,
+                envelope.correlation_id,
+                receipt.error_code.value if receipt.error_code else "UNKNOWN",
+                receipt.error_message or "terminal rejection",
+            )
         self._wake.set()
 
     async def flush_once(self) -> None:
@@ -113,11 +130,25 @@ class EventFlusher:
             self._buffer.mark_in_flight(record.event_id, retry_at)
             try:
                 await self._uplink.send(record.envelope)
+                logger.info(
+                    "event=EVENT_SENT event_id=%s correlation_id=%s attempt=%s",
+                    record.event_id,
+                    record.envelope.correlation_id,
+                    attempt,
+                )
                 if attempt > 1:
                     self.events_retried += 1
             except (OSError, asyncio.QueueFull) as exc:
                 self._buffer.schedule_retry(record.event_id, retry_at, str(exc))
                 self.events_retried += 1
+                logger.warning(
+                    "event=EVENT_SEND_RETRY event_id=%s correlation_id=%s "
+                    "attempt=%s error_type=%s",
+                    record.event_id,
+                    record.envelope.correlation_id,
+                    attempt,
+                    type(exc).__name__,
+                )
 
     async def _run(self) -> None:
         while not self._stop.is_set():

@@ -57,6 +57,7 @@ class GatewayControlClient:
         reconnect_max_seconds: float = 30.0,
         connector: Connector = connect,
         jitter: Callable[[], float] = random.random,
+        log: Callable[[str], None] = print,
     ):
         scheme = urlparse(gateway_url).scheme
         if scheme not in {"ws", "wss"}:
@@ -77,11 +78,13 @@ class GatewayControlClient:
         self._reconnect_max = reconnect_max_seconds
         self._connector = connector
         self._jitter = jitter
+        self._log = log
         self._identity: WorkstationIdentity | None = None
         self._connected = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._outbound: queue.Queue[GatewayEnvelope] = queue.Queue(maxsize=1000)
+        self._pending_outbound: GatewayEnvelope | None = None
         self._commands: queue.Queue[Command] = queue.Queue()
         self._command_index: dict[str, Command] = {}
         self._active_policy: tuple[str, dict[str, Any]] | None = None
@@ -233,6 +236,11 @@ class GatewayControlClient:
             payload=payload,
             correlation_id=f"event_{session_id}",
         )
+        self._log(
+            "event=EVENT_CREATED "
+            f"event_id={event.event_id} correlation_id={event.correlation_id} "
+            f"session_id={session_id} event_type={event_type.value}"
+        )
         self._queue(
             GatewayMessageType.EVENT,
             event.event_id,
@@ -280,8 +288,12 @@ class GatewayControlClient:
                         except TimeoutError:
                             continue
                         self._receive(message)
-            except (ConnectionClosed, OSError, TimeoutError, ValueError):
+            except (ConnectionClosed, OSError, TimeoutError, ValueError) as exc:
                 self._connected.clear()
+                self._log(
+                    "event=GATEWAY_CONNECTION_INTERRUPTED "
+                    f"error_type={type(exc).__name__}"
+                )
                 wait = min(self._reconnect_max, delay * (1 + 0.25 * self._jitter()))
                 self._stop.wait(wait)
                 delay = min(self._reconnect_max, delay * 2)
@@ -309,11 +321,21 @@ class GatewayControlClient:
 
     def _flush_outbound(self, websocket: SyncWebSocket) -> None:
         while True:
-            try:
-                envelope = self._outbound.get_nowait()
-            except queue.Empty:
-                return
+            envelope = self._pending_outbound
+            if envelope is None:
+                try:
+                    envelope = self._outbound.get_nowait()
+                except queue.Empty:
+                    return
+                self._pending_outbound = envelope
             websocket.send(envelope.to_json())
+            self._pending_outbound = None
+            if envelope.message_type == GatewayMessageType.EVENT:
+                self._log(
+                    "event=EVENT_SENT "
+                    f"event_id={envelope.message_id} "
+                    f"correlation_id={envelope.correlation_id}"
+                )
 
     def _receive(self, raw: str | bytes) -> None:
         envelope = GatewayEnvelope.model_validate_json(raw)
@@ -349,6 +371,12 @@ class GatewayControlClient:
                     payload=payload,
                 )
             )
+            if message_type == GatewayMessageType.EVENT:
+                self._log(
+                    "event=EVENT_QUEUED "
+                    f"event_id={message_id} "
+                    f"correlation_id={correlation_id or message_id}"
+                )
         except queue.Full as exc:
             raise OSError("Agent Gateway queue is full; message was not retained") from exc
 

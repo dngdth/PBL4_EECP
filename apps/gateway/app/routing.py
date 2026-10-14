@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -18,6 +19,8 @@ from contracts.v2 import (
     Presence,
     PresenceHealth,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class BackendSender(Protocol):
@@ -85,6 +88,12 @@ class GatewayRouter:
                 raise ValueError("Event correlation does not match envelope")
             if self._event_buffer is not None:
                 inserted = self._event_buffer.put(envelope)
+                logger.info(
+                    "event=EVENT_BUFFERED event_id=%s correlation_id=%s inserted=%s",
+                    event.event_id,
+                    envelope.correlation_id,
+                    inserted,
+                )
                 if self._event_flusher is not None:
                     self._event_flusher.note_buffered(inserted)
                     self._event_flusher.wake()

@@ -3,6 +3,8 @@ import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from agent.client import main as client_main
 from agent.client.infrastructure.gateway_control_client import GatewayControlClient
 from agent.domain.identity import WorkstationIdentity
@@ -10,6 +12,8 @@ from contracts.v2 import (
     Ack,
     Command,
     CommandType,
+    Event,
+    EventType,
     GatewayEnvelope,
     GatewayMessageType,
     HealthCheckPayload,
@@ -179,3 +183,52 @@ def test_agent_presence_is_degraded_when_service_is_unavailable() -> None:
     assert presence.health == PresenceHealth.DEGRADED
     assert presence.service_health == ServiceHealth.UNAVAILABLE
     client.close()
+
+
+def test_agent_event_is_retried_with_same_identity_after_send_disconnect() -> None:
+    class FailingSocket:
+        def __init__(self):
+            self.fail = True
+            self.sent: list[str] = []
+
+        def send(self, message: str) -> None:
+            if self.fail:
+                self.fail = False
+                raise OSError("socket disconnected")
+            self.sent.append(message)
+
+    logs: list[str] = []
+    client = GatewayControlClient(
+        "ws://gateway/ws/agents",
+        "agent-token",
+        "1.1.0",
+        allow_plaintext_ws=True,
+        log=logs.append,
+    )
+    client._identity = WorkstationIdentity(
+        "AGT-001", "HOST", "192.0.2.1", "1.1.0"
+    )
+    client.report_event(
+        "SES-001",
+        "AGT-001",
+        EventType.POLICY_VIOLATION,
+        {
+            "severity": "WARNING",
+            "category": "PROHIBITED_WEBSITE",
+            "action": "OBSERVED",
+            "destination": "chatgpt.com",
+        },
+    )
+    socket = FailingSocket()
+
+    with pytest.raises(OSError, match="socket disconnected"):
+        client._flush_outbound(socket)
+    client._flush_outbound(socket)
+
+    assert len(socket.sent) == 1
+    envelope = GatewayEnvelope.model_validate_json(socket.sent[0])
+    event = Event.model_validate(envelope.payload)
+    assert event.event_id == envelope.message_id
+    assert event.correlation_id == envelope.correlation_id
+    assert any("event=EVENT_QUEUED" in value for value in logs)
+    assert any("event=EVENT_SENT" in value for value in logs)

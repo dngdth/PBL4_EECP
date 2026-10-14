@@ -1,4 +1,4 @@
-from __future__ import annotations
+"""Compatibility import; delivery orchestration lives in the application layer."""
 
 import asyncio
 import logging

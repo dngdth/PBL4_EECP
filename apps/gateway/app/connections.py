@@ -4,6 +4,8 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Protocol
 
+from starlette.websockets import WebSocketDisconnect
+
 
 class AgentSocket(Protocol):
     async def send_text(self, data: str) -> None: ...
@@ -45,7 +47,11 @@ class AgentConnectionManager:
             socket = self._connections.get(agent_id)
         if socket is None:
             return False
-        await socket.send_text(message)
+        try:
+            await socket.send_text(message)
+        except (OSError, RuntimeError, WebSocketDisconnect):
+            await self.disconnect(agent_id, socket)
+            return False
         return True
 
     async def is_connected(self, agent_id: str) -> bool:

@@ -12,3 +12,12 @@ class RegisterGatewayInput:
 class BindAgentToGatewayInput:
     agent_id: str
     gateway_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayDeliveryFailureInput:
+    gateway_id: str
+    agent_id: str
+    command_id: str
+    correlation_id: str
+    reason: str

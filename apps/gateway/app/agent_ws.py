@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
@@ -24,7 +25,12 @@ async def agent_websocket(websocket: WebSocket) -> None:
     await websocket.accept()
     agent_id: str | None = None
     try:
-        first = GatewayEnvelope.model_validate_json(await websocket.receive_text())
+        first = GatewayEnvelope.model_validate_json(
+            await asyncio.wait_for(
+                websocket.receive_text(),
+                timeout=state.settings.agent_handshake_timeout_seconds,
+            )
+        )
         if first.message_type != GatewayMessageType.AGENT_HELLO:
             raise ValueError("first Agent message must be AGENT_HELLO")
         hello = AgentHello.model_validate(first.payload)
@@ -35,21 +41,13 @@ async def agent_websocket(websocket: WebSocket) -> None:
             record = records.get(hello.agent_id, {})
             actual = hashlib.sha256(supplied_secret.encode()).hexdigest()
             if record.get("revoked") is True:
-                await state.router.report_security_audit(
-                    hello.agent_id, "REVOKED_CREDENTIAL"
-                )
+                await state.router.report_security_audit(hello.agent_id, "REVOKED_CREDENTIAL")
                 raise ValueError("Agent credential is revoked")
             if not secrets.compare_digest(actual, str(record.get("secret_sha256", ""))):
-                await state.router.report_security_audit(
-                    hello.agent_id, "INVALID_CREDENTIAL"
-                )
+                await state.router.report_security_audit(hello.agent_id, "INVALID_CREDENTIAL")
                 raise ValueError("Agent credential does not match identity")
-        elif not secrets.compare_digest(
-            supplied_secret, state.settings.agent_bootstrap_token
-        ):
-            await state.router.report_security_audit(
-                hello.agent_id, "INVALID_CREDENTIAL"
-            )
+        elif not secrets.compare_digest(supplied_secret, state.settings.agent_bootstrap_token):
+            await state.router.report_security_audit(hello.agent_id, "INVALID_CREDENTIAL")
             raise ValueError("Agent credential is invalid")
         agent_id = hello.agent_id
         await state.connections.connect(agent_id, websocket)
@@ -58,8 +56,12 @@ async def agent_websocket(websocket: WebSocket) -> None:
         while True:
             envelope = GatewayEnvelope.model_validate_json(await websocket.receive_text())
             await state.router.route_agent(agent_id, envelope)
-    except (ValidationError, ValueError):
+    except (ValidationError, ValueError, TimeoutError):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+    except OSError:
+        # ACK/control backpressure is explicit; presence and identity publication
+        # are retried by the application without dropping healthy LAN sockets.
+        await websocket.close(code=status.WS_1013_TRY_AGAIN_LATER)
     except WebSocketDisconnect:
         pass
     finally:

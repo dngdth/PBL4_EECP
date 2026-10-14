@@ -51,10 +51,12 @@ class Gateway:
         at: datetime,
         connected_agent_count: int,
         backend_uplink_status: GatewayStatus,
+        status: GatewayStatus = GatewayStatus.ONLINE,
     ) -> None:
         if connected_agent_count < 0:
             raise PolicyValidationError("connected agent count must not be negative")
         self.heartbeat(at)
+        self.status = status
         self.connected_agent_count = connected_agent_count
         self.backend_uplink_status = backend_uplink_status
 

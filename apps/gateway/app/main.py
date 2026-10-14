@@ -10,13 +10,14 @@ import uvicorn
 from fastapi import FastAPI
 
 from apps.gateway.app.agent_ws import router as agent_router
+from apps.gateway.app.application.event_flusher import EventFlusher
+from apps.gateway.app.application.presence_monitor import PresenceMonitor
+from apps.gateway.app.application.routing import GatewayRouter
 from apps.gateway.app.backend_client import BackendUplink
 from apps.gateway.app.config import GatewaySettings
 from apps.gateway.app.connections import AgentConnectionManager
 from apps.gateway.app.event_buffer import EventBuffer
-from apps.gateway.app.event_flusher import EventFlusher
 from apps.gateway.app.presence import PresenceStore
-from apps.gateway.app.routing import GatewayRouter
 from contracts.v2 import GatewayHealth, PresenceHealth
 
 
@@ -97,11 +98,11 @@ def create_app(
         if event_flusher is not None:
             await event_flusher.start()
         presence_task = asyncio.create_task(
-            _presence_loop(
+            PresenceMonitor(
                 gateway_router,
                 settings.presence_timeout_seconds,
                 settings.presence_offline_timeout_seconds,
-            ),
+            ).run(),
             name="gateway-presence-monitor",
         )
         try:
@@ -131,10 +132,13 @@ def create_app(
         status_value = (
             PresenceHealth.DEGRADED
             if (
-                buffer_health is not None
-                and buffer_health.buffer_status == PresenceHealth.DEGRADED
+                buffer_health is not None and buffer_health.buffer_status == PresenceHealth.DEGRADED
             )
-            or queue_saturation_count > 0
+            or actual_uplink.status != PresenceHealth.ONLINE
+            or (
+                getattr(actual_uplink, "outbound_queue_depth", 0)
+                >= getattr(actual_uplink, "outbound_queue_capacity", float("inf"))
+            )
             else PresenceHealth.ONLINE
         )
         value = GatewayHealth(
@@ -158,14 +162,10 @@ def create_app(
                 buffer_health.last_flush_error if buffer_health is not None else None
             ),
             buffer_status=(
-                buffer_health.buffer_status
-                if buffer_health is not None
-                else PresenceHealth.ONLINE
+                buffer_health.buffer_status if buffer_health is not None else PresenceHealth.ONLINE
             ),
             outbound_queue_depth=getattr(actual_uplink, "outbound_queue_depth", None),
-            outbound_queue_capacity=getattr(
-                actual_uplink, "outbound_queue_capacity", None
-            ),
+            outbound_queue_capacity=getattr(actual_uplink, "outbound_queue_capacity", None),
             outbound_queue_saturation_count=queue_saturation_count,
         )
         return value.model_dump(mode="json")
@@ -194,14 +194,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         ssl_certfile=settings.tls_certfile,
         ssl_keyfile=settings.tls_keyfile,
     )
-
-
-async def _presence_loop(
-    router: GatewayRouter, stale_seconds: float, offline_seconds: float
-) -> None:
-    while True:
-        await asyncio.sleep(max(0.1, stale_seconds / 2))
-        await router.refresh_presence(stale_seconds, offline_seconds)
 
 
 if __name__ == "__main__":

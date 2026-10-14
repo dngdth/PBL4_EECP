@@ -1,4 +1,4 @@
-from __future__ import annotations
+"""Compatibility import; routing use cases depend on application ports."""
 
 import logging
 from datetime import UTC, datetime

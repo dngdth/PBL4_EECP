@@ -167,6 +167,7 @@ class AcknowledgeCommand:
                     return session
 
                 command.status = CommandStatus.ACKNOWLEDGED
+                command.error = None
                 self._record_success(session, command, data.policy_hash)
                 uow.sessions.save(session)
                 uow.commands.save(command)

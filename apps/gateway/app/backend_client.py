@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import random
+import ssl
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime
+from typing import Protocol
 
 from websockets.asyncio.client import connect
 
@@ -21,6 +23,11 @@ MessageHandler = Callable[[GatewayEnvelope], Awaitable[None]]
 ConnectedHandler = Callable[[], Awaitable[None]]
 ConnectedCount = Callable[[], Awaitable[int]]
 HealthFields = Callable[[], dict]
+
+
+class BackendSocket(Protocol):
+    async def send(self, message: str) -> None: ...
+    async def recv(self) -> str | bytes: ...
 
 
 class BackendUplink:
@@ -44,6 +51,12 @@ class BackendUplink:
         self._health_fields = health_fields or (lambda: {})
         self._jitter = jitter
         self._connector = connector
+        self._ssl_context = (
+            ssl.create_default_context(cafile=settings.backend_ca_file)
+            if settings.backend_ws_url.startswith("wss://")
+            else None
+        )
+        self._pending_send: GatewayEnvelope | None = None
         self._outbound: asyncio.Queue[GatewayEnvelope] = asyncio.Queue(
             maxsize=settings.backend_queue_max_messages
         )
@@ -74,7 +87,7 @@ class BackendUplink:
 
     @property
     def outbound_queue_depth(self) -> int:
-        return self._outbound.qsize()
+        return self._outbound.qsize() + int(self._pending_send is not None)
 
     @property
     def outbound_queue_capacity(self) -> int:
@@ -87,46 +100,18 @@ class BackendUplink:
     async def _run(self) -> None:
         delay = self._settings.reconnect_initial_seconds
         url = f"{self._settings.backend_ws_url}/{self._settings.gateway_id}"
-        headers = {
-            "Authorization": f"Bearer {self._settings.gateway_bootstrap_token}"
-        }
+        headers = {"Authorization": f"Bearer {self._settings.gateway_bootstrap_token}"}
         while not self._stop_event.is_set():
             try:
-                async with self._connector(
-                    url, additional_headers=headers
-                ) as websocket:
+                options = {"additional_headers": headers}
+                if self._ssl_context is not None:
+                    options["ssl"] = self._ssl_context
+                async with self._connector(url, **options) as websocket:
                     await websocket.send(self._hello().to_json())
                     self.status = PresenceHealth.ONLINE
                     delay = self._settings.reconnect_initial_seconds
                     await self._on_connected()
-                    while not self._stop_event.is_set():
-                        receive_task = asyncio.create_task(websocket.recv())
-                        send_task = asyncio.create_task(self._outbound.get())
-                        health_task = asyncio.create_task(
-                            asyncio.sleep(self._settings.health_interval_seconds)
-                        )
-                        tasks = {receive_task, send_task, health_task}
-                        try:
-                            done, _pending = await asyncio.wait(
-                                tasks,
-                                return_when=asyncio.FIRST_COMPLETED,
-                            )
-                        finally:
-                            for task in tasks:
-                                if not task.done():
-                                    task.cancel()
-                            await asyncio.gather(*tasks, return_exceptions=True)
-                        if receive_task in done:
-                            message = receive_task.result()
-                            await self._on_message(
-                                GatewayEnvelope.model_validate_json(message)
-                            )
-                        if send_task in done:
-                            envelope = send_task.result()
-                            await websocket.send(envelope.to_json())
-                        if health_task in done:
-                            count = await self._connected_agent_count()
-                            await websocket.send(self._health(count).to_json())
+                    await self._serve_connection(websocket)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -138,6 +123,51 @@ class BackendUplink:
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self._stop_event.wait(), timeout=wait)
                 delay = min(self._settings.reconnect_max_seconds, delay * 2)
+
+    async def _serve_connection(self, websocket: BackendSocket) -> None:
+        # Independent workers keep health periodic under continuous traffic. One
+        # send lock serializes writes; cancelling one worker cannot consume and
+        # discard another worker's queued envelope.
+        send_lock = asyncio.Lock()
+        tasks = {
+            asyncio.create_task(self._receive(websocket), name="gateway-uplink-receive"),
+            asyncio.create_task(
+                self._send_queued(websocket, send_lock), name="gateway-uplink-send"
+            ),
+            asyncio.create_task(
+                self._send_health(websocket, send_lock), name="gateway-uplink-health"
+            ),
+        }
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _receive(self, websocket: BackendSocket) -> None:
+        while True:
+            envelope = GatewayEnvelope.model_validate_json(await websocket.recv())
+            await self._on_message(envelope)
+
+    async def _send_queued(self, websocket: BackendSocket, lock: asyncio.Lock) -> None:
+        while True:
+            if self._pending_send is None:
+                self._pending_send = await self._outbound.get()
+            async with lock:
+                await websocket.send(self._pending_send.to_json())
+            self._pending_send = None
+            # A busy socket adapter may finish send synchronously; let timers run.
+            await asyncio.sleep(0)
+
+    async def _send_health(self, websocket: BackendSocket, lock: asyncio.Lock) -> None:
+        while True:
+            count = await self._connected_agent_count()
+            async with lock:
+                await websocket.send(self._health(count).to_json())
+            await asyncio.sleep(self._settings.health_interval_seconds)
 
     def _hello(self) -> GatewayEnvelope:
         hello = GatewayHello(
@@ -164,7 +194,7 @@ class BackendUplink:
             room_id=self._settings.room_id,
             status=(
                 PresenceHealth.DEGRADED
-                if self._queue_saturation_count
+                if self._outbound.full() or fields.get("buffer_status") == PresenceHealth.DEGRADED
                 else PresenceHealth.ONLINE
             ),
             last_seen=datetime.now(UTC),

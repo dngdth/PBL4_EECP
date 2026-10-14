@@ -5,7 +5,9 @@ from contextlib import ExitStack, suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from apps.gateway.app.config import GatewaySettings
 from apps.gateway.app.main import create_app
@@ -193,3 +195,16 @@ def test_revoked_agent_authentication_is_reported_to_backend() -> None:
         "reason_code": "REVOKED_CREDENTIAL",
     }
     assert "revoked-agent-secret" not in security[0].to_json()
+
+
+def test_agent_socket_without_hello_is_closed_after_handshake_timeout() -> None:
+    settings = replace(_settings(), agent_handshake_timeout_seconds=0.02)
+    with TestClient(create_app(settings, FakeUplink())) as client:
+        with client.websocket_connect(
+            "/ws/agents",
+            headers={"Authorization": "Bearer agent-token"},
+        ) as websocket:
+            with pytest.raises(WebSocketDisconnect) as closed:
+                websocket.receive_text()
+            assert closed.value.code == 1008
+        assert client.get("/health").json()["connected_agent_count"] == 0

@@ -36,6 +36,8 @@ class GatewaySettings:
     agent_credentials_json: str = ""
     environment: str = "development"
     backend_queue_max_messages: int = 4096
+    backend_ca_file: str | None = None
+    agent_handshake_timeout_seconds: float = 10.0
 
     @classmethod
     def from_env(cls) -> GatewaySettings:
@@ -92,6 +94,10 @@ class GatewaySettings:
             backend_queue_max_messages=int(
                 os.getenv("EECP_GATEWAY_BACKEND_QUEUE_MAX_MESSAGES", "4096")
             ),
+            backend_ca_file=os.getenv("EECP_GATEWAY_BACKEND_CA_FILE", "").strip() or None,
+            agent_handshake_timeout_seconds=float(
+                os.getenv("EECP_GATEWAY_AGENT_HANDSHAKE_TIMEOUT_SECONDS", "10")
+            ),
         )
         settings.validate()
         return settings
@@ -141,6 +147,12 @@ class GatewaySettings:
             raise ValueError("Gateway event flush settings must be positive")
         if self.backend_queue_max_messages <= 0:
             raise ValueError("Gateway Backend queue limit must be positive")
+        if self.agent_handshake_timeout_seconds <= 0:
+            raise ValueError("Gateway Agent handshake timeout must be positive")
+        if self.agent_credentials_json and not _has_machine_credentials(
+            self.agent_credentials_json
+        ):
+            raise ValueError("EECP_AGENT_CREDENTIALS_JSON contains invalid credentials")
 
 
 def _required_env(name: str) -> str:

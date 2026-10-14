@@ -5,6 +5,7 @@ from fastapi import APIRouter, Request, status
 from app.application.dtos.exam_pipeline import (
     CreateSessionInput,
     DeployPolicyInput,
+    RequestPreflightInput,
     StartSessionInput,
     SubmitPreflightInput,
     TelemetryInput,
@@ -31,6 +32,8 @@ from app.presentation.schemas.exam_pipeline import (
     DeployPolicyRequest,
     FinishSessionRequest,
     PolicyViolationView,
+    PreflightHealthCheckView,
+    RequestPreflightRequest,
     SessionDetailView,
     SessionView,
     StartSessionRequest,
@@ -61,7 +64,7 @@ def create_session(
     else:
         details = create_management(CreateExamSessionInput(**body.model_dump()))
         session = details.session
-    return _session_detail_view(get_management(session.id))
+    return _session_detail_view(get_management(session.id), request)
 
 
 @router.get("/sessions", response_model=list[SessionDetailView])
@@ -73,7 +76,7 @@ def list_sessions(
     principal = getattr(request.state, "principal", None)
     if principal is not None and principal.role.value != "ADMIN":
         details = [item for item in details if item.session.id in principal.session_scope]
-    return [_session_detail_view(item) for item in details]
+    return [_session_detail_view(item, request) for item in details]
 
 
 @router.patch("/sessions/{session_id}/status", response_model=SessionDetailView)
@@ -85,7 +88,7 @@ def update_session_status(
 ) -> SessionDetailView:
     authorize(request, Permission.CONTROL_AGENT, session_id=session_id)
     details = use_case(UpdateExamSessionStatusInput(session_id=session_id, **body.model_dump()))
-    return _session_detail_view(details)
+    return _session_detail_view(details, request)
 
 
 @router.get("/sessions/{session_id}", response_model=SessionDetailView)
@@ -95,7 +98,7 @@ def get_session(
     request: Request,
 ) -> SessionDetailView:
     authorize(request, Permission.VIEW_SESSION, session_id=session_id)
-    return _session_detail_view(use_case(session_id))
+    return _session_detail_view(use_case(session_id), request)
 
 
 @router.post("/sessions/{session_id}/policy/deploy", response_model=SessionView)
@@ -138,6 +141,34 @@ def submit_preflight(
         )
     )
     return _session_view(session)
+
+
+@router.post(
+    "/sessions/{session_id}/workstations/{workstation_id}/preflight/retry",
+    response_model=PreflightHealthCheckView,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def request_preflight(
+    session_id: str,
+    workstation_id: str,
+    body: RequestPreflightRequest,
+    service: Service,
+    request: Request,
+) -> PreflightHealthCheckView:
+    authorize(request, Permission.CONTROL_AGENT, session_id=session_id)
+    command = service.request_preflight(
+        RequestPreflightInput(
+            session_id=session_id,
+            workstation_id=workstation_id,
+            actor=body.actor,
+        )
+    )
+    return PreflightHealthCheckView(
+        command_id=command.id,
+        session_id=command.session_id,
+        workstation_id=command.target_id,
+        status=command.status.value,
+    )
 
 
 @router.post("/sessions/{session_id}/start", response_model=SessionView)
@@ -203,8 +234,12 @@ def _session_view(session: ExamSession) -> SessionView:
     return SessionView.model_validate(session.to_dict())
 
 
-def _session_detail_view(details: ExamSessionDetails) -> SessionDetailView:
+def _session_detail_view(details: ExamSessionDetails, request: Request) -> SessionDetailView:
     session = details.session
+    operational = {
+        agent.id: _agent_operational_view(request, agent.id)
+        for agent in details.agents
+    }
     return SessionDetailView.model_validate(
         {
             **session.to_dict(),
@@ -217,10 +252,21 @@ def _session_detail_view(details: ExamSessionDetails) -> SessionDetailView:
                     id=agent.id,
                     hostname=agent.hostname,
                     ip_address=agent.ip_address,
+                    agent_version=(
+                        operational[agent.id].get("agent_version")
+                        or agent.agent_version
+                    ),
                     status=agent.status,
                     last_seen=agent.last_seen,
                     assigned_at=agent.assigned_at,
                     policy_status=agent.policy_status,
+                    presence_health=operational[agent.id].get("health"),
+                    service_health=operational[agent.id].get("service_health"),
+                    active_policy_hash=(
+                        operational[agent.id].get("active_policy_hash")
+                        or session.workstations[agent.id].actual_policy_hash
+                    ),
+                    gateway_id=operational[agent.id].get("gateway_id"),
                 )
                 for agent in sorted(details.agents, key=lambda item: item.id)
             ],
@@ -229,9 +275,20 @@ def _session_detail_view(details: ExamSessionDetails) -> SessionDetailView:
                     workstation_id=violation.workstation_id,
                     destination=violation.destination,
                     category=violation.category,
+                    action=violation.action,
                     occurred_at=violation.occurred_at,
                 )
                 for violation in details.violations
             ],
         }
     )
+
+
+def _agent_operational_view(request: Request, agent_id: str) -> dict:
+    presence = request.app.state.presence.get_agent(agent_id) or {}
+    if presence.get("gateway_id"):
+        return presence
+    binding = request.app.state.container.resolve_gateway_for_agent(agent_id)
+    if binding is None:
+        return presence
+    return {**presence, "gateway_id": binding.gateway_id}

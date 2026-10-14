@@ -36,7 +36,7 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
     setFeedback(null);
     try {
       const res = await retryWorkstationPreflight(sessionId, workstation.id);
-      setFeedback('Kiểm tra tiền kiểm lại hoàn tất thành công.');
+      setFeedback(res.message);
       onWorkstationUpdated?.(res.session);
     } catch (err: any) {
       setFeedback(`Kiểm tra lại thất bại: ${err.message}`);
@@ -165,17 +165,17 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
                   <p className="text-xs text-text-muted font-sans mt-0.5">Nhịp tim Agent và giám sát tiến trình</p>
                 </div>
               </div>
-              {workstation.status === 'OFFLINE' ? (
+              {workstation.status === 'OFFLINE' || workstation.service_health === 'UNAVAILABLE' ? (
                 <span className="text-error font-bold text-xs flex items-center gap-1">
                   <XCircle className="w-4 h-4" /> Mất kết nối (Ngoại tuyến)
+                </span>
+              ) : details?.agent_health || workstation.service_health === 'HEALTHY' ? (
+                <span className="text-success-dark font-bold text-xs flex items-center gap-1">
+                  <CheckCircle2 className="w-4 h-4" /> Hoạt động tốt
                 </span>
               ) : !details ? (
                 <span className="text-text-muted font-bold text-xs flex items-center gap-1">
                   <Clock className="w-4 h-4" /> Đang chờ tiền kiểm
-                </span>
-              ) : details.agent_health ? (
-                <span className="text-success-dark font-bold text-xs flex items-center gap-1">
-                  <CheckCircle2 className="w-4 h-4" /> Hoạt động tốt
                 </span>
               ) : (
                 <span className="text-error font-bold text-xs flex items-center gap-1">

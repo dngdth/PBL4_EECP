@@ -93,6 +93,12 @@ class GatewayRouter:
             presence = Presence.model_validate(envelope.payload)
             if presence.agent_id != bound_agent_id:
                 raise ValueError("presence agent_id does not match connection identity")
+            presence = presence.model_copy(update={"gateway_id": self._gateway_id})
+            envelope = envelope.model_copy(
+                update={
+                    "payload": presence.model_dump(mode="json", exclude_none=True)
+                }
+            )
             await self._presence.put(presence)
             await self._connections.touch(bound_agent_id)
         else:

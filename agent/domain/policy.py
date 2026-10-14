@@ -8,6 +8,26 @@ SUPPORTED_NETWORK_CATEGORIES = frozenset(
     {"generative_ai", "social_network", "vpn_proxy"}
 )
 
+CATEGORY_DOMAINS = {
+    "generative_ai": {
+        "chatgpt.com",
+        "claude.ai",
+        "copilot.microsoft.com",
+        "gemini.google.com",
+        "openai.com",
+        "perplexity.ai",
+    },
+    "social_network": {
+        "facebook.com",
+        "instagram.com",
+        "reddit.com",
+        "tiktok.com",
+        "twitter.com",
+        "x.com",
+    },
+    "vpn_proxy": {"nordvpn.com", "protonvpn.com", "surfshark.com"},
+}
+
 
 @dataclass(frozen=True, slots=True)
 class PolicySpecification:

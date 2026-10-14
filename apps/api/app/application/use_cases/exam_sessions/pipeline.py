@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from app.application.dtos.exam_pipeline import (
     CreateSessionInput,
     DeployPolicyInput,
+    RequestPreflightInput,
     StartSessionInput,
     SubmitPreflightInput,
     TelemetryInput,
@@ -106,6 +107,32 @@ class ExamPipelineService:
             )
             uow.commit()
             return session
+
+    def request_preflight(self, data: RequestPreflightInput) -> Command:
+        """Queue a real Service HEALTH_CHECK for a session workstation."""
+
+        with self._uow_factory() as uow:
+            session = uow.sessions.get(data.session_id)
+            if data.workstation_id not in session.workstations:
+                raise PolicyValidationError(
+                    "preflight workstation does not belong to session"
+                )
+            command = Command(
+                session_id=session.id,
+                target_id=data.workstation_id,
+                type=CommandType.HEALTH_CHECK,
+                payload={"reason": "PREFLIGHT"},
+            )
+            uow.commands.add_many([command])
+            uow.audits.append(
+                session.id,
+                actor=data.actor,
+                action="PREFLIGHT_HEALTH_CHECK_REQUESTED",
+                target=data.workstation_id,
+                details={"command_id": command.id},
+            )
+            uow.commit()
+            return command
 
     def start_session(self, data: StartSessionInput) -> ExamSession:
         with self._uow_factory() as uow:

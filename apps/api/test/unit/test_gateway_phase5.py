@@ -214,7 +214,10 @@ def test_ack_event_presence_roundtrip_and_identity_spoof_rejection() -> None:
             }
         )
         await router.route_agent("AGT-001", presence_envelope)
-        assert (await presence_store.get("AGT-001")).health == PresenceHealth.ONLINE
+        stored_presence = await presence_store.get("AGT-001")
+        assert stored_presence.health == PresenceHealth.ONLINE
+        assert stored_presence.gateway_id == "GW-A"
+        assert backend.messages[-1].payload["gateway_id"] == "GW-A"
 
         spoofed = envelope.model_copy(update={"source_id": "AGT-002"})
         with pytest.raises(ValueError, match="connection identity"):

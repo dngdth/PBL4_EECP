@@ -95,6 +95,83 @@ def test_create_list_and_get_management_session(tmp_path: Path) -> None:
         ]
 
 
+def test_session_detail_includes_live_agent_operational_state(tmp_path: Path) -> None:
+    with TestClient(create_app(tmp_path / "session-presence.db")) as client:
+        _register_agent(client, "AGT-002", "DESKTOP-BRAVO", "10.177.124.3")
+        created = _create_management_session(client, "AGT-002")
+        client.app.state.presence.set_agent(
+            "AGT-002",
+            {
+                "health": "ONLINE",
+                "service_health": "HEALTHY",
+                "active_policy_hash": "a" * 64,
+                "agent_version": "1.1.0",
+                "gateway_id": "GW-A",
+            },
+        )
+
+        detail = client.get(f"/api/v1/sessions/{created['id']}")
+
+        assert detail.status_code == 200
+        agent = detail.json()["agents"][0]
+        assert agent["agent_version"] == "1.1.0"
+        assert agent["presence_health"] == "ONLINE"
+        assert agent["service_health"] == "HEALTHY"
+        assert agent["active_policy_hash"] == "a" * 64
+        assert agent["gateway_id"] == "GW-A"
+
+
+def test_retry_preflight_queues_real_health_check_command(tmp_path: Path) -> None:
+    with TestClient(create_app(tmp_path / "preflight-retry.db")) as client:
+        _register_agent(client, "AGT-002", "DESKTOP-BRAVO", "10.177.124.3")
+        created = _create_management_session(client, "AGT-002")
+
+        response = client.post(
+            f"/api/v1/sessions/{created['id']}/workstations/AGT-002/preflight/retry",
+            json={"actor": "dashboard"},
+        )
+
+        assert response.status_code == 202
+        assert response.json()["workstation_id"] == "AGT-002"
+        commands = client.get("/api/v1/agents/AGT-002/commands").json()
+        health_checks = [item for item in commands if item["type"] == "HEALTH_CHECK"]
+        assert len(health_checks) == 1
+        assert health_checks[0]["id"] == response.json()["command_id"]
+
+
+def test_session_detail_falls_back_to_persisted_acknowledged_policy_hash(
+    tmp_path: Path,
+) -> None:
+    with TestClient(create_app(tmp_path / "session-policy-hash.db")) as client:
+        _register_agent(client, "AGT-002", "DESKTOP-BRAVO", "10.177.124.3")
+        created = _create_management_session(client, "AGT-002")
+        command = client.get("/api/v1/agents/AGT-002/commands").json()[0]
+        expected_hash = command["payload"]["policy_hash"]
+        acknowledged = client.post(
+            f"/api/v1/commands/{command['id']}/acknowledge",
+            json={
+                "success": True,
+                "policy_hash": expected_hash,
+                "actor": "AGT-002",
+            },
+        )
+        assert acknowledged.status_code == 200
+        client.app.state.presence.set_agent(
+            "AGT-002",
+            {
+                "health": "ONLINE",
+                "service_health": "HEALTHY",
+                "active_policy_hash": None,
+                "agent_version": "1.1.0",
+            },
+        )
+
+        detail = client.get(f"/api/v1/sessions/{created['id']}")
+
+        assert detail.status_code == 200
+        assert detail.json()["agents"][0]["active_policy_hash"] == expected_hash
+
+
 def test_update_management_session_from_created_to_ready(tmp_path: Path) -> None:
     with TestClient(create_app(tmp_path / "ready.db")) as client:
         _register_agent(client, "PC01", "DESKTOP-ALPHA", "192.168.3.51")
@@ -144,6 +221,50 @@ def test_running_session_lists_agent_policy_violation(tmp_path: Path) -> None:
         assert detail.status_code == 200
         assert detail.json()["violations"][0]["workstation_id"] == "PC01"
         assert detail.json()["violations"][0]["destination"] == "chatgpt.com"
+        assert detail.json()["violations"][0]["action"] == "BLOCKED"
+
+
+def test_running_session_lists_audit_observation(tmp_path: Path) -> None:
+    with TestClient(create_app(tmp_path / "audit-observation.db")) as client:
+        _register_agent(client, "PC01", "DESKTOP-ALPHA", "192.168.3.51")
+        created = _create_management_session(client)
+        _apply_policy(client)
+        assert client.patch(
+            f"/api/v1/sessions/{created['id']}/status",
+            json={"status": "READY"},
+        ).status_code == 200
+        assert client.patch(
+            f"/api/v1/sessions/{created['id']}/status",
+            json={"status": "RUNNING"},
+        ).status_code == 200
+
+        telemetry = client.post(
+            f"/api/v1/sessions/{created['id']}/telemetry",
+            json={
+                "workstation_id": "PC01",
+                "event_type": "POLICY_VIOLATION",
+                "severity": "WARNING",
+                "category": "PROHIBITED_WEBSITE",
+                "action": "OBSERVED",
+                "destination": "chatgpt.com",
+                "payload": {
+                    "source": "windows-dns-cache",
+                    "enforcement_mode": "audit",
+                },
+            },
+        )
+
+        assert telemetry.status_code == 202
+        assert telemetry.json()["incident_id"] is not None
+        detail = client.get(f"/api/v1/sessions/{created['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["violations"][0] == {
+            "workstation_id": "PC01",
+            "destination": "chatgpt.com",
+            "category": "PROHIBITED_WEBSITE",
+            "action": "OBSERVED",
+            "occurred_at": detail.json()["violations"][0]["occurred_at"],
+        }
 
 
 def test_ready_rejects_pending_policy(tmp_path: Path) -> None:

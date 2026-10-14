@@ -55,6 +55,17 @@ class SubmitPreflightRequest(ApiModel):
     actor: str = Field(default="agent", min_length=1)
 
 
+class RequestPreflightRequest(ApiModel):
+    actor: str = Field(default="teacher", min_length=1)
+
+
+class PreflightHealthCheckView(ApiModel):
+    command_id: str
+    session_id: str
+    workstation_id: str
+    status: str
+
+
 class StartSessionRequest(ApiModel):
     actor: str = Field(default="teacher", min_length=1)
     force: bool = False
@@ -104,16 +115,22 @@ class AssignedAgentView(ApiModel):
     id: str
     hostname: str | None
     ip_address: str | None
+    agent_version: str | None = None
     status: AgentStatus | None
     last_seen: datetime | None
     assigned_at: datetime | None
     policy_status: str
+    presence_health: str | None = None
+    service_health: str | None = None
+    active_policy_hash: str | None = None
+    gateway_id: str | None = None
 
 
 class PolicyViolationView(ApiModel):
     workstation_id: str
     destination: str | None
     category: str
+    action: str
     occurred_at: datetime
 
 

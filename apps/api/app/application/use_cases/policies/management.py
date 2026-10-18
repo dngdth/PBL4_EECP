@@ -127,6 +127,10 @@ class AcknowledgeCommand:
         timed_out = False
         with self._uow_factory() as uow:
             command = uow.commands.get(data.command_id.strip())
+            if not data.actor or data.actor.strip() != command.target_id.strip():
+                raise PolicyValidationError(
+                    f"command target {command.target_id} does not match actor {data.actor}"
+                )
             if command.status != CommandStatus.DELIVERED:
                 raise InvalidStateTransitionError(
                     "command is not awaiting acknowledgement"

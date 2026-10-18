@@ -1,5 +1,6 @@
 import json
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -7,7 +8,9 @@ from app.application.dtos.session_management import (
     CreateExamSessionInput,
     UpdateExamSessionStatusInput,
 )
+from app.application.security import Principal, Role
 from app.domain.value_objects.enums import SessionState
+from app.infrastructure.security import TokenService
 from app.main import create_app
 from fastapi.testclient import TestClient
 
@@ -215,3 +218,197 @@ def test_gateway_uplink_rejects_malformed_message_without_crashing(
         websocket.send_text(json.dumps({"protocol_version": 99}))
         response = GatewayEnvelope.model_validate_json(websocket.receive_text())
         assert response.message_type == GatewayMessageType.ERROR
+
+
+def test_gateway_uplink_rejects_ack_from_wrong_agent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("EECP_GATEWAY_BOOTSTRAP_TOKEN", "test-token")
+    app = create_app(tmp_path / "gateway-ack-mismatch.db")
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/v2/gateways/ws/GW-A",
+            headers={"Authorization": "Bearer test-token"},
+        ) as websocket:
+            hello = GatewayHello(
+                protocol_version=2,
+                gateway_id="GW-A",
+                room_id="LAB-A",
+                gateway_version="1.0.0",
+            )
+            websocket.send_json(
+                _envelope(
+                    GatewayMessageType.GATEWAY_HELLO,
+                    "GW-A",
+                    hello.model_dump(mode="json"),
+                )
+            )
+            for agent_id in ("AGT-001", "AGT-002"):
+                agent = AgentHello(
+                    protocol_version=2,
+                    agent_id=agent_id,
+                    hostname=f"HOST-{agent_id}",
+                    ip_address="192.0.2.1",
+                    agent_version="1.1.0",
+                )
+                websocket.send_json(
+                    _envelope(
+                        GatewayMessageType.AGENT_HELLO,
+                        agent_id,
+                        agent.model_dump(mode="json"),
+                        f"hello-{agent_id}",
+                    )
+                )
+
+            deadline = time.monotonic() + 2
+            while client.get("/api/v2/gateways/agents/AGT-002").json() is None:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+
+            app.state.container.create_exam_session(
+                CreateExamSessionInput("Exam", "LAB-A", ["AGT-001"])
+            )
+            routed = GatewayEnvelope.model_validate_json(websocket.receive_text())
+            command = Command.model_validate(routed.payload)
+            assert command.target_id == "AGT-001"
+
+            ack = Ack(
+                protocol_version=2,
+                ack_id=f"ack_{command.command_id}",
+                command_id=command.command_id,
+                status=AckStatus.SUCCEEDED,
+                applied_hash=command.policy_hash,
+                service_version="1.1.0",
+                occurred_at=command.issued_at,
+                correlation_id=command.correlation_id,
+            )
+            websocket.send_json(
+                _envelope(
+                    GatewayMessageType.ACK,
+                    "AGT-002",
+                    ack.model_dump(mode="json", exclude_none=True),
+                    ack.ack_id,
+                    command.correlation_id,
+                )
+            )
+
+            err_msg = GatewayEnvelope.model_validate_json(websocket.receive_text())
+            assert err_msg.message_type == GatewayMessageType.ERROR
+
+            with app.state.container.database.unit_of_work() as uow:
+                persisted = uow.commands.get(command.command_id)
+            assert persisted.status.value == "DELIVERED"
+
+
+def test_production_like_disables_http_ack_while_gateway_ack_succeeds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("EECP_GATEWAY_BOOTSTRAP_TOKEN", "prod-gw-token")
+    app = create_app(tmp_path / "prod-gw-ack.db")
+    app.state.settings = replace(app.state.settings, environment="production-like")
+    app.state.token_service = TokenService(
+        "phase-9-http-auth-key-that-is-at-least-thirty-two-bytes"
+    )
+
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/v2/gateways/ws/GW-PROD",
+            headers={"Authorization": "Bearer prod-gw-token"},
+        ) as websocket:
+            hello = GatewayHello(
+                protocol_version=2,
+                gateway_id="GW-PROD",
+                room_id="ROOM-PROD",
+                gateway_version="1.0.0",
+            )
+            websocket.send_json(
+                _envelope(
+                    GatewayMessageType.GATEWAY_HELLO,
+                    "GW-PROD",
+                    hello.model_dump(mode="json"),
+                )
+            )
+            agent = AgentHello(
+                protocol_version=2,
+                agent_id="AGT-PROD",
+                hostname="HOST-AGT-PROD",
+                ip_address="192.0.2.1",
+                agent_version="1.1.0",
+            )
+            websocket.send_json(
+                _envelope(
+                    GatewayMessageType.AGENT_HELLO,
+                    "AGT-PROD",
+                    agent.model_dump(mode="json"),
+                    "hello-agt-prod",
+                )
+            )
+
+            deadline = time.monotonic() + 2
+            while client.get("/api/v2/gateways/agents/AGT-PROD").json() is None:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+
+            created = app.state.container.create_exam_session(
+                CreateExamSessionInput("Exam", "ROOM-PROD", ["AGT-PROD"])
+            )
+            routed = GatewayEnvelope.model_validate_json(websocket.receive_text())
+            command = Command.model_validate(routed.payload)
+            assert command.target_id == "AGT-PROD"
+
+            # 1. Direct HTTP ACK is disabled in production-like for any role
+            admin_token = app.state.token_service.issue(
+                Principal("admin-user", Role.ADMIN, frozenset())
+            )
+            http_ack = client.post(
+                f"/api/v1/commands/{command.command_id}/acknowledge",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={
+                    "success": True,
+                    "policy_hash": command.policy_hash,
+                    "actor": "AGT-PROD",
+                },
+            )
+            assert http_ack.status_code == 403
+            assert "direct HTTP acknowledgement is disabled" in http_ack.json()["detail"]
+
+            # Command remains DELIVERED
+            with app.state.container.database.unit_of_work() as uow:
+                persisted = uow.commands.get(command.command_id)
+            assert persisted.status.value == "DELIVERED"
+
+            # 2. Gateway WebSocket ACK succeeds in production-like
+            ack = Ack(
+                protocol_version=2,
+                ack_id=f"ack_{command.command_id}",
+                command_id=command.command_id,
+                status=AckStatus.SUCCEEDED,
+                applied_hash=command.policy_hash,
+                service_version="1.1.0",
+                occurred_at=command.issued_at,
+                correlation_id=command.correlation_id,
+            )
+            websocket.send_json(
+                _envelope(
+                    GatewayMessageType.ACK,
+                    "AGT-PROD",
+                    ack.model_dump(mode="json", exclude_none=True),
+                    ack.ack_id,
+                    command.correlation_id,
+                )
+            )
+
+            deadline = time.monotonic() + 2
+            while True:
+                with app.state.container.database.unit_of_work() as uow:
+                    persisted = uow.commands.get(command.command_id)
+                if persisted.status.value == "ACKNOWLEDGED":
+                    break
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+
+            assert persisted.status.value == "ACKNOWLEDGED"
+            with app.state.container.database.unit_of_work() as uow:
+                session = uow.sessions.get(created.session.id)
+            assert session.workstations["AGT-PROD"].actual_policy_hash == command.policy_hash
+            assert session.workstations["AGT-PROD"].policy_compliant is True

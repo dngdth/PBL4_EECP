@@ -10,7 +10,7 @@ from app.application.use_cases.policies.management import (
     GetPendingCommands,
 )
 from app.domain.entities.agent import Agent
-from app.domain.exceptions.errors import InvalidStateTransitionError
+from app.domain.exceptions.errors import InvalidStateTransitionError, PolicyValidationError
 from app.domain.value_objects.enums import CommandStatus, Readiness
 from app.infrastructure.persistence.database import SqliteDatabase
 
@@ -111,3 +111,81 @@ def test_acknowledgement_after_deadline_is_rejected_and_persisted(
 
     assert persisted.status == CommandStatus.TIMED_OUT
     assert session.workstations["PC01"].readiness == Readiness.FAILED
+
+
+def test_acknowledgement_by_correct_agent_succeeds(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
+        CreateExamSessionInput("Exam", "A101", ["PC01"])
+    )
+    command = GetPendingCommands(database.unit_of_work, clock=lambda: NOW)("PC01")[0]
+
+    session = AcknowledgeCommand(database.unit_of_work, clock=lambda: NOW)(
+        AcknowledgeCommandInput(
+            command_id=command.id,
+            success=True,
+            policy_hash=command.payload["policy_hash"],
+            actor="PC01",
+        )
+    )
+
+    with database.unit_of_work() as uow:
+        persisted = uow.commands.get(command.id)
+    assert persisted.status == CommandStatus.ACKNOWLEDGED
+    assert persisted.acknowledged_at == NOW
+    assert session.workstations["PC01"].actual_policy_hash == command.payload["policy_hash"]
+    assert session.workstations["PC01"].policy_compliant is True
+
+
+def test_acknowledgement_by_wrong_agent_is_rejected(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
+        CreateExamSessionInput("Exam", "A101", ["PC01"])
+    )
+    command = GetPendingCommands(database.unit_of_work, clock=lambda: NOW)("PC01")[0]
+
+    with pytest.raises(PolicyValidationError, match="command target PC01 does not match actor PC02"):
+        AcknowledgeCommand(database.unit_of_work, clock=lambda: NOW)(
+            AcknowledgeCommandInput(
+                command_id=command.id,
+                success=True,
+                policy_hash=command.payload["policy_hash"],
+                actor="PC02",
+            )
+        )
+
+    with database.unit_of_work() as uow:
+        persisted = uow.commands.get(command.id)
+        session = uow.sessions.get(created.session.id)
+    assert persisted.status == CommandStatus.DELIVERED
+    assert persisted.acknowledged_at is None
+    assert session.workstations["PC01"].actual_policy_hash is None
+
+
+def test_duplicate_acknowledgement_is_rejected(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
+        CreateExamSessionInput("Exam", "A101", ["PC01"])
+    )
+    command = GetPendingCommands(database.unit_of_work, clock=lambda: NOW)("PC01")[0]
+
+    ack_input = AcknowledgeCommandInput(
+        command_id=command.id,
+        success=True,
+        policy_hash=command.payload["policy_hash"],
+        actor="PC01",
+    )
+    # First ACK succeeds
+    AcknowledgeCommand(database.unit_of_work, clock=lambda: NOW)(ack_input)
+
+    with database.unit_of_work() as uow:
+        persisted = uow.commands.get(command.id)
+    assert persisted.status == CommandStatus.ACKNOWLEDGED
+
+    # Second ACK (ACK trùng) is rejected
+    with pytest.raises(InvalidStateTransitionError, match="command is not awaiting acknowledgement"):
+        AcknowledgeCommand(database.unit_of_work, clock=lambda: NOW)(ack_input)
+
+    with database.unit_of_work() as uow:
+        persisted_after = uow.commands.get(command.id)
+    assert persisted_after.status == CommandStatus.ACKNOWLEDGED

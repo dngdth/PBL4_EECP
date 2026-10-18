@@ -1,5 +1,10 @@
+from dataclasses import replace
 from pathlib import Path
 
+from app.application.dtos.agents import RegisterAgentInput
+from app.application.security import Principal, Role
+from app.domain.value_objects.enums import CommandStatus
+from app.infrastructure.security import TokenService
 from app.main import create_app
 from fastapi.testclient import TestClient
 
@@ -233,3 +238,149 @@ def test_custom_profile_rejects_conflicting_application_rules(tmp_path: Path) ->
     assert response.status_code == 422
     assert response.json()["code"] == "DOMAIN_VALIDATION"
     assert "both allowed and denied" in response.json()["detail"]
+
+
+def test_acknowledge_command_api_regression_suite(tmp_path: Path) -> None:
+    with TestClient(create_app(tmp_path / "ack-regression.db")) as client:
+        _register(client, "PC01")
+        _register(client, "PC02")
+        created = client.post(
+            "/api/v1/sessions",
+            json={
+                "name": "PBL4 Final",
+                "room": "A101",
+                "agent_ids": ["PC01"],
+                "policy_profile": "INTERNET_NO_AI",
+            },
+        )
+        assert created.status_code == 201
+        session_id = created.json()["id"]
+
+        commands = client.get("/api/v1/agents/PC01/commands").json()
+        assert len(commands) == 1
+        apply_command = commands[0]
+        cmd_id = apply_command["id"]
+        policy_hash = apply_command["payload"]["policy_hash"]
+
+        # 1. ACK sai Agent (PC02 attempts to ACK PC01's command) -> 422 DOMAIN_VALIDATION
+        wrong_ack = client.post(
+            f"/api/v1/commands/{cmd_id}/acknowledge",
+            json={
+                "success": True,
+                "policy_hash": policy_hash,
+                "actor": "PC02",
+            },
+        )
+        assert wrong_ack.status_code == 422
+        assert wrong_ack.json()["code"] == "DOMAIN_VALIDATION"
+        assert "target PC01 does not match actor PC02" in wrong_ack.json()["detail"]
+
+        # Verify command remains DELIVERED and session policy_status remains PENDING
+        detail = client.get(f"/api/v1/sessions/{session_id}").json()
+        assert detail["agents"][0]["policy_status"] == "PENDING"
+
+        # 2. ACK đúng Agent (PC01 ACKs its own command) -> 200 OK
+        correct_ack = client.post(
+            f"/api/v1/commands/{cmd_id}/acknowledge",
+            json={
+                "success": True,
+                "policy_hash": policy_hash,
+                "actor": "PC01",
+            },
+        )
+        assert correct_ack.status_code == 200
+        detail = client.get(f"/api/v1/sessions/{session_id}").json()
+        assert detail["agents"][0]["policy_status"] == "APPLIED"
+
+        # 3. ACK trùng (Duplicate ACK on already acknowledged command) -> 409 INVALID_STATE
+        dup_ack = client.post(
+            f"/api/v1/commands/{cmd_id}/acknowledge",
+            json={
+                "success": True,
+                "policy_hash": policy_hash,
+                "actor": "PC01",
+            },
+        )
+        assert dup_ack.status_code == 409
+        assert dup_ack.json()["code"] == "INVALID_STATE"
+        assert "command is not awaiting acknowledgement" in dup_ack.json()["detail"]
+
+
+def test_production_like_disables_direct_http_ack_for_all_roles(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "ack-auth-regression.db")
+    app.state.settings = replace(app.state.settings, environment="production-like")
+    app.state.token_service = TokenService("phase-9-http-auth-key-that-is-at-least-thirty-two-bytes")
+
+    app.state.container.register_agent(
+        RegisterAgentInput("PC01", "HOST-PC01", "192.168.3.56", "1.1.0")
+    )
+    app.state.container.register_agent(
+        RegisterAgentInput("PC02", "HOST-PC02", "192.168.3.57", "1.1.0")
+    )
+
+    with TestClient(app) as client:
+        # Create session using admin token
+        admin_token = app.state.token_service.issue(Principal("admin-user", Role.ADMIN, frozenset()))
+        created = client.post(
+            "/api/v1/sessions",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "name": "PBL4 Final",
+                "room": "A101",
+                "agent_ids": ["PC01"],
+                "policy_profile": "INTERNET_NO_AI",
+            },
+        )
+        assert created.status_code == 201
+        session_id = created.json()["id"]
+
+        commands = client.get(
+            "/api/v1/agents/PC01/commands",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        ).json()
+        cmd_id = commands[0]["id"]
+        policy_hash = commands[0]["payload"]["policy_hash"]
+
+        # In production-like, Direct HTTP ACK is disabled for all roles (including EXAMINER and ADMIN)
+        pc02_token = app.state.token_service.issue(
+            Principal("PC02", Role.EXAMINER, frozenset({session_id}))
+        )
+        examiner_ack = client.post(
+            f"/api/v1/commands/{cmd_id}/acknowledge",
+            headers={"Authorization": f"Bearer {pc02_token}"},
+            json={
+                "success": True,
+                "policy_hash": policy_hash,
+                "actor": "PC01",
+            },
+        )
+        assert examiner_ack.status_code == 403
+        assert "direct HTTP acknowledgement is disabled" in examiner_ack.json()["detail"]
+
+        # Admin role also cannot acknowledge via HTTP in production-like
+        admin_ack = client.post(
+            f"/api/v1/commands/{cmd_id}/acknowledge",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "success": True,
+                "policy_hash": policy_hash,
+                "actor": "PC01",
+            },
+        )
+        assert admin_ack.status_code == 403
+        assert "direct HTTP acknowledgement is disabled" in admin_ack.json()["detail"]
+
+        # Verify command remains DELIVERED and unacknowledged
+        with app.state.container.database.unit_of_work() as uow:
+            persisted = uow.commands.get(cmd_id)
+        assert persisted.status == CommandStatus.DELIVERED
+        assert persisted.acknowledged_at is None
+
+        # Verify session state reflects PC01 is not compliant and policy is PENDING
+        detail = client.get(
+            f"/api/v1/sessions/{session_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        ).json()
+        assert detail["agents"][0]["policy_status"] == "PENDING"
+        assert detail["workstations"]["PC01"]["policy_compliant"] is False
+        assert detail["workstations"]["PC01"]["actual_policy_hash"] is None

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from app.application.dtos.policies import (
     AcknowledgeCommandInput,
@@ -97,9 +97,20 @@ def acknowledge_command(
     use_case: AcknowledgeCommandUseCase,
     request: Request,
 ) -> SessionView:
+    if request.app.state.settings.environment == "production-like":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "direct HTTP acknowledgement is disabled in production-like environment; use Gateway WebSocket",
+        )
     authorize(request, Permission.CONTROL_AGENT)
     session = use_case(
-        AcknowledgeCommandInput(command_id=command_id, **body.model_dump())
+        AcknowledgeCommandInput(
+            command_id=command_id,
+            success=body.success,
+            policy_hash=body.policy_hash,
+            error=body.error,
+            actor=body.actor,
+        )
     )
     return _session_view(session)
 

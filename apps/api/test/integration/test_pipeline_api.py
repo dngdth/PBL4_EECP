@@ -420,7 +420,7 @@ def test_presence_hash_does_not_satisfy_policy_ack_and_gateway_ack_lifecycle(
         pc_cmd_id = pc_commands[0]["id"]
         ack_pc = client.post(
             f"/api/v1/commands/{pc_cmd_id}/acknowledge",
-            json={"success": True, "policy_hash": policy_hash},
+            json={"success": True, "policy_hash": policy_hash, "actor": "PC01"},
         ).json()
         assert ack_pc["workstations"]["PC01"]["actual_policy_hash"] == policy_hash
         assert ack_pc["workstations"]["PC01"]["policy_compliant"] is True
@@ -435,7 +435,7 @@ def test_presence_hash_does_not_satisfy_policy_ack_and_gateway_ack_lifecycle(
         gw_cmd_id = gw_commands[0]["id"]
         ack_gw = client.post(
             f"/api/v1/commands/{gw_cmd_id}/acknowledge",
-            json={"success": True, "policy_hash": policy_hash},
+            json={"success": True, "policy_hash": policy_hash, "actor": "gw-f301"},
         ).json()
 
         # Both workstation and Gateway have ACKed -> state transitions to PREFLIGHT
@@ -473,7 +473,7 @@ def test_workstation_policy_failure_transitions_session_to_degraded(
         pc_cmd_id = pc_commands[0]["id"]
         failed_session = client.post(
             f"/api/v1/commands/{pc_cmd_id}/acknowledge",
-            json={"success": False, "error": "Access denied to hosts file"},
+            json={"success": False, "error": "Access denied to hosts file", "actor": "PC01"},
         ).json()
 
         assert failed_session["state"] == "DEGRADED"
@@ -507,8 +507,8 @@ def test_finished_session_rejects_policy_deployment(tmp_path: Path) -> None:
         gw_cmd = client.get("/api/v1/agents/gw-f301/commands").json()[0]
         pc_cmd = client.get("/api/v1/agents/PC01/commands").json()[0]
         hash_val = client.get(f"/api/v1/sessions/{session_id}").json()["policy"]["policy_hash"]
-        client.post(f"/api/v1/commands/{gw_cmd['id']}/acknowledge", json={"success": True, "policy_hash": hash_val})
-        client.post(f"/api/v1/commands/{pc_cmd['id']}/acknowledge", json={"success": True, "policy_hash": hash_val})
+        client.post(f"/api/v1/commands/{gw_cmd['id']}/acknowledge", json={"success": True, "policy_hash": hash_val, "actor": "gw-f301"})
+        client.post(f"/api/v1/commands/{pc_cmd['id']}/acknowledge", json={"success": True, "policy_hash": hash_val, "actor": "PC01"})
 
         # Submit preflight to make workstation READY
         client.post(
@@ -534,8 +534,8 @@ def test_finished_session_rejects_policy_deployment(tmp_path: Path) -> None:
         # Acknowledge restore commands for gateway and PC01
         gw_restore = client.get("/api/v1/agents/gw-f301/commands").json()[0]
         pc_restore = client.get("/api/v1/agents/PC01/commands").json()[0]
-        client.post(f"/api/v1/commands/{gw_restore['id']}/acknowledge", json={"success": True})
-        client.post(f"/api/v1/commands/{pc_restore['id']}/acknowledge", json={"success": True})
+        client.post(f"/api/v1/commands/{gw_restore['id']}/acknowledge", json={"success": True, "actor": "gw-f301"})
+        client.post(f"/api/v1/commands/{pc_restore['id']}/acknowledge", json={"success": True, "actor": "PC01"})
 
         normal = client.get(f"/api/v1/sessions/{session_id}").json()
         assert normal["state"] == "NORMAL"

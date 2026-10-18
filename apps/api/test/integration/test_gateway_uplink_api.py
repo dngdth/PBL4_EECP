@@ -412,3 +412,146 @@ def test_production_like_disables_http_ack_while_gateway_ack_succeeds(
                 session = uow.sessions.get(created.session.id)
             assert session.workstations["AGT-PROD"].actual_policy_hash == command.policy_hash
             assert session.workstations["AGT-PROD"].policy_compliant is True
+
+
+def test_gateway_ack_rejected_when_command_pending_and_succeeds_when_delivered(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("EECP_GATEWAY_BOOTSTRAP_TOKEN", "test-token")
+    app = create_app(tmp_path / "gateway-pending-ack.db")
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/v2/gateways/ws/GW-A",
+            headers={"Authorization": "Bearer test-token"},
+        ) as websocket:
+            hello = GatewayHello(
+                protocol_version=2,
+                gateway_id="GW-A",
+                room_id="LAB-A",
+                gateway_version="1.0.0",
+            )
+            websocket.send_json(
+                _envelope(
+                    GatewayMessageType.GATEWAY_HELLO,
+                    "GW-A",
+                    hello.model_dump(mode="json"),
+                )
+            )
+            agent = AgentHello(
+                protocol_version=2,
+                agent_id="AGT-001",
+                hostname="HOST-1",
+                ip_address="192.0.2.1",
+                agent_version="1.1.0",
+            )
+            websocket.send_json(
+                _envelope(
+                    GatewayMessageType.AGENT_HELLO,
+                    "AGT-001",
+                    agent.model_dump(mode="json"),
+                    "hello-agent",
+                )
+            )
+
+            deadline = time.monotonic() + 2
+            while client.get("/api/v2/gateways/agents/AGT-001").json() is None:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+
+            session = app.state.container.create_exam_session(
+                CreateExamSessionInput("Exam Pending", "LAB-A", ["AGT-001"])
+            ).session
+            routed = GatewayEnvelope.model_validate_json(websocket.receive_text())
+            cmd_dispatched = Command.model_validate(routed.payload)
+            assert cmd_dispatched.target_id == "AGT-001"
+
+            with app.state.container.database.unit_of_work() as uow:
+                first_cmd = uow.commands.get(cmd_dispatched.command_id)
+
+            # Create a second command directly in DB in PENDING status for AGT-001
+            from app.domain.entities.operations import Command as DomainCommand
+            from app.domain.value_objects.enums import CommandType as DomainCommandType
+            from app.domain.value_objects.primitives import new_id
+
+            pending_cmd_id = new_id("cmd")
+            pending_cmd = DomainCommand(
+                id=pending_cmd_id,
+                session_id=session.id,
+                target_id="AGT-001",
+                type=DomainCommandType.APPLY_POLICY,
+                payload=dict(first_cmd.payload),
+            )
+            with app.state.container.database.unit_of_work() as uow:
+                uow.commands.add_many([pending_cmd])
+                uow.commit()
+
+            with app.state.container.database.unit_of_work() as uow:
+                assert uow.commands.get(pending_cmd_id).status.value == "PENDING"
+
+            # 1. Gateway sends ACK while command is still PENDING -> MUST be rejected
+            ack_pending = Ack(
+                protocol_version=2,
+                ack_id=f"ack_{pending_cmd_id}",
+                command_id=pending_cmd_id,
+                status=AckStatus.SUCCEEDED,
+                applied_hash=first_cmd.payload["policy_hash"],
+                service_version="1.1.0",
+                occurred_at=datetime.now(UTC),
+                correlation_id="corr-pending",
+            )
+            websocket.send_json(
+                _envelope(
+                    GatewayMessageType.ACK,
+                    "AGT-001",
+                    ack_pending.model_dump(mode="json", exclude_none=True),
+                    ack_pending.ack_id,
+                    "corr-pending",
+                )
+            )
+
+            err_msg = GatewayEnvelope.model_validate_json(websocket.receive_text())
+            assert err_msg.message_type == GatewayMessageType.ERROR
+            assert "invalid Protocol v2 message" in str(err_msg.payload)
+
+            # The command was rejected for ACK, then routed/delivered to the Gateway
+            routed_envelope = GatewayEnvelope.model_validate_json(websocket.receive_text())
+            assert routed_envelope.message_type == GatewayMessageType.COMMAND
+            assert routed_envelope.target_id == "AGT-001"
+
+            with app.state.container.database.unit_of_work() as uow:
+                persisted = uow.commands.get(pending_cmd_id)
+                assert persisted.status.value == "DELIVERED"
+                assert persisted.acknowledged_at is None
+
+            # 2. Gateway sends ACK for DELIVERED command -> MUST succeed
+            ack_delivered = Ack(
+                protocol_version=2,
+                ack_id=f"ack_{pending_cmd_id}_2",
+                command_id=pending_cmd_id,
+                status=AckStatus.SUCCEEDED,
+                applied_hash=first_cmd.payload["policy_hash"],
+                service_version="1.1.0",
+                occurred_at=datetime.now(UTC),
+                correlation_id="corr-delivered",
+            )
+            websocket.send_json(
+                _envelope(
+                    GatewayMessageType.ACK,
+                    "AGT-001",
+                    ack_delivered.model_dump(mode="json", exclude_none=True),
+                    ack_delivered.ack_id,
+                    "corr-delivered",
+                )
+            )
+
+            deadline = time.monotonic() + 2
+            while True:
+                with app.state.container.database.unit_of_work() as uow:
+                    persisted = uow.commands.get(pending_cmd_id)
+                if persisted.status.value == "ACKNOWLEDGED":
+                    break
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+
+            assert persisted.status.value == "ACKNOWLEDGED"
+            assert persisted.acknowledged_at is not None

@@ -21,6 +21,7 @@ from app.application.use_cases.policies.management import (
     DeletePolicyProfile,
     GetPendingCommands,
     ListPolicyProfiles,
+    ListTargetCommands,
     UpdatePolicyProfile,
 )
 
@@ -78,6 +79,10 @@ def get_list_policy_profiles(request: Request) -> ListPolicyProfiles:
     return request.app.state.container.list_policy_profiles
 
 
+def get_list_target_commands(request: Request) -> ListTargetCommands:
+    return request.app.state.container.list_target_commands
+
+
 def get_pending_commands(request: Request) -> GetPendingCommands:
     return request.app.state.container.get_pending_commands
 
@@ -109,6 +114,9 @@ UpdatePolicyProfileUseCase = Annotated[
 ]
 DeletePolicyProfileUseCase = Annotated[
     DeletePolicyProfile, Depends(get_delete_policy_profile)
+]
+ListTargetCommandsUseCase = Annotated[
+    ListTargetCommands, Depends(get_list_target_commands)
 ]
 GetPendingCommandsUseCase = Annotated[
     GetPendingCommands, Depends(get_pending_commands)

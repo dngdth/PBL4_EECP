@@ -9,12 +9,15 @@ from app.application.dtos.policies import (
 from app.application.security import Permission
 from app.domain.entities.exam_session import ExamSession
 from app.domain.entities.operations import Command
+from app.domain.value_objects.enums import CommandStatus
+from app.domain.value_objects.primitives import utc_now
 from app.presentation.api.deps import (
     AcknowledgeCommandUseCase,
     CreatePolicyProfileUseCase,
     DeletePolicyProfileUseCase,
     GetPendingCommandsUseCase,
     ListPolicyProfilesUseCase,
+    ListTargetCommandsUseCase,
     UpdatePolicyProfileUseCase,
     authorize,
 )
@@ -84,7 +87,7 @@ def delete_policy_profile(
 
 @router.get("/agents/{target_id}/commands", response_model=list[CommandView])
 def pending_commands(
-    target_id: str, use_case: GetPendingCommandsUseCase, request: Request
+    target_id: str, use_case: ListTargetCommandsUseCase, request: Request
 ) -> list[CommandView]:
     authorize(request, Permission.CONTROL_AGENT)
     return [_command_view(command) for command in use_case(target_id)]
@@ -103,6 +106,12 @@ def acknowledge_command(
             "direct HTTP acknowledgement is disabled in production-like environment; use Gateway WebSocket",
         )
     authorize(request, Permission.CONTROL_AGENT)
+    with request.app.state.container.database.unit_of_work() as uow:
+        cmd = uow.commands.get(command_id.strip())
+        if cmd.status == CommandStatus.PENDING:
+            cmd.deliver(utc_now())
+            uow.commands.save(cmd)
+            uow.commit()
     session = use_case(
         AcknowledgeCommandInput(
             command_id=command_id,

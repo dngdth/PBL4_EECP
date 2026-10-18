@@ -1,8 +1,11 @@
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from app.application.dtos.agents import RegisterAgentInput
+from app.application.dtos.policies import AcknowledgeCommandInput
 from app.application.security import Principal, Role
+from app.domain.exceptions.errors import InvalidStateTransitionError
 from app.domain.value_objects.enums import CommandStatus
 from app.infrastructure.security import TokenService
 from app.main import create_app
@@ -58,10 +61,10 @@ def test_new_session_pushes_policy_and_restores_after_finish(tmp_path: Path) -> 
         assert len(commands) == 1
         apply_command = commands[0]
         assert apply_command["type"] == "APPLY_POLICY"
-        assert apply_command["status"] == "DELIVERED"
-        assert apply_command["attempt_count"] == 1
-        assert apply_command["last_attempt_at"] is not None
-        assert apply_command["next_retry_at"] is not None
+        assert apply_command["status"] == "PENDING"
+        assert apply_command["attempt_count"] == 0
+        assert apply_command["last_attempt_at"] is None
+        assert apply_command["next_retry_at"] is None
         assert apply_command["expires_at"] is not None
         assert apply_command["payload"]["format"] == "eecp-policy/v1"
         policy_hash = apply_command["payload"]["policy_hash"]
@@ -370,10 +373,10 @@ def test_production_like_disables_direct_http_ack_for_all_roles(tmp_path: Path) 
         assert admin_ack.status_code == 403
         assert "direct HTTP acknowledgement is disabled" in admin_ack.json()["detail"]
 
-        # Verify command remains DELIVERED and unacknowledged
+        # Verify command remains PENDING and unacknowledged
         with app.state.container.database.unit_of_work() as uow:
             persisted = uow.commands.get(cmd_id)
-        assert persisted.status == CommandStatus.DELIVERED
+        assert persisted.status == CommandStatus.PENDING
         assert persisted.acknowledged_at is None
 
         # Verify session state reflects PC01 is not compliant and policy is PENDING
@@ -384,3 +387,109 @@ def test_production_like_disables_direct_http_ack_for_all_roles(tmp_path: Path) 
         assert detail["agents"][0]["policy_status"] == "PENDING"
         assert detail["workstations"]["PC01"]["policy_compliant"] is False
         assert detail["workstations"]["PC01"]["actual_policy_hash"] is None
+
+
+def test_p0_03_get_agent_commands_is_read_only_and_lifecycle(
+    tmp_path: Path,
+) -> None:
+    app = create_app(tmp_path / "p0_03.db")
+    with TestClient(app) as client:
+        _register(client, "PC01")
+        session_res = client.post(
+            "/api/v1/sessions",
+            json={
+                "name": "P0-03 Regression Session",
+                "room": "ROOM-01",
+                "agent_ids": ["PC01"],
+                "policy_profile": "INTERNET_NO_AI",
+            },
+        )
+        assert session_res.status_code == 201
+
+        # 1. Simulate opening Command Queue Modal or refreshing it 5 consecutive times
+        for _ in range(5):
+            res = client.get("/api/v1/agents/PC01/commands")
+            assert res.status_code == 200
+            commands = res.json()
+            assert len(commands) == 1
+            cmd = commands[0]
+            assert cmd["status"] == "PENDING"
+            assert cmd["attempt_count"] == 0
+            assert cmd["last_attempt_at"] is None
+            assert cmd["next_retry_at"] is None
+
+        # Verify database record remains untouched (strictly PENDING, 0 attempts)
+        with app.state.container.database.unit_of_work() as uow:
+            persisted = uow.commands.get(cmd["id"])
+            assert persisted.status == CommandStatus.PENDING
+            assert persisted.attempt_count == 0
+            assert persisted.last_attempt_at is None
+            assert persisted.next_retry_at is None
+
+        # Attempting to acknowledge command directly while still PENDING must be rejected
+        with pytest.raises(InvalidStateTransitionError, match="command is not awaiting acknowledgement"):
+            app.state.container.acknowledge_command(
+                AcknowledgeCommandInput(
+                    command_id=cmd["id"],
+                    success=True,
+                    policy_hash=cmd["payload"]["policy_hash"],
+                    actor="PC01",
+                )
+            )
+
+        # 2. Gateway dispatch retrieves and claims command for actual delivery
+        dispatched = app.state.container.get_pending_commands("PC01")
+        assert len(dispatched) == 1
+        assert dispatched[0].status == CommandStatus.DELIVERED
+        assert dispatched[0].attempt_count == 1
+        assert dispatched[0].last_attempt_at is not None
+
+        # 3. Viewing list after Gateway dispatch reflects DELIVERED without mutating attempts
+        res_first = client.get("/api/v1/agents/PC01/commands")
+        assert res_first.status_code == 200
+        cmd_first = res_first.json()[0]
+        assert cmd_first["status"] == "DELIVERED"
+        assert cmd_first["attempt_count"] == 1
+        assert cmd_first["last_attempt_at"] is not None
+        assert cmd_first["next_retry_at"] is not None
+
+        # Consecutive GETs must remain strictly idempotent
+        for _ in range(3):
+            res = client.get("/api/v1/agents/PC01/commands")
+            assert res.status_code == 200
+            cmd_after = res.json()[0]
+            assert cmd_after["status"] == "DELIVERED"
+            assert cmd_after["attempt_count"] == 1
+            assert cmd_after["last_attempt_at"] == cmd_first["last_attempt_at"]
+            assert cmd_after["next_retry_at"] == cmd_first["next_retry_at"]
+
+        # 4. Agent acknowledges command -> transitions to ACKNOWLEDGED
+        app.state.container.acknowledge_command(
+            AcknowledgeCommandInput(
+                command_id=cmd["id"],
+                success=True,
+                policy_hash=cmd["payload"]["policy_hash"],
+                actor="PC01",
+            )
+        )
+
+        with app.state.container.database.unit_of_work() as uow:
+            persisted = uow.commands.get(cmd["id"])
+            assert persisted.status == CommandStatus.ACKNOWLEDGED
+            assert persisted.acknowledged_at is not None
+
+        # Active commands list is now empty
+        res_empty = client.get("/api/v1/agents/PC01/commands")
+        assert res_empty.status_code == 200
+        assert res_empty.json() == []
+
+        # 5. Duplicate ACK is rejected
+        with pytest.raises(InvalidStateTransitionError):
+            app.state.container.acknowledge_command(
+                AcknowledgeCommandInput(
+                    command_id=cmd["id"],
+                    success=True,
+                    policy_hash=cmd["payload"]["policy_hash"],
+                    actor="PC01",
+                )
+            )

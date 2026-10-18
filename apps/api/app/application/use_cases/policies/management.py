@@ -94,6 +94,15 @@ class DeletePolicyProfile:
             uow.commit()
 
 
+class ListTargetCommands:
+    def __init__(self, uow_factory: UnitOfWorkFactory):
+        self._uow_factory = uow_factory
+
+    def __call__(self, target_id: str) -> list[Command]:
+        with self._uow_factory() as uow:
+            return uow.commands.list_for_target(target_id.strip())
+
+
 class GetPendingCommands:
     def __init__(self, uow_factory: UnitOfWorkFactory, clock: Clock = utc_now):
         self._uow_factory = uow_factory

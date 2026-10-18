@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from contracts.v2.policy import validate_hostname
+
 SUPPORTED_NETWORK_CATEGORIES = frozenset(
     {"generative_ai", "social_network", "vpn_proxy"}
 )
@@ -88,6 +90,11 @@ def parse_policy_payload(payload: dict[str, Any]) -> PolicySpecification:
     if usb not in {"allow", "deny"}:
         raise ValueError("devices.usb must be allow or deny")
 
+    normalized_domains: list[str] = []
+    for item in blocked_domains:
+        validate_hostname(item, field="network.blocked_domains")
+        normalized_domains.append(item.lower())
+
     normalized_ips: list[str] = []
     for value in blocked_ips:
         try:
@@ -111,7 +118,7 @@ def parse_policy_payload(payload: dict[str, Any]) -> PolicySpecification:
         session_id=str(payload.get("session_id") or f"legacy-{policy_hash[:12]}"),
         denied_applications=tuple(_application_name(item) for item in denied),
         blocked_categories=normalized_categories,
-        blocked_domains=tuple(item.strip().lower() for item in blocked_domains),
+        blocked_domains=tuple(normalized_domains),
         blocked_ips=tuple(normalized_ips),
         blocked_cidrs=tuple(normalized_cidrs),
         usb_deny=usb == "deny",

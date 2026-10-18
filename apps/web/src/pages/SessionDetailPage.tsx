@@ -217,6 +217,8 @@ export const SessionDetailPage: React.FC = () => {
               policy={session.policy}
               status={session.status}
               gatewayId={session.gateway_id}
+              gatewayPolicyHash={session.gateway_policy_hash}
+              workstations={session.workstations}
               onDeployClick={() => setIsDeployModalOpen(true)}
               canDeploy={session.status !== 'RUNNING' && !isCompleted}
             />
@@ -257,6 +259,8 @@ export const SessionDetailPage: React.FC = () => {
               policy={session.policy}
               status={session.status}
               gatewayId={session.gateway_id}
+              gatewayPolicyHash={session.gateway_policy_hash}
+              workstations={session.workstations}
               onDeployClick={() => setIsDeployModalOpen(true)}
               canDeploy={session.status !== 'RUNNING' && !isCompleted}
             />

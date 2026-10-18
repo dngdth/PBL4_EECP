@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from contracts.v2.policy import PolicyRules
 from app.domain.value_objects.enums import (
     AgentStatus,
     SessionState,
@@ -41,6 +42,17 @@ class DeployPolicyRequest(ApiModel):
     profile: str = Field(min_length=1)
     rules: dict[str, Any]
     actor: str = Field(default="teacher", min_length=1)
+
+    @field_validator("rules")
+    @classmethod
+    def validate_rules(cls, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError("policy rules must be an object")
+        try:
+            PolicyRules.model_validate(value)
+        except (ValueError, ValidationError) as exc:
+            raise ValueError(f"invalid policy rules: {exc}") from exc
+        return value
 
 
 class PreflightCheckRequest(ApiModel):

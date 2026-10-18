@@ -23,15 +23,21 @@ export const DeployPolicyModal: React.FC<DeployPolicyModalProps> = ({
   const [policyName, setPolicyName] = useState<string>(
     session.policy?.name || 'StandardExamPolicy_PBL4'
   );
-  const [strictMode, setStrictMode] = useState<boolean>(session.policy?.strict_mode ?? true);
-  const [networkLockdown, setNetworkLockdown] = useState<boolean>(
+  const [blockProhibitedApps, setBlockProhibitedApps] = useState<boolean>(
+    session.policy?.strict_mode ?? true
+  );
+  const [networkBlock, setNetworkBlock] = useState<boolean>(
     session.policy?.network_lockdown ?? true
   );
   const [usbBlocked, setUsbBlocked] = useState<boolean>(
     session.policy?.usb_storage_blocked ?? true
   );
+  const [deniedProcesses, setDeniedProcesses] = useState<string>(
+    session.policy?.denied_processes?.join(', ') ||
+      'chatgpt.exe, anydesk.exe, teamviewer.exe, ultraviewer.exe'
+  );
   const [allowedProcesses, setAllowedProcesses] = useState<string>(
-    session.policy?.allowed_processes?.join(', ') || 'exam-browser.exe, calculator.exe'
+    session.policy?.allowed_processes?.join(', ') || 'exam-browser.exe'
   );
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -42,18 +48,45 @@ export const DeployPolicyModal: React.FC<DeployPolicyModalProps> = ({
     setIsLoading(true);
     setErrorMsg(null);
 
-    const procs = allowedProcesses
+    const denied = deniedProcesses
       .split(',')
       .map((p) => p.trim())
       .filter(Boolean);
 
+    const allowed = allowedProcesses
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    const normalizeApp = (app: string) => {
+      const clean = app.trim().toLowerCase();
+      if (!clean) return '';
+      return clean.endsWith('.exe') ? clean : `${clean}.exe`;
+    };
+
+    const normAllowed = Array.from(new Set(allowed.map(normalizeApp).filter(Boolean)));
+    const normDenied = Array.from(new Set(denied.map(normalizeApp).filter(Boolean)));
+
+    if (blockProhibitedApps) {
+      const allowedSet = new Set(normAllowed);
+      const overlap = normDenied.filter((p) => allowedSet.has(p));
+      if (overlap.length > 0) {
+        setErrorMsg(
+          `Tiến trình [${overlap.join(', ')}] không thể vừa nằm trong danh sách cho phép vừa nằm trong danh sách cấm.`
+        );
+        setIsLoading(false);
+        return;
+      }
+    }
+
     try {
       const res = await deployPolicy(session.id, {
         policy_name: policyName,
-        strict_mode: strictMode,
-        network_lockdown: networkLockdown,
+        strict_mode: blockProhibitedApps,
+        network_lockdown: networkBlock,
         usb_storage_blocked: usbBlocked,
-        allowed_processes: procs,
+        allowed_processes: allowed,
+        denied_processes: denied,
       });
 
       onSuccess(res.session);
@@ -70,7 +103,7 @@ export const DeployPolicyModal: React.FC<DeployPolicyModalProps> = ({
       isOpen={isOpen}
       onClose={onClose}
       title="Triển khai chính sách bảo mật ca thi"
-      description={`Cấu hình bộ quy tắc cô lập & phát lệnh đến Gateway [${session.gateway_id || 'Mặc định'}]`}
+      description={`Cấu hình quy tắc bảo mật & phát lệnh đến Gateway [${session.gateway_id || 'Mặc định'}] và máy trạm`}
       maxWidth="md"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
@@ -95,44 +128,69 @@ export const DeployPolicyModal: React.FC<DeployPolicyModalProps> = ({
           </label>
 
           <div className="space-y-2 bg-surface-subtle p-3 rounded-sm border border-border">
-            <label className="flex items-center gap-2.5 cursor-pointer text-xs sm:text-[13px] font-sans font-medium text-text">
+            <label className="flex items-start gap-2.5 cursor-pointer text-xs sm:text-[13px] font-sans font-medium text-text">
               <input
                 type="checkbox"
-                checked={strictMode}
-                onChange={(e) => setStrictMode(e.target.checked)}
-                className="w-4 h-4 rounded text-primary focus:ring-primary"
+                checked={blockProhibitedApps}
+                onChange={(e) => setBlockProhibitedApps(e.target.checked)}
+                className="w-4 h-4 mt-0.5 rounded text-primary focus:ring-primary"
               />
-              <span>Chế độ Kiosk nghiêm ngặt (Chặn Alt+Tab, Taskmgr, WinKey)</span>
+              <div>
+                <span className="block font-semibold">Tự động tắt ứng dụng gian lận (taskkill)</span>
+                <span className="text-[11px] text-text-muted font-normal block">
+                  Agent sẽ định kỳ rà soát và cưỡng chế tắt các tiến trình trong danh sách cấm (AnyDesk, ChatGPT...).
+                </span>
+              </div>
             </label>
 
-            <label className="flex items-center gap-2.5 cursor-pointer text-xs sm:text-[13px] font-sans font-medium text-text">
+            <label className="flex items-start gap-2.5 cursor-pointer text-xs sm:text-[13px] font-sans font-medium text-text">
               <input
                 type="checkbox"
-                checked={networkLockdown}
-                onChange={(e) => setNetworkLockdown(e.target.checked)}
-                className="w-4 h-4 rounded text-primary focus:ring-primary"
+                checked={networkBlock}
+                onChange={(e) => setNetworkBlock(e.target.checked)}
+                className="w-4 h-4 mt-0.5 rounded text-primary focus:ring-primary"
               />
-              <span>Cô lập mạng (Chỉ cho phép kết nối máy chủ thi & Gateway)</span>
+              <div>
+                <span className="block font-semibold">Chặn danh mục web cấm (AI, Mạng xã hội, VPN/Proxy)</span>
+                <span className="text-[11px] text-text-muted font-normal block">
+                  Điều hướng các tên miền bị cấm về 127.0.0.1 qua file hosts trên máy trạm.
+                </span>
+              </div>
             </label>
 
-            <label className="flex items-center gap-2.5 cursor-pointer text-xs sm:text-[13px] font-sans font-medium text-text">
+            <label className="flex items-start gap-2.5 cursor-pointer text-xs sm:text-[13px] font-sans font-medium text-text">
               <input
                 type="checkbox"
                 checked={usbBlocked}
                 onChange={(e) => setUsbBlocked(e.target.checked)}
-                className="w-4 h-4 rounded text-primary focus:ring-primary"
+                className="w-4 h-4 mt-0.5 rounded text-primary focus:ring-primary"
               />
-              <span>Vô hiệu hóa bộ nhớ ngoài USB & thiết bị lưu trữ thứ cấp</span>
+              <div>
+                <span className="block font-semibold">Vô hiệu hóa bộ nhớ ngoài USB & thiết bị lưu trữ thứ cấp</span>
+                <span className="text-[11px] text-text-muted font-normal block">
+                  Khóa registry dịch vụ USBSTOR trên hệ điều hành Windows của máy trạm.
+                </span>
+              </div>
             </label>
           </div>
         </div>
 
+        {blockProhibitedApps && (
+          <Input
+            label="Danh sách tiến trình cấm (tự động tắt khi phát hiện)"
+            value={deniedProcesses}
+            onChange={(e) => setDeniedProcesses(e.target.value)}
+            placeholder="chatgpt.exe, anydesk.exe, teamviewer.exe, ultraviewer.exe"
+            helperText="Tên file thực thi (.exe) mà Agent sẽ tự động taskkill nếu phát hiện đang chạy."
+          />
+        )}
+
         <Input
-          label="Danh sách tiến trình cho phép (phân cách bằng dấu phẩy)"
+          label="Danh sách ứng dụng thi cử cho phép"
           value={allowedProcesses}
           onChange={(e) => setAllowedProcesses(e.target.value)}
-          placeholder="exam-browser.exe, calculator.exe"
-          helperText="Các tiến trình nằm ngoài danh sách sẽ bị Agent tự động ngăn chặn."
+          placeholder="exam-browser.exe"
+          helperText="Tiến trình ứng dụng thi cử chính thức phục vụ lưu vết và giám sát hệ thống."
         />
 
         <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-border-subtle">

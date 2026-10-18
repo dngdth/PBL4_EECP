@@ -63,19 +63,65 @@ export async function deployPolicy(
   sessionId: string,
   data: DeployPolicyRequest
 ): Promise<{ message: string; session: ExamSession; command_id?: string }> {
-  const payload = {
-    profile: data.policy_name || 'STANDARD_EXAM_POLICY',
-    rules: {
+  let rules = data.rules;
+  if (!rules) {
+    const isUsbDenied = data.usb_storage_blocked ?? true;
+    const isNetworkLockdown = data.network_lockdown ?? true;
+    const isStrictMode = data.strict_mode ?? true;
+
+    const rawAllowed =
+      data.allowed_processes && data.allowed_processes.length > 0
+        ? data.allowed_processes
+        : ['exam-browser.exe'];
+
+    const rawDenied =
+      data.denied_processes && data.denied_processes.length > 0
+        ? data.denied_processes
+        : ['chatgpt.exe', 'anydesk.exe', 'teamviewer.exe', 'ultraviewer.exe'];
+
+    const normalizeApp = (app: string) => {
+      const clean = app.trim().toLowerCase();
+      if (!clean) return '';
+      return clean.endsWith('.exe') ? clean : `${clean}.exe`;
+    };
+
+    const normalizedAllowed = Array.from(
+      new Set(rawAllowed.map(normalizeApp).filter(Boolean))
+    );
+
+    const normalizedDenied = Array.from(
+      new Set(rawDenied.map(normalizeApp).filter(Boolean))
+    );
+
+    if (isStrictMode) {
+      const allowedSet = new Set(normalizedAllowed);
+      const overlap = normalizedDenied.filter((p) => allowedSet.has(p));
+      if (overlap.length > 0) {
+        throw new Error(
+          `Tiến trình [${overlap.join(', ')}] không thể vừa nằm trong danh sách cho phép vừa nằm trong danh sách cấm.`
+        );
+      }
+    }
+
+    rules = {
       applications: {
-        allow: data.allowed_processes || ['exam-browser.exe'],
-        deny: [],
+        allow: normalizedAllowed.length > 0 ? normalizedAllowed : ['exam-browser.exe'],
+        deny: isStrictMode ? normalizedDenied : [],
       },
       network: {
-        strict_mode: data.strict_mode ?? true,
-        network_lockdown: data.network_lockdown ?? true,
+        block: isNetworkLockdown
+          ? ['generative_ai', 'social_network', 'vpn_proxy']
+          : [],
       },
-      usb_storage_blocked: data.usb_storage_blocked ?? true,
-    },
+      devices: {
+        usb: isUsbDenied ? 'deny' : 'allow',
+      },
+    };
+  }
+
+  const payload = {
+    profile: data.policy_name || data.profile || 'STANDARD_EXAM_POLICY',
+    rules,
     actor: 'teacher',
   };
 
@@ -86,7 +132,7 @@ export async function deployPolicy(
 
   const session = normalizeSession(raw);
   return {
-    message: 'Đã triển khai chính sách thành công.',
+    message: 'Lệnh triển khai đã được tạo (QUEUED). Đang chuyển phát và chờ máy trạm xác nhận.',
     session,
   };
 }

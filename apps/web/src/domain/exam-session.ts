@@ -1,5 +1,5 @@
 import { Workstation, Agent } from './workstation';
-import { PolicyConfig } from './security-policy';
+import { PolicyConfig, PolicyRules } from './security-policy';
 import { ActivityItem } from './activity';
 
 export type SessionStatus =
@@ -27,10 +27,14 @@ export interface CreateSessionRequest {
 export interface DeployPolicyRequest {
   profile?: string;
   policy_name?: string;
+  /** Legacy flag: toggles applications.deny list termination. NOT Kiosk Mode. */
   strict_mode?: boolean;
+  /** Legacy flag: toggles network.block category rules. */
   network_lockdown?: boolean;
   usb_storage_blocked?: boolean;
   allowed_processes?: string[];
+  denied_processes?: string[];
+  rules?: PolicyRules;
 }
 
 export interface ExamSession {
@@ -39,6 +43,7 @@ export interface ExamSession {
   room: string;
   room_id: string;
   gateway_id: string | null;
+  gateway_policy_hash?: string | null;
   status: SessionStatus;
   workstations: Workstation[];
   agents?: Agent[];

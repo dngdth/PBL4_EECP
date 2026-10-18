@@ -34,6 +34,7 @@ from contracts.v2.policy import (
     canonical_policy_json,
     compute_policy_hash,
     compute_policy_signature,
+    validate_hostname,
     verify_policy_signature,
 )
 from contracts.v2.presence import Presence, PresenceHealth, ServiceHealth
@@ -78,6 +79,7 @@ __all__ = [
     "compute_command_authorization",
     "compute_policy_hash",
     "compute_policy_signature",
+    "validate_hostname",
     "verify_policy_signature",
     "verify_command_authorization",
 ]

@@ -5,6 +5,8 @@ from datetime import datetime
 from hashlib import sha256
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.domain.exceptions.errors import (
     InvalidStateTransitionError,
     PolicyValidationError,
@@ -12,6 +14,7 @@ from app.domain.exceptions.errors import (
 )
 from app.domain.value_objects.enums import Readiness, SessionState
 from app.domain.value_objects.primitives import canonical_json, new_id, utc_now
+from contracts.v2.policy import PolicyRules, compute_policy_hash
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,19 +31,17 @@ class PolicyDocument:
             raise PolicyValidationError("profile must not be empty")
         if version < 1:
             raise PolicyValidationError("policy version must be positive")
+        if not isinstance(rules, dict):
+            raise PolicyValidationError("policy rules must be an object")
 
-        applications = rules.get("applications", {})
-        allowed = set(applications.get("allow", []))
-        denied = set(applications.get("deny", []))
-        overlap = sorted(allowed & denied)
-        if overlap:
-            raise PolicyValidationError(
-                f"applications cannot be both allowed and denied: {', '.join(overlap)}"
-            )
+        try:
+            validated_rules = PolicyRules.model_validate(rules)
+        except (ValueError, ValidationError) as exc:
+            raise PolicyValidationError(f"invalid policy rules: {exc}") from exc
 
-        payload = {"profile": normalized_profile, "rules": rules, "version": version}
-        policy_hash = sha256(canonical_json(payload).encode("utf-8")).hexdigest()
-        return cls(normalized_profile, rules, version, policy_hash)
+        normalized_rules = validated_rules.model_dump(mode="json", exclude_none=True)
+        policy_hash = compute_policy_hash(normalized_profile, version, validated_rules)
+        return cls(normalized_profile, normalized_rules, version, policy_hash)
 
 
 @dataclass(frozen=True, slots=True)
@@ -360,6 +361,11 @@ class ExamSession:
         value["finished_at"] = self.finished_at.isoformat() if self.finished_at else None
         for workstation in value["workstations"].values():
             workstation["readiness"] = workstation["readiness"].value
+            workstation["policy_compliant"] = (
+                workstation.get("desired_policy_hash") is not None
+                and workstation.get("actual_policy_hash")
+                == workstation.get("desired_policy_hash")
+            )
         return value
 
     @classmethod

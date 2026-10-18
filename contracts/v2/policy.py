@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
@@ -22,10 +23,45 @@ RuleValue = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=255, strict=True),
 ]
+DomainRuleValue = Annotated[
+    str,
+    StringConstraints(strip_whitespace=False, min_length=1, max_length=253, strict=True),
+]
 SignatureValue = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=8192, strict=True),
 ]
+
+HOSTNAME_LABEL_REGEX = re.compile(r"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$")
+
+
+def validate_hostname(value: str, *, field: str = "domain") -> str:
+    """Validate that a string is a secure, well-formed hostname per RFC 1123/1035.
+
+    Rejects newlines (CRLF/LF), whitespace, control characters, comments,
+    and dangerous hosts-file injection syntax.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    if any(c in value for c in ("\r", "\n", "\t", " ", "\0")):
+        raise ValueError(
+            f"{field} cannot contain whitespace, control characters, or newlines: {value!r}"
+        )
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError(f"{field} cannot contain control characters: {value!r}")
+    if len(value) < 1 or len(value) > 253:
+        raise ValueError(f"{field} length must be between 1 and 253 characters: {value!r}")
+    labels = value.split(".")
+    if any(len(label) == 0 for label in labels):
+        raise ValueError(f"{field} cannot contain empty labels: {value!r}")
+    for label in labels:
+        if len(label) > 63:
+            raise ValueError(f"{field} label exceeds 63 characters: {label!r}")
+        if not HOSTNAME_LABEL_REGEX.fullmatch(label):
+            raise ValueError(f"invalid {field} label: {label!r}")
+    if labels[-1].isdigit():
+        raise ValueError(f"{field} cannot end with an all-numeric label: {value!r}")
+    return value
 
 
 class NetworkCategory(StrEnum):
@@ -58,8 +94,8 @@ class ApplicationRules(ContractModel):
 class NetworkRules(ContractModel):
     block: tuple[NetworkCategory, ...] | None = None
     blocked_categories: tuple[NetworkCategory, ...] | None = None
-    allow_domains: tuple[RuleValue, ...] | None = None
-    blocked_domains: tuple[RuleValue, ...] | None = None
+    allow_domains: tuple[DomainRuleValue, ...] | None = None
+    blocked_domains: tuple[DomainRuleValue, ...] | None = None
     blocked_ips: tuple[RuleValue, ...] | None = None
     blocked_cidrs: tuple[RuleValue, ...] | None = None
 
@@ -80,6 +116,10 @@ class NetworkRules(ContractModel):
         ):
             if len(values) != len(set(values)):
                 raise ValueError(f"network.{field} values must be unique")
+        for domain in self.allow_domains or ():
+            validate_hostname(domain, field="network.allow_domains")
+        for domain in self.blocked_domains or ():
+            validate_hostname(domain, field="network.blocked_domains")
         for value in self.blocked_ips or ():
             try:
                 ipaddress.ip_address(value)

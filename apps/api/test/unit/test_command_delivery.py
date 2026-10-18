@@ -116,7 +116,7 @@ def test_acknowledgement_after_deadline_is_rejected_and_persisted(
 
 def test_acknowledgement_by_correct_agent_succeeds(tmp_path: Path) -> None:
     database = _database(tmp_path)
-    created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
+    CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
         CreateExamSessionInput("Exam", "A101", ["PC01"])
     )
     command = GetPendingCommands(database.unit_of_work, clock=lambda: NOW)("PC01")[0]
@@ -145,7 +145,10 @@ def test_acknowledgement_by_wrong_agent_is_rejected(tmp_path: Path) -> None:
     )
     command = GetPendingCommands(database.unit_of_work, clock=lambda: NOW)("PC01")[0]
 
-    with pytest.raises(PolicyValidationError, match="command target PC01 does not match actor PC02"):
+    with pytest.raises(
+        PolicyValidationError,
+        match="command target PC01 does not match actor PC02",
+    ):
         AcknowledgeCommand(database.unit_of_work, clock=lambda: NOW)(
             AcknowledgeCommandInput(
                 command_id=command.id,
@@ -165,7 +168,7 @@ def test_acknowledgement_by_wrong_agent_is_rejected(tmp_path: Path) -> None:
 
 def test_duplicate_acknowledgement_is_rejected(tmp_path: Path) -> None:
     database = _database(tmp_path)
-    created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
+    CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
         CreateExamSessionInput("Exam", "A101", ["PC01"])
     )
     command = GetPendingCommands(database.unit_of_work, clock=lambda: NOW)("PC01")[0]
@@ -184,7 +187,10 @@ def test_duplicate_acknowledgement_is_rejected(tmp_path: Path) -> None:
     assert persisted.status == CommandStatus.ACKNOWLEDGED
 
     # Second ACK (ACK trùng) is rejected
-    with pytest.raises(InvalidStateTransitionError, match="command is not awaiting acknowledgement"):
+    with pytest.raises(
+        InvalidStateTransitionError,
+        match="command is not awaiting acknowledgement",
+    ):
         AcknowledgeCommand(database.unit_of_work, clock=lambda: NOW)(ack_input)
 
     with database.unit_of_work() as uow:
@@ -196,7 +202,7 @@ def test_list_target_commands_is_strictly_read_only_and_lifecycle(
     tmp_path: Path,
 ) -> None:
     database = _database(tmp_path)
-    created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
+    CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
         CreateExamSessionInput("Exam", "A101", ["PC01"])
     )
     list_commands = ListTargetCommands(database.unit_of_work)
@@ -222,7 +228,10 @@ def test_list_target_commands_is_strictly_read_only_and_lifecycle(
         assert persisted.next_retry_at is None
 
     # An ACK received while the command is still PENDING (not yet dispatched) MUST be rejected
-    with pytest.raises(InvalidStateTransitionError, match="command is not awaiting acknowledgement"):
+    with pytest.raises(
+        InvalidStateTransitionError,
+        match="command is not awaiting acknowledgement",
+    ):
         AcknowledgeCommand(database.unit_of_work, clock=lambda: NOW)(
             AcknowledgeCommandInput(
                 command_id=commands[0].id,
@@ -264,7 +273,10 @@ def test_list_target_commands_is_strictly_read_only_and_lifecycle(
         assert acknowledged_cmd.acknowledged_at == NOW
 
     # 5. Duplicate ACK is rejected
-    with pytest.raises(InvalidStateTransitionError, match="command is not awaiting acknowledgement"):
+    with pytest.raises(
+        InvalidStateTransitionError,
+        match="command is not awaiting acknowledgement",
+    ):
         AcknowledgeCommand(database.unit_of_work, clock=lambda: NOW)(
             AcknowledgeCommandInput(
                 command_id=dispatched[0].id,

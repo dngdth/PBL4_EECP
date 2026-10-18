@@ -15,7 +15,6 @@ from app.presentation.api.deps import (
     AcknowledgeCommandUseCase,
     CreatePolicyProfileUseCase,
     DeletePolicyProfileUseCase,
-    GetPendingCommandsUseCase,
     ListPolicyProfilesUseCase,
     ListTargetCommandsUseCase,
     UpdatePolicyProfileUseCase,
@@ -103,7 +102,8 @@ def acknowledge_command(
     if request.app.state.settings.environment == "production-like":
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            "direct HTTP acknowledgement is disabled in production-like environment; use Gateway WebSocket",
+            "direct HTTP acknowledgement is disabled in production-like environment; "
+            "use Gateway WebSocket",
         )
     authorize(request, Permission.CONTROL_AGENT)
     with request.app.state.container.database.unit_of_work() as uow:

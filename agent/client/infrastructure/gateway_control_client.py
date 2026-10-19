@@ -396,6 +396,8 @@ def _legacy_command(command: Command) -> dict[str, Any]:
             "profile": policy.policy_id,
             "rules": policy.rules.model_dump(mode="json", exclude_none=True),
             "signature": policy.signature,
+            "issued_at": policy.issued_at,
+            "expires_at": policy.expires_at,
         }
     else:
         legacy_payload = payload.model_dump(mode="json", exclude_none=True)

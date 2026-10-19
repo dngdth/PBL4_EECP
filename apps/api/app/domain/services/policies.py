@@ -18,12 +18,19 @@ class IncidentPolicy:
         self,
         current: TelemetryEvent,
         session_events: Sequence[TelemetryEvent],
-        open_incident_categories: set[str],
+        open_incident_categories: set[tuple[str | None, str]] | set[str],
     ) -> Incident | None:
+        def is_open(category: str, workstation_id: str | None = None) -> bool:
+            return (
+                (workstation_id, category) in open_incident_categories
+                or (None, category) in open_incident_categories
+                or category in open_incident_categories
+            )
+
         if (
             current.event_type == "POLICY_VIOLATION"
             and current.action in {"BLOCKED", "OBSERVED"}
-            and "POLICY_VIOLATION" not in open_incident_categories
+            and not is_open("POLICY_VIOLATION", current.workstation_id)
         ):
             return Incident(
                 session_id=current.session_id,
@@ -39,7 +46,7 @@ class IncidentPolicy:
 
         if current.severity == Severity.CRITICAL:
             category = f"CRITICAL_{current.category}"
-            if category not in open_incident_categories:
+            if not is_open(category, current.workstation_id):
                 return Incident(
                     session_id=current.session_id,
                     workstation_id=current.workstation_id,
@@ -54,7 +61,7 @@ class IncidentPolicy:
             category = "INFRASTRUCTURE_DNS"
             if (
                 len(affected) >= self.DNS_THRESHOLD
-                and category not in open_incident_categories
+                and not is_open(category)
             ):
                 return Incident(
                     session_id=current.session_id,

@@ -302,7 +302,10 @@ def test_30_agents_over_wss_keep_lan_connections_and_flush_events_after_backend_
                     events = uow.telemetry.list_for_session(session.id)
                     incidents = uow.incidents.list_for_session(session.id)
                 assert {e.id for e in events} == {f"EVT-OFFLINE-{i}" for i in range(3)}
-                assert len(incidents) == 3
+                # Deduplication ensures multiple events for same incident on PC07
+                # do not duplicate incidents.
+                assert len(incidents) == 1
+                assert incidents[0].workstation_id == "PC07"
                 assert all(peer.close_code is None for peer in sockets.values())
 
                 # Pending Events also survive a full Gateway app recreation.
@@ -371,7 +374,7 @@ def test_30_agents_over_wss_keep_lan_connections_and_flush_events_after_backend_
                 assert all(peer.close_code is None for peer in reconnected.values())
                 with container.database.unit_of_work() as uow:
                     assert len(uow.telemetry.list_for_session(session.id)) == 4
-                    assert len(uow.incidents.list_for_session(session.id)) == 4
+                    assert len(uow.incidents.list_for_session(session.id)) == 1
         finally:
             await gateway.stop()
             await backend.stop()

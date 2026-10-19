@@ -56,6 +56,12 @@ COMMAND_REPLAY_PATH = Path(
         str(POLICY_STATE_PATH.with_name("command-replay.json")),
     )
 )
+EVENT_SPOOL_PATH = Path(
+    os.getenv(
+        "EECP_EVENT_SPOOL_PATH",
+        str(POLICY_STATE_PATH.with_name("agent-events.db")),
+    )
+)
 
 
 def load_agent_gateway_token() -> str:

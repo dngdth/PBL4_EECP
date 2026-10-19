@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
+from agent.client.infrastructure.event_spool import AgentEventSpool, EventSpoolFullError
 from agent.domain.identity import WorkstationIdentity
 from contracts.v2 import (
     Ack,
@@ -23,6 +24,7 @@ from contracts.v2 import (
     CommandType,
     ErrorCode,
     Event,
+    EventReceipt,
     EventType,
     GatewayEnvelope,
     GatewayMessageType,
@@ -51,6 +53,7 @@ class GatewayControlClient:
         bootstrap_token: str,
         agent_version: str,
         *,
+        event_spool: AgentEventSpool | None = None,
         ca_file: str | None = None,
         allow_plaintext_ws: bool = False,
         reconnect_initial_seconds: float = 1.0,
@@ -69,6 +72,7 @@ class GatewayControlClient:
         self._gateway_url = gateway_url
         self._bootstrap_token = bootstrap_token
         self._agent_version = agent_version
+        self._event_spool = event_spool
         self._ssl_context = (
             ssl.create_default_context(cafile=ca_file)
             if scheme == "wss" and ca_file is not None
@@ -85,16 +89,18 @@ class GatewayControlClient:
         self._thread: threading.Thread | None = None
         self._outbound: queue.Queue[GatewayEnvelope] = queue.Queue(maxsize=1000)
         self._pending_outbound: GatewayEnvelope | None = None
+        self._enqueued_event_ids: set[str] = set()
         self._commands: queue.Queue[Command] = queue.Queue()
         self._command_index: dict[str, Command] = {}
         self._active_policy: tuple[str, dict[str, Any]] | None = None
         self._state_lock = threading.Lock()
-        self._event_sequence = 0
+        self._event_sequence = event_spool.max_sequence() if event_spool is not None else 0
         self._service_health = ServiceHealth.HEALTHY
         self._service_policy_hash: str | None = None
 
     def register(self, identity: WorkstationIdentity) -> None:
         self._identity = identity
+        self._enqueue_pending_spool()
         if self._thread is None or not self._thread.is_alive():
             self._stop.clear()
             self._thread = threading.Thread(
@@ -236,6 +242,22 @@ class GatewayControlClient:
             payload=payload,
             correlation_id=f"event_{session_id}",
         )
+        envelope = GatewayEnvelope(
+            protocol_version=2,
+            message_type=GatewayMessageType.EVENT,
+            message_id=event.event_id,
+            correlation_id=event.correlation_id or event.event_id,
+            source_id=agent_id,
+            target_id="backend",
+            payload=event.model_dump(mode="json", exclude_none=True),
+        )
+        if self._event_spool is not None:
+            try:
+                self._event_spool.record(envelope)
+            except EventSpoolFullError as exc:
+                self.set_service_health(ServiceHealth.DEGRADED, self._service_policy_hash)
+                raise OSError("Agent event spool is full; message was not retained") from exc
+        self._enqueued_event_ids.add(event.event_id)
         self._log(
             "event=EVENT_CREATED "
             f"event_id={event.event_id} correlation_id={event.correlation_id} "
@@ -280,6 +302,7 @@ class GatewayControlClient:
                 ) as websocket:
                     websocket.send(self._hello().to_json())
                     self._connected.set()
+                    self._enqueue_pending_spool()
                     delay = self._reconnect_initial
                     while not self._stop.is_set():
                         self._flush_outbound(websocket)
@@ -290,6 +313,7 @@ class GatewayControlClient:
                         self._receive(message)
             except (ConnectionClosed, OSError, TimeoutError, ValueError) as exc:
                 self._connected.clear()
+                self._enqueued_event_ids.clear()
                 self._log(
                     "event=GATEWAY_CONNECTION_INTERRUPTED "
                     f"error_type={type(exc).__name__}"
@@ -320,6 +344,7 @@ class GatewayControlClient:
         )
 
     def _flush_outbound(self, websocket: SyncWebSocket) -> None:
+        self._enqueue_pending_spool()
         while True:
             envelope = self._pending_outbound
             if envelope is None:
@@ -339,6 +364,17 @@ class GatewayControlClient:
 
     def _receive(self, raw: str | bytes) -> None:
         envelope = GatewayEnvelope.model_validate_json(raw)
+        if envelope.message_type == GatewayMessageType.EVENT_RECEIPT:
+            receipt = EventReceipt.model_validate(envelope.payload)
+            if self._event_spool is not None:
+                self._event_spool.complete(receipt.event_id)
+            self._enqueued_event_ids.discard(receipt.event_id)
+            self._log(
+                "event=EVENT_ACKNOWLEDGED "
+                f"event_id={receipt.event_id} "
+                f"status={receipt.status.value}"
+            )
+            return
         if envelope.message_type != GatewayMessageType.COMMAND:
             raise ValueError("Gateway sent an unsupported message type")
         command = Command.model_validate(envelope.payload)
@@ -348,6 +384,17 @@ class GatewayControlClient:
             raise ValueError("Gateway command correlation does not match payload")
         self._command_index[command.command_id] = command
         self._commands.put_nowait(command)
+
+    def _enqueue_pending_spool(self) -> None:
+        if self._event_spool is None or self._identity is None:
+            return
+        for envelope in self._event_spool.pending():
+            if envelope.message_id not in self._enqueued_event_ids:
+                try:
+                    self._outbound.put_nowait(envelope)
+                    self._enqueued_event_ids.add(envelope.message_id)
+                except queue.Full:
+                    break
 
     def _queue(
         self,

@@ -14,6 +14,8 @@ from contracts.v2 import (
     Command,
     DeliveryFailure,
     Event,
+    EventReceipt,
+    EventReceiptStatus,
     GatewayEnvelope,
     GatewayMessageType,
     Presence,
@@ -97,7 +99,47 @@ class GatewayRouter:
                 if self._event_flusher is not None:
                     self._event_flusher.note_buffered(inserted)
                     self._event_flusher.wake()
+                receipt = EventReceipt(
+                    protocol_version=2,
+                    event_id=event.event_id,
+                    status=(
+                        EventReceiptStatus.ACCEPTED
+                        if inserted
+                        else EventReceiptStatus.ALREADY_PROCESSED
+                    ),
+                    received_at=datetime.now(UTC),
+                )
+                await self._connections.send(
+                    bound_agent_id,
+                    self._envelope(
+                        GatewayMessageType.EVENT_RECEIPT,
+                        f"receipt_{event.event_id}",
+                        self._gateway_id,
+                        receipt.model_dump(mode="json", exclude_none=True),
+                        target_id=bound_agent_id,
+                        correlation_id=envelope.correlation_id or event.event_id,
+                    ).to_json(),
+                )
                 return
+            await self._backend.send(envelope)
+            receipt = EventReceipt(
+                protocol_version=2,
+                event_id=event.event_id,
+                status=EventReceiptStatus.ACCEPTED,
+                received_at=datetime.now(UTC),
+            )
+            await self._connections.send(
+                bound_agent_id,
+                self._envelope(
+                    GatewayMessageType.EVENT_RECEIPT,
+                    f"receipt_{event.event_id}",
+                    self._gateway_id,
+                    receipt.model_dump(mode="json", exclude_none=True),
+                    target_id=bound_agent_id,
+                    correlation_id=envelope.correlation_id or event.event_id,
+                ).to_json(),
+            )
+            return
         elif envelope.message_type == GatewayMessageType.PRESENCE:
             presence = Presence.model_validate(envelope.payload)
             if presence.agent_id != bound_agent_id:

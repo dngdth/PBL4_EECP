@@ -22,6 +22,7 @@ import {
 import { PolicySummaryCard } from '@/src/features/security-policy';
 import { ActivityFeed, ActivityDetailModal } from '@/src/features/recent-activity';
 import { AlertPanel } from '@/src/features/alerts';
+import { useRealtimeRefresh } from '@/src/shared/api/realtime';
 import { Spinner } from '@/src/shared/ui/spinner';
 import { Button } from '@/src/shared/ui/button';
 
@@ -72,6 +73,10 @@ export const SessionDetailPage: React.FC = () => {
   useEffect(() => {
     fetchSessionData(false);
   }, [fetchSessionData]);
+
+  useRealtimeRefresh(() => {
+    fetchSessionData(true);
+  }, ['sessions', 'agents', 'commands', 'api']);
 
   // Auto-polling when deploying or in preflight
   useEffect(() => {

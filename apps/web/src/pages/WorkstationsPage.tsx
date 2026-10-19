@@ -23,6 +23,7 @@ import { Button } from '@/src/shared/ui/button';
 import { Spinner } from '@/src/shared/ui/spinner';
 import { cn } from '@/src/shared/lib/cn';
 import { UI_LABELS } from '@/src/shared/config/labels';
+import { useRealtimeRefresh } from '@/src/shared/api/realtime';
 import { formatRelativeTime } from '@/src/shared/lib/formatters';
 
 export const WorkstationsPage: React.FC = () => {
@@ -52,6 +53,10 @@ export const WorkstationsPage: React.FC = () => {
   useEffect(() => {
     fetchAgentData(false);
   }, [fetchAgentData]);
+
+  useRealtimeRefresh(() => {
+    fetchAgentData(true);
+  }, ['agents', 'api']);
 
   // Convert Agent to Workstation ViewModel for Grid
   const workstations: Workstation[] = useMemo(() => {

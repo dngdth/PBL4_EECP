@@ -22,6 +22,7 @@ import { listSessions, SessionStatusBadge } from '@/src/features/exam-sessions';
 import { ActivityFeed } from '@/src/features/recent-activity';
 import { formatDateTime, formatRelativeTime } from '@/src/shared/lib/formatters';
 import { UI_LABELS } from '@/src/shared/config/labels';
+import { useRealtimeRefresh } from '@/src/shared/api/realtime';
 import { cn } from '@/src/shared/lib/cn';
 
 export const OverviewPage: React.FC = () => {
@@ -45,6 +46,10 @@ export const OverviewPage: React.FC = () => {
       setIsRefreshing(false);
     }
   };
+
+  useRealtimeRefresh(() => {
+    fetchSessions(true);
+  }, ['sessions', 'api']);
 
   useEffect(() => {
     fetchSessions(false);

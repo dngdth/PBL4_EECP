@@ -6,6 +6,7 @@ import { ExamSession } from '@/src/domain';
 import { Button } from '@/src/shared/ui/button';
 import { Spinner } from '@/src/shared/ui/spinner';
 import { formatDateTime, formatRelativeTime } from '@/src/shared/lib/formatters';
+import { useRealtimeRefresh } from '@/src/shared/api/realtime';
 import { cn } from '@/src/shared/lib/cn';
 
 export const SessionListPage: React.FC = () => {
@@ -27,6 +28,10 @@ export const SessionListPage: React.FC = () => {
       setIsLoading(false);
     }
   };
+
+  useRealtimeRefresh(() => {
+    fetchSessions();
+  }, ['sessions', 'api']);
 
   useEffect(() => {
     fetchSessions();

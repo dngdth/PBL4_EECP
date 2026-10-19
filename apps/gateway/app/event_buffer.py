@@ -10,7 +10,13 @@ from apps.gateway.app.application.models import BufferedEvent, EventBufferHealth
 from contracts.v2 import Event, GatewayEnvelope, GatewayMessageType, PresenceHealth
 
 
-class EventBufferFullError(ValueError):
+class EventBufferError(OSError):
+    """Storage error encountered during EventBuffer operations."""
+
+    pass
+
+
+class EventBufferFullError(EventBufferError, ValueError):
     pass
 
 
@@ -53,6 +59,22 @@ class EventBuffer:
                 );
                 """
             )
+            # Crash recovery on startup: Any events left IN_FLIGHT by a previous process
+            # crash are no longer being actively sent. Reset them to PENDING and ensure
+            # they are due immediately so the new Gateway flushes them without delay.
+            now_iso = datetime.now(UTC).isoformat()
+            connection.execute(
+                """
+                UPDATE gateway_events
+                   SET state = 'PENDING',
+                       next_attempt_at = CASE
+                           WHEN next_attempt_at > ? THEN ?
+                           ELSE next_attempt_at
+                       END
+                 WHERE state = 'IN_FLIGHT'
+                """,
+                (now_iso, now_iso),
+            )
             connection.commit()
 
     def put(self, envelope: GatewayEnvelope, *, now: datetime | None = None) -> bool:
@@ -61,43 +83,46 @@ class EventBuffer:
         event = Event.model_validate(envelope.payload)
         at = now or datetime.now(UTC)
         encoded = envelope.to_json()
-        with self._lock, closing(self._connect()) as connection:
-            existing = connection.execute(
-                "SELECT envelope_json FROM gateway_events WHERE event_id = ?",
-                (event.event_id,),
-            ).fetchone()
-            if existing is not None:
-                if existing["envelope_json"] != encoded:
-                    raise ValueError("event_id collision with different event content")
-                return False
-            count = connection.execute("SELECT COUNT(*) FROM gateway_events").fetchone()[0]
-            if count >= self.max_rows:
-                self._set_meta(connection, "last_flush_error", "event buffer is full")
+        try:
+            with self._lock, closing(self._connect()) as connection:
+                existing = connection.execute(
+                    "SELECT envelope_json FROM gateway_events WHERE event_id = ?",
+                    (event.event_id,),
+                ).fetchone()
+                if existing is not None:
+                    if existing["envelope_json"] != encoded:
+                        raise ValueError("event_id collision with different event content")
+                    return False
+                count = connection.execute("SELECT COUNT(*) FROM gateway_events").fetchone()[0]
+                if count >= self.max_rows:
+                    self._set_meta(connection, "last_flush_error", "event buffer is full")
+                    connection.commit()
+                    raise EventBufferFullError("Gateway event buffer is full")
+                connection.execute(
+                    """
+                    INSERT INTO gateway_events(
+                        event_id, agent_id, session_id, event_type, occurred_at,
+                        sequence, correlation_id, envelope_json, state, attempt_count,
+                        created_at, next_attempt_at, last_error
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, ?, ?, NULL)
+                    """,
+                    (
+                        event.event_id,
+                        event.agent_id,
+                        event.session_id,
+                        event.event_type.value,
+                        event.occurred_at.isoformat(),
+                        event.sequence,
+                        event.correlation_id,
+                        encoded,
+                        at.isoformat(),
+                        at.isoformat(),
+                    ),
+                )
                 connection.commit()
-                raise EventBufferFullError("Gateway event buffer is full")
-            connection.execute(
-                """
-                INSERT INTO gateway_events(
-                    event_id, agent_id, session_id, event_type, occurred_at,
-                    sequence, correlation_id, envelope_json, state, attempt_count,
-                    created_at, next_attempt_at, last_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, ?, ?, NULL)
-                """,
-                (
-                    event.event_id,
-                    event.agent_id,
-                    event.session_id,
-                    event.event_type.value,
-                    event.occurred_at.isoformat(),
-                    event.sequence,
-                    event.correlation_id,
-                    encoded,
-                    at.isoformat(),
-                    at.isoformat(),
-                ),
-            )
-            connection.commit()
-            return True
+                return True
+        except sqlite3.Error as exc:
+            raise EventBufferError(f"Gateway event buffer storage error: {exc}") from exc
 
     def due(self, now: datetime, limit: int) -> tuple[BufferedEvent, ...]:
         with self._lock, closing(self._connect()) as connection:

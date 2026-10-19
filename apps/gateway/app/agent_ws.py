@@ -9,6 +9,7 @@ from contextlib import suppress
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from pydantic import ValidationError
 
+from apps.gateway.app.event_buffer import EventBufferError, EventBufferFullError
 from contracts.v2 import AgentHello, GatewayEnvelope, GatewayMessageType
 
 router = APIRouter()
@@ -56,12 +57,16 @@ async def agent_websocket(websocket: WebSocket) -> None:
         while True:
             envelope = GatewayEnvelope.model_validate_json(await websocket.receive_text())
             await state.router.route_agent(agent_id, envelope)
-    except (ValidationError, ValueError, TimeoutError):
+    except (EventBufferFullError, EventBufferError):
+        await websocket.close(code=status.WS_1013_TRY_AGAIN_LATER)
+    except TimeoutError:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
     except OSError:
         # ACK/control backpressure is explicit; presence and identity publication
         # are retried by the application without dropping healthy LAN sockets.
         await websocket.close(code=status.WS_1013_TRY_AGAIN_LATER)
+    except (ValidationError, ValueError):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
     except WebSocketDisconnect:
         pass
     finally:

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 
 from agent.application.policy_commands import PolicyCommandProcessor
 from agent.application.privileged_execution import PrivilegedExecutionPort
+from agent.client.infrastructure.event_spool import AgentEventSpool
 from agent.client.infrastructure.gateway_control_client import GatewayControlClient
 from agent.client.infrastructure.named_pipe_executor import NamedPipePrivilegedExecutor
 from agent.client.runtime import AgentClientRuntime
@@ -14,6 +15,7 @@ from agent.client.sensors.service_health_sensor import ServiceHealthSensor
 from agent.client.sensors.suite import SensorSuite
 from agent.config import (
     AGENT_VERSION,
+    EVENT_SPOOL_PATH,
     GATEWAY_ALLOW_PLAINTEXT_WS,
     GATEWAY_CA_FILE,
     GATEWAY_RECONNECT_INITIAL_SECONDS,
@@ -49,6 +51,7 @@ def build_client_runtime(
         GATEWAY_URL,
         load_agent_gateway_token(),
         AGENT_VERSION,
+        event_spool=AgentEventSpool(EVENT_SPOOL_PATH),
         ca_file=GATEWAY_CA_FILE,
         allow_plaintext_ws=GATEWAY_ALLOW_PLAINTEXT_WS,
         reconnect_initial_seconds=GATEWAY_RECONNECT_INITIAL_SECONDS,

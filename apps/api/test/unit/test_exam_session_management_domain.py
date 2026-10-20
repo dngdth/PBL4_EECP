@@ -1,10 +1,11 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from app.domain.entities.exam_session import ExamSession
+from app.domain.entities.exam_session import ExamSession, PolicyDocument
 from app.domain.entities.session_workstation import SessionWorkstation
 from app.domain.exceptions.errors import InvalidStateTransitionError, PolicyValidationError
 from app.domain.value_objects.enums import SessionState
+from contracts.v2.policy import PolicyRules, compute_policy_hash
 
 NOW = datetime(2026, 8, 25, 8, 0, tzinfo=UTC)
 
@@ -136,3 +137,126 @@ def test_session_deserialization_rejects_blank_gateway_id(gateway_id: str) -> No
 
     with pytest.raises(PolicyValidationError, match="gateway"):
         ExamSession.from_dict(serialized)
+
+
+@pytest.mark.parametrize(
+    "invalid_rules, expected_match",
+    [
+        (
+            {
+                "applications": {"allow": ["exam.exe"]},
+                "network": {"strict_mode": True},
+            },
+            "extra_forbidden",
+        ),
+        (
+            {
+                "applications": {"allow": ["exam.exe"]},
+                "network": {"network_lockdown": True},
+            },
+            "extra_forbidden",
+        ),
+        (
+            {
+                "applications": {"allow": ["exam.exe"]},
+                "usb_storage_blocked": True,
+            },
+            "extra_forbidden",
+        ),
+        (
+            {
+                "devices": {"usb": "invalid_access"},
+            },
+            "Input should be 'allow' or 'deny'",
+        ),
+        (
+            {
+                "devices": {"usb": "deny", "usb_storage": "deny"},
+            },
+            "use devices.usb or legacy usb_storage, not both",
+        ),
+        (
+            {
+                "network": {"block": ["generative_ai"], "blocked_categories": ["vpn_proxy"]},
+            },
+            "use network.block or legacy blocked_categories, not both",
+        ),
+        (
+            {
+                "network": {"blocked_ips": ["999.999.999.999"]},
+            },
+            "invalid blocked IP address",
+        ),
+        (
+            {
+                "applications": {"allow": ["app.exe"], "deny": ["app.exe"]},
+            },
+            "applications cannot be both allowed and denied",
+        ),
+    ],
+)
+def test_policy_document_rejects_incompatible_protocol_v2_rules(
+    invalid_rules: dict, expected_match: str
+) -> None:
+    with pytest.raises(PolicyValidationError, match=expected_match):
+        PolicyDocument.create("STANDARD", invalid_rules, 1)
+
+
+def test_policy_document_accepts_valid_protocol_v2_rules() -> None:
+    valid_rules = {
+        "applications": {"allow": ["exam-browser.exe", "calc.exe"], "deny": ["cheat.exe"]},
+        "network": {
+            "block": ["generative_ai", "social_network"],
+            "allow_domains": ["exam.example.edu"],
+        },
+        "devices": {"usb": "deny"},
+    }
+
+    doc = PolicyDocument.create("STANDARD_EXAM", valid_rules, 1)
+    expected_hash = compute_policy_hash(
+        "STANDARD_EXAM", 1, PolicyRules.model_validate(valid_rules)
+    )
+
+    assert doc.profile == "STANDARD_EXAM"
+    assert doc.version == 1
+    assert doc.policy_hash == expected_hash
+    assert doc.rules["devices"]["usb"] == "deny"
+    assert doc.rules["applications"]["allow"] == ["exam-browser.exe", "calc.exe"]
+
+
+def test_policy_document_and_session_support_legacy_rule_vocabulary_and_preserve_hash() -> None:
+    from agent.domain.policy import parse_policy_payload
+
+    legacy_rules = {
+        "applications": {"deny": ["cheat.exe"]},
+        "network": {"blocked_categories": ["generative_ai"]},
+        "devices": {"usb_storage": "deny"},
+    }
+
+    doc = PolicyDocument.create("LEGACY_PROFILE", legacy_rules, 1)
+    expected_hash = compute_policy_hash(
+        "LEGACY_PROFILE", 1, PolicyRules.model_validate(legacy_rules)
+    )
+    assert doc.policy_hash == expected_hash
+
+    # Verify Agent parses legacy vocabulary
+    agent_spec = parse_policy_payload({
+        "policy_hash": doc.policy_hash,
+        "version": doc.version,
+        "profile": doc.profile,
+        "rules": doc.rules,
+    })
+    assert agent_spec.policy_hash == expected_hash
+    assert agent_spec.usb_deny is True
+    assert agent_spec.blocked_categories == ("generative_ai",)
+    assert agent_spec.denied_applications == ("cheat.exe",)
+
+    # Verify existing session reconstitution preserves the hash without mutation
+    session = ExamSession.create_managed("LegacyExam", "R1", ["PC01"], NOW)
+    session.policy = doc
+    serialized = session.to_dict()
+    assert serialized["policy"]["policy_hash"] == expected_hash
+
+    restored = ExamSession.from_dict(serialized)
+    assert restored.policy is not None
+    assert restored.policy.policy_hash == expected_hash

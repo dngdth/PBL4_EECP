@@ -1,25 +1,29 @@
+export type NetworkCategory = 'generative_ai' | 'social_network' | 'vpn_proxy';
+export type UsbAccess = 'allow' | 'deny';
+
 export interface PolicyApplicationsRule {
   allow?: string[];
   deny?: string[];
 }
 
 export interface PolicyNetworkRule {
-  block?: string[];
+  block?: NetworkCategory[] | string[];
+  blocked_categories?: NetworkCategory[] | string[];
   allow_domains?: string[];
-  strict_mode?: boolean;
-  network_lockdown?: boolean;
+  blocked_domains?: string[];
+  blocked_ips?: string[];
+  blocked_cidrs?: string[];
 }
 
 export interface PolicyDevicesRule {
-  usb?: 'allow' | 'deny';
-  usb_storage_blocked?: boolean;
+  usb?: UsbAccess;
+  usb_storage?: UsbAccess;
 }
 
 export interface PolicyRules {
   applications?: PolicyApplicationsRule;
   network?: PolicyNetworkRule;
   devices?: PolicyDevicesRule;
-  [key: string]: any;
 }
 
 export interface PolicyProfile {
@@ -47,9 +51,12 @@ export interface UpdatePolicyProfileInput {
 export interface PolicyConfig {
   policy_id: string;
   name: string;
+  /** Legacy flag: indicates whether prohibited application termination (denylist) is active. NOT Kiosk Mode. */
   strict_mode: boolean;
+  /** Legacy flag: indicates whether web category domain blocking is active. */
   network_lockdown: boolean;
   usb_storage_blocked: boolean;
   allowed_processes: string[];
+  denied_processes?: string[];
   deployed_at?: string;
 }

@@ -37,7 +37,14 @@ export interface Workstation {
   agent_version: string;
   gateway_id?: string | null;
   service_health?: 'HEALTHY' | 'DEGRADED' | 'UNAVAILABLE' | null;
+  /** Hash reported by Agent via Presence/heartbeat. Does NOT prove session command ACK. */
   active_policy_hash?: string | null;
+  /** Actual policy hash recorded by Backend after valid command ACK. */
+  actual_policy_hash?: string | null;
+  /** Desired policy hash for this session. */
+  desired_policy_hash?: string | null;
+  /** Whether the workstation has successfully acknowledged the desired policy. */
+  policy_compliant?: boolean;
   latest_incident?: LatestIncident | null;
 }
 

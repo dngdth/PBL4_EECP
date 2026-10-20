@@ -183,7 +183,9 @@ class ExamPipelineService:
             session_events = uow.telemetry.list_for_session(session.id)
             current_incidents = uow.incidents.list_for_session(session.id)
             open_categories = {
-                item.category for item in current_incidents if item.status == IncidentStatus.OPEN
+                (item.workstation_id, item.category)
+                for item in current_incidents
+                if item.status == IncidentStatus.OPEN
             }
             incident = self._incident_policy.evaluate(event, session_events, open_categories)
             if incident:
@@ -247,6 +249,7 @@ class ExamPipelineService:
                 "incidents": [
                     {
                         "id": item.id,
+                        "workstation_id": item.workstation_id,
                         "category": item.category,
                         "severity": item.severity,
                         "status": item.status,

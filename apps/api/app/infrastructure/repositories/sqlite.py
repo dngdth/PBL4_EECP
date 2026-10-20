@@ -383,6 +383,34 @@ class SqliteCommandRepository:
         ).fetchall()
         return [self._from_row(row) for row in rows]
 
+    def list_for_target(
+        self, target_id: str, *, active_only: bool = True
+    ) -> list[Command]:
+        if active_only:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM commands
+                 WHERE target_id = ?
+                   AND status IN (?, ?)
+                 ORDER BY created_at, id
+                """,
+                (
+                    target_id,
+                    CommandStatus.PENDING.value,
+                    CommandStatus.DELIVERED.value,
+                ),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM commands
+                 WHERE target_id = ?
+                 ORDER BY created_at, id
+                """,
+                (target_id,),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
     @staticmethod
     def _values(command: Command) -> tuple:
         return (

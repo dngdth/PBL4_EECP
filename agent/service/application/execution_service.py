@@ -81,6 +81,18 @@ class ExecutionService(PrivilegedExecutionPort):
             if request.command_id in self._processed:
                 self._processed.move_to_end(request.command_id)
             if previous_fingerprint == fingerprint:
+                if (
+                    self._require_authorized_commands
+                    and request.operation == CommandType.RESTORE_BASELINE
+                    and self._active_session_id is not None
+                    and request.session_id != self._active_session_id
+                ):
+                    return self._failure(
+                        request,
+                        ErrorCode.SESSION_MISMATCH,
+                        "restore session does not match the active policy session",
+                        rejected=True,
+                    )
                 return result
             return self._failure(
                 request,
@@ -189,6 +201,36 @@ class ExecutionService(PrivilegedExecutionPort):
     def _validate_authorization(self, request: ServiceRequest) -> ServiceResult | None:
         if request.operation not in {CommandType.APPLY_POLICY, CommandType.RESTORE_BASELINE}:
             return None
+
+        if request.deadline is not None:
+            if request.issued_at is not None and request.deadline < request.issued_at:
+                return self._failure(
+                    request,
+                    ErrorCode.INVALID_COMMAND,
+                    "command deadline cannot be earlier than issued_at",
+                    rejected=True,
+                )
+            if request.deadline < self._clock():
+                return self._failure(
+                    request,
+                    ErrorCode.COMMAND_EXPIRED,
+                    "command deadline has passed",
+                    rejected=True,
+                )
+
+        if (
+            request.operation == CommandType.APPLY_POLICY
+            and isinstance(request.payload, ApplyPolicyPayload)
+        ):
+            expires_at = request.payload.policy.expires_at
+            if expires_at is not None and expires_at <= self._clock():
+                return self._failure(
+                    request,
+                    ErrorCode.POLICY_EXPIRED,
+                    "policy has expired",
+                    rejected=True,
+                )
+
         if not self._require_authorized_commands:
             return None
         if (
@@ -208,13 +250,6 @@ class ExecutionService(PrivilegedExecutionPort):
                 request,
                 ErrorCode.TARGET_MISMATCH,
                 "command target does not match this Agent",
-                rejected=True,
-            )
-        if request.deadline < request.issued_at or request.deadline < self._clock():
-            return self._failure(
-                request,
-                ErrorCode.COMMAND_EXPIRED,
-                "command deadline has passed",
                 rejected=True,
             )
         fields = {

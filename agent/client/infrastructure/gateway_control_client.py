@@ -257,18 +257,22 @@ class GatewayControlClient:
             except EventSpoolFullError as exc:
                 self.set_service_health(ServiceHealth.DEGRADED, self._service_policy_hash)
                 raise OSError("Agent event spool is full; message was not retained") from exc
-        self._enqueued_event_ids.add(event.event_id)
         self._log(
             "event=EVENT_CREATED "
             f"event_id={event.event_id} correlation_id={event.correlation_id} "
             f"session_id={session_id} event_type={event_type.value}"
         )
-        self._queue(
-            GatewayMessageType.EVENT,
-            event.event_id,
-            event.model_dump(mode="json", exclude_none=True),
-            correlation_id=event.correlation_id or event.event_id,
-        )
+        if event.event_id not in self._enqueued_event_ids:
+            try:
+                self._queue(
+                    GatewayMessageType.EVENT,
+                    event.event_id,
+                    event.model_dump(mode="json", exclude_none=True),
+                    correlation_id=event.correlation_id or event.event_id,
+                )
+            except Exception:
+                self._enqueued_event_ids.discard(event.event_id)
+                raise
 
     def set_service_health(
         self, service_health: ServiceHealth, active_policy_hash: str | None
@@ -419,6 +423,7 @@ class GatewayControlClient:
                 )
             )
             if message_type == GatewayMessageType.EVENT:
+                self._enqueued_event_ids.add(message_id)
                 self._log(
                     "event=EVENT_QUEUED "
                     f"event_id={message_id} "

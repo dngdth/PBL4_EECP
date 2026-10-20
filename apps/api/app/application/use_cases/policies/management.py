@@ -140,6 +140,8 @@ class AcknowledgeCommand:
                 raise PolicyValidationError(
                     f"command target {command.target_id} does not match actor {data.actor}"
                 )
+            if command.status == CommandStatus.PENDING and data.auto_deliver:
+                command.deliver(at)
             if command.status != CommandStatus.DELIVERED:
                 raise InvalidStateTransitionError(
                     "command is not awaiting acknowledgement"

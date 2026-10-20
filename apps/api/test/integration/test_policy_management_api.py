@@ -312,7 +312,8 @@ def test_acknowledge_command_api_regression_suite(tmp_path: Path) -> None:
 def test_production_like_disables_direct_http_ack_for_all_roles(tmp_path: Path) -> None:
     app = create_app(tmp_path / "ack-auth-regression.db")
     app.state.settings = replace(app.state.settings, environment="production-like")
-    app.state.token_service = TokenService("phase-9-http-auth-key-that-is-at-least-thirty-two-bytes")
+    key = "phase-9-http-auth-key-that-is-at-least-thirty-two-bytes"
+    app.state.token_service = TokenService(key)
 
     app.state.container.register_agent(
         RegisterAgentInput("PC01", "HOST-PC01", "192.168.3.56", "1.1.0")
@@ -323,7 +324,8 @@ def test_production_like_disables_direct_http_ack_for_all_roles(tmp_path: Path) 
 
     with TestClient(app) as client:
         # Create session using admin token
-        admin_token = app.state.token_service.issue(Principal("admin-user", Role.ADMIN, frozenset()))
+        admin_principal = Principal("admin-user", Role.ADMIN, frozenset())
+        admin_token = app.state.token_service.issue(admin_principal)
         created = client.post(
             "/api/v1/sessions",
             headers={"Authorization": f"Bearer {admin_token}"},
@@ -344,7 +346,7 @@ def test_production_like_disables_direct_http_ack_for_all_roles(tmp_path: Path) 
         cmd_id = commands[0]["id"]
         policy_hash = commands[0]["payload"]["policy_hash"]
 
-        # In production-like, Direct HTTP ACK is disabled for all roles (including EXAMINER and ADMIN)
+        # In production-like, Direct HTTP ACK is disabled for all roles (including EXAMINER/ADMIN)
         pc02_token = app.state.token_service.issue(
             Principal("PC02", Role.EXAMINER, frozenset({session_id}))
         )
@@ -427,7 +429,10 @@ def test_p0_03_get_agent_commands_is_read_only_and_lifecycle(
             assert persisted.next_retry_at is None
 
         # Attempting to acknowledge command directly while still PENDING must be rejected
-        with pytest.raises(InvalidStateTransitionError, match="command is not awaiting acknowledgement"):
+        with pytest.raises(
+            InvalidStateTransitionError,
+            match="command is not awaiting acknowledgement",
+        ):
             app.state.container.acknowledge_command(
                 AcknowledgeCommandInput(
                     command_id=cmd["id"],
@@ -493,3 +498,52 @@ def test_p0_03_get_agent_commands_is_read_only_and_lifecycle(
                     actor="PC01",
                 )
             )
+
+
+def test_unauthorized_ack_does_not_mutate_pending_command(
+    tmp_path: Path,
+) -> None:
+    app = create_app(tmp_path / "unauth_ack.db")
+    with TestClient(app) as client:
+        _register(client, "PC01")
+        _register(client, "PC02")
+        session_res = client.post(
+            "/api/v1/sessions",
+            json={
+                "name": "Unauthorized ACK Test Session",
+                "room": "ROOM-01",
+                "agent_ids": ["PC01"],
+                "policy_profile": "INTERNET_NO_AI",
+            },
+        )
+        assert session_res.status_code == 201
+
+        # Lấy danh sách command của PC01 (read-only, trạng thái vẫn là PENDING)
+        res = client.get("/api/v1/agents/PC01/commands")
+        assert res.status_code == 200
+        cmd = res.json()[0]
+        cmd_id = cmd["id"]
+        policy_hash = cmd["payload"]["policy_hash"]
+        assert cmd["status"] == "PENDING"
+        assert cmd["attempt_count"] == 0
+
+        # PC02 gửi ACK cho command PENDING của PC01
+        ack_res = client.post(
+            f"/api/v1/commands/{cmd_id}/acknowledge",
+            json={
+                "success": True,
+                "policy_hash": policy_hash,
+                "actor": "PC02",
+            },
+        )
+        assert ack_res.status_code == 422
+        assert "does not match actor PC02" in ack_res.json()["detail"]
+
+        # QUAN TRỌNG: Kiểm tra database, command của PC01 KHÔNG được bị chuyển sang DELIVERED,
+        # attempt_count KHÔNG được tăng, và last_attempt_at phải là None
+        with app.state.container.database.unit_of_work() as uow:
+            persisted = uow.commands.get(cmd_id)
+            assert persisted.status == CommandStatus.PENDING
+            assert persisted.attempt_count == 0
+            assert persisted.last_attempt_at is None
+            assert persisted.acknowledged_at is None

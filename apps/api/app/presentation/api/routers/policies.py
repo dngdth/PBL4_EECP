@@ -9,8 +9,6 @@ from app.application.dtos.policies import (
 from app.application.security import Permission
 from app.domain.entities.exam_session import ExamSession
 from app.domain.entities.operations import Command
-from app.domain.value_objects.enums import CommandStatus
-from app.domain.value_objects.primitives import utc_now
 from app.presentation.api.deps import (
     AcknowledgeCommandUseCase,
     CreatePolicyProfileUseCase,
@@ -106,12 +104,6 @@ def acknowledge_command(
             "use Gateway WebSocket",
         )
     authorize(request, Permission.CONTROL_AGENT)
-    with request.app.state.container.database.unit_of_work() as uow:
-        cmd = uow.commands.get(command_id.strip())
-        if cmd.status == CommandStatus.PENDING:
-            cmd.deliver(utc_now())
-            uow.commands.save(cmd)
-            uow.commit()
     session = use_case(
         AcknowledgeCommandInput(
             command_id=command_id,
@@ -119,6 +111,7 @@ def acknowledge_command(
             policy_hash=body.policy_hash,
             error=body.error,
             actor=body.actor,
+            auto_deliver=True,
         )
     )
     return _session_view(session)

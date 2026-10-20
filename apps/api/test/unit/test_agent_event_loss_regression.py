@@ -442,3 +442,84 @@ def test_sequence_monotonic_after_all_events_acknowledged_and_restart(tmp_path: 
     sent_env = GatewayEnvelope.model_validate_json(socket2.sent[0])
     sent_evt = Event.model_validate(sent_env.payload)
     assert sent_evt.sequence == 3
+
+
+# TEST 10: Queue đầy -> ghi Event vào spool -> queue được giải phóng
+# -> Event tự động được gửi lại trên cùng kết nối, không cần restart/reconnect
+def test_event_spooled_on_queue_full_retransmitted_on_same_connection_without_restart(
+    tmp_path: Path,
+) -> None:
+    spool_path = tmp_path / "spool-t10.db"
+    spool = AgentEventSpool(spool_path)
+    socket = FakeSocket(auto_ack=True)
+    client = _make_client(spool, connector=lambda *_a, **_k: socket)
+    identity = WorkstationIdentity("PC01", "HOST-1", "192.168.1.10", "1.1.0")
+    client._identity = identity
+
+    # Giả lập queue đầy bằng cách đặt queue có maxsize=1 và chứa sẵn 1 dummy envelope
+    client._outbound = queue.Queue(maxsize=1)
+    dummy_envelope = GatewayEnvelope(
+        protocol_version=2,
+        message_type=GatewayMessageType.PRESENCE,
+        message_id="dummy_presence",
+        correlation_id="dummy_presence",
+        source_id="PC01",
+        target_id="backend",
+        payload={"dummy": True},
+    )
+    client._outbound.put_nowait(dummy_envelope)
+    assert client._outbound.full()
+
+    # Tạo Event khi queue đầy:
+    # 1. Event phải được ghi vào SQLite spool bền vững
+    # 2. _queue() raise OSError do queue đầy
+    with pytest.raises(OSError, match="Agent Gateway queue is full"):
+        client.report_event(
+            "SES-001",
+            "PC01",
+            EventType.POLICY_VIOLATION,
+            {"destination": "blocked.com", "action": "BLOCKED"},
+        )
+
+    # Xác minh Event đã được lưu vào spool
+    assert spool.count() == 1
+    spooled_env = spool.pending()[0]
+    spooled_event = Event.model_validate(spooled_env.payload)
+    spooled_id = spooled_event.event_id
+
+    # Xác minh Event KHÔNG bị đánh dấu nhầm là đã enqueue trong _enqueued_event_ids
+    assert spooled_id not in client._enqueued_event_ids
+
+    # Socket chưa gửi Event
+    assert len(socket.sent) == 0
+
+    # Queue được giải phóng qua chu kỳ flush tiếp theo trên CÙNG kết nối (không restart/reconnect)
+    # Lần flush 1: gửi dummy message, giải phóng slot trong _outbound
+    client._flush_outbound(socket)
+    assert len(socket.sent) == 1
+    first_msg = GatewayEnvelope.model_validate_json(socket.sent[0])
+    assert first_msg.message_type == GatewayMessageType.PRESENCE
+
+    # Lần flush 2 (chu kỳ tiếp theo của connection loop): _enqueue_pending_spool() tự động
+    # đẩy Event từ SQLite spool vào _outbound và gửi qua socket
+    client._flush_outbound(socket)
+    assert len(socket.sent) == 2
+
+    sent_events = [
+        GatewayEnvelope.model_validate_json(raw)
+        for raw in socket.sent
+        if GatewayEnvelope.model_validate_json(raw).message_type == GatewayMessageType.EVENT
+    ]
+    # Không gửi duplicate: đúng 1 Event được gửi
+    assert len(sent_events) == 1
+    sent_evt = Event.model_validate(sent_events[0].payload)
+    assert sent_evt.event_id == spooled_id
+    assert sent_evt.payload["destination"] == "blocked.com"
+
+    # Xử lý receipt tự động từ FakeSocket
+    while not socket.incoming.empty():
+        client._receive(socket.incoming.get_nowait())
+
+    # Event hoàn tất và được giải phóng khỏi spool, không bị mất
+    assert spool.count() == 0
+    assert spooled_id not in client._enqueued_event_ids

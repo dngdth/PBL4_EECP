@@ -31,7 +31,7 @@ export const SessionListPage: React.FC = () => {
 
   useRealtimeRefresh(() => {
     fetchSessions();
-  }, ['sessions', 'api']);
+  }, ['sessions', 'commands', 'agents', 'api']);
 
   useEffect(() => {
     fetchSessions();

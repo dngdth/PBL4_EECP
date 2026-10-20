@@ -18,6 +18,13 @@ from app.presentation.api.routers.auth import router as auth_router
 from app.presentation.api.routers.exam_sessions import router
 from app.presentation.api.routers.gateways import router as gateways_router
 from app.presentation.api.routers.policies import router as policies_router
+from app.presentation.realtime import (
+    RealtimeHub,
+    realtime_notification_middleware,
+)
+from app.presentation.realtime import (
+    router as realtime_router,
+)
 
 
 def create_app(database_path: str | Path | None = None) -> FastAPI:
@@ -37,6 +44,7 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
     )
     app.state.container = container
     app.state.settings = settings
+    app.state.realtime_hub = RealtimeHub()
     app.state.gateway_connections = GatewayConnectionRegistry()
     app.state.presence = (
         RedisPresenceStore(settings.redis_url, settings.presence_ttl_seconds)
@@ -55,6 +63,8 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
     app.include_router(agents_router)
     app.include_router(gateways_router)
     app.include_router(auth_router)
+    app.include_router(realtime_router)
+    app.middleware("http")(realtime_notification_middleware)
     register_exception_handlers(app)
 
     @app.middleware("http")

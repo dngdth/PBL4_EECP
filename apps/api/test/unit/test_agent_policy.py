@@ -332,3 +332,123 @@ def test_switching_from_audit_to_enforce_does_not_restore_unmodified_usb(
     usb_writes = [call for call in calls if call[:2] == ["reg", "add"]]
     assert len(usb_writes) == 1
     assert "4" in usb_writes[0]
+
+
+def test_windows_enforcer_writes_valid_domains_and_subdomains_to_hosts(
+    tmp_path: Path,
+) -> None:
+    hosts_path = tmp_path / "hosts"
+    baseline = "127.0.0.1 localhost\n::1 localhost\n"
+    hosts_path.write_text(baseline, encoding="utf-8")
+    state_path = tmp_path / "policy-state.json"
+
+    custom_rules = {
+        "applications": {"deny": []},
+        "network": {
+            "block": [],
+            "blocked_domains": ["sub.example.com", "my-domain.org"],
+        },
+        "devices": {"usb": "allow"},
+    }
+    custom_hash = compute_policy_hash(
+        "CUSTOM", 1, PolicyRules.model_validate(custom_rules)
+    )
+    payload = {
+        "format": "eecp-policy/v1",
+        "policy_hash": custom_hash,
+        "version": 1,
+        "profile": "CUSTOM",
+        "rules": custom_rules,
+    }
+
+    calls: list[list[str]] = []
+
+    def runner(arguments, **_kwargs):
+        calls.append(arguments)
+        stdout = "    Start    REG_DWORD    0x3" if arguments[:2] == ["reg", "query"] else ""
+        return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
+
+    enforcer = WindowsPolicyEnforcer(state_path, hosts_path=hosts_path, runner=runner)
+    assert enforcer.apply(payload) == custom_hash
+
+    content = hosts_path.read_text(encoding="utf-8")
+    assert "127.0.0.1 localhost" in content
+    assert "::1 localhost" in content
+    assert "127.0.0.1 sub.example.com" in content
+    assert "127.0.0.1 www.sub.example.com" in content
+    assert "127.0.0.1 my-domain.org" in content
+    assert "127.0.0.1 www.my-domain.org" in content
+
+    enforcer.restore()
+    restored = hosts_path.read_text(encoding="utf-8")
+    assert "sub.example.com" not in restored
+    assert "my-domain.org" not in restored
+    assert "127.0.0.1 localhost" in restored
+    assert "::1 localhost" in restored
+
+
+@pytest.mark.parametrize(
+    "malicious_domain",
+    [
+        "example.com\n192.168.1.100 evil.com",
+        "example.com\r\n192.168.1.100 evil.com",
+        "example.com\n# BEGIN EECP MANAGED POLICY",
+        "example.com#comment",
+        "example.com 192.168.1.100 evil.com",
+        "http://example.com",
+        "example.com:80",
+        "127.0.0.1",
+    ],
+)
+def test_windows_enforcer_rejects_crlf_and_newline_injection(
+    tmp_path: Path,
+    malicious_domain: str,
+) -> None:
+    hosts_path = tmp_path / "hosts"
+    initial_content = "127.0.0.1 localhost\n# safe system hosts\n"
+    hosts_path.write_text(initial_content, encoding="utf-8")
+    state_path = tmp_path / "policy-state.json"
+
+    malicious_payload = {
+        "format": "eecp-policy/v1",
+        "policy_hash": "a" * 64,
+        "version": 1,
+        "profile": "INJECTION_ATTEMPT",
+        "rules": {
+            "applications": {"deny": []},
+            "network": {"blocked_domains": [malicious_domain]},
+            "devices": {"usb": "allow"},
+        },
+    }
+
+    enforcer = WindowsPolicyEnforcer(
+        state_path,
+        hosts_path=hosts_path,
+        runner=lambda args, **kw: subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+
+    with pytest.raises(ValueError):
+        enforcer.apply(malicious_payload)
+
+    # Hosts file MUST remain strictly identical to initial content
+    assert hosts_path.read_text(encoding="utf-8") == initial_content
+    assert "evil.com" not in hosts_path.read_text(encoding="utf-8")
+    assert not state_path.exists()
+
+
+def test_write_blocked_domains_defense_in_depth(tmp_path: Path) -> None:
+    hosts_path = tmp_path / "hosts"
+    initial = "127.0.0.1 localhost\n"
+    hosts_path.write_text(initial, encoding="utf-8")
+    state_path = tmp_path / "policy-state.json"
+
+    enforcer = WindowsPolicyEnforcer(
+        state_path,
+        hosts_path=hosts_path,
+        runner=lambda args, **kw: subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+
+    with pytest.raises(ValueError):
+        enforcer._write_blocked_domains(["attack.com\n10.0.0.1 evil.corp"])
+
+    assert hosts_path.read_text(encoding="utf-8") == initial

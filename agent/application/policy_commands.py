@@ -159,12 +159,33 @@ class PolicyCommandProcessor:
                 raise ValueError("policy version must be an integer")
             if not isinstance(rules, dict):
                 raise ValueError("policy rules must be an object")
+            raw_issued_at = payload.get("issued_at") or issued_at
+            if isinstance(raw_issued_at, str):
+                policy_issued_at = datetime.fromisoformat(
+                    raw_issued_at.replace("Z", "+00:00")
+                )
+            elif isinstance(raw_issued_at, datetime):
+                policy_issued_at = raw_issued_at
+            else:
+                policy_issued_at = self._clock()
+
+            raw_expires_at = payload.get("expires_at") or deadline
+            if isinstance(raw_expires_at, str):
+                policy_expires_at = datetime.fromisoformat(
+                    raw_expires_at.replace("Z", "+00:00")
+                )
+            elif isinstance(raw_expires_at, datetime):
+                policy_expires_at = raw_expires_at
+            else:
+                policy_expires_at = None
+
             policy = PolicyEnvelope.from_legacy(
                 policy_id=policy_id,
                 policy_version=policy_version,
                 policy_hash=policy_hash,
                 session_id=session_id,
-                issued_at=self._clock(),
+                issued_at=policy_issued_at,
+                expires_at=policy_expires_at,
                 rules=rules,
                 signature=(
                     payload.get("signature")
@@ -184,6 +205,21 @@ class PolicyCommandProcessor:
                 nonce=nonce if isinstance(nonce, str) else None
             )
 
+        parsed_issued_at = (
+            datetime.fromisoformat(issued_at.replace("Z", "+00:00"))
+            if isinstance(issued_at, str)
+            else (
+                issued_at
+                if isinstance(issued_at, datetime)
+                else (policy_issued_at if operation == CommandType.APPLY_POLICY else None)
+            )
+        )
+        parsed_deadline = (
+            datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+            if isinstance(deadline, str)
+            else (deadline if isinstance(deadline, datetime) else None)
+        )
+
         return ServiceRequest(
             protocol_version=2,
             request_id=request_id,
@@ -194,7 +230,7 @@ class PolicyCommandProcessor:
             payload=service_payload,
             correlation_id=preserved_correlation_id,
             target_id=target_id if isinstance(target_id, str) else None,
-            issued_at=issued_at,
-            deadline=deadline,
+            issued_at=parsed_issued_at,
+            deadline=parsed_deadline,
             authorization=authorization if isinstance(authorization, str) else None,
         )

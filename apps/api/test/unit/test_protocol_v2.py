@@ -396,3 +396,57 @@ def test_backend_producer_and_shared_agent_consumer_use_one_contract() -> None:
 
     assert agent_command == backend_command
     assert agent_command.payload.policy.policy_hash == HASH
+
+
+def test_policy_contract_accepts_valid_domain_and_subdomain() -> None:
+    valid_domains = [
+        "example.com",
+        "sub.example.com",
+        "deep.sub.example.co.uk",
+        "my-domain.org",
+        "chatgpt.com",
+        "x.com",
+        "a-b-c.net",
+    ]
+    rules = PolicyRules.model_validate({"network": {"blocked_domains": valid_domains}})
+    assert rules.network is not None
+    assert rules.network.blocked_domains == tuple(valid_domains)
+
+
+@pytest.mark.parametrize(
+    "invalid_domain",
+    [
+        "example.com\n127.0.0.1 evil.com",
+        "example.com\r\n127.0.0.1 evil.com",
+        "example.com\n",
+        "\nexample.com",
+        "example.com\r\n",
+        "example.com\t",
+        "example .com",
+        " example.com",
+        "example.com ",
+        "example.com#comment",
+        "#comment",
+        "evil.com\n# BEGIN EECP MANAGED POLICY",
+        "example.com 127.0.0.1 evil.com",
+        "http://example.com",
+        "https://example.com/login",
+        "example.com:80",
+        "example..com",
+        ".example.com",
+        "example.com.",
+        "-example.com",
+        "example-.com",
+        "127.0.0.1",
+        "192.168.1.1",
+        "a" * 64 + ".com",
+        "a" * 254,
+    ],
+)
+def test_policy_contract_rejects_invalid_hostnames_and_injection_attempts(
+    invalid_domain: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        PolicyRules.model_validate({"network": {"blocked_domains": [invalid_domain]}})
+    with pytest.raises(ValidationError):
+        PolicyRules.model_validate({"network": {"allow_domains": [invalid_domain]}})

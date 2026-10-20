@@ -27,6 +27,13 @@ let reconnectAttempt = 0;
 function websocketUrl(): string {
   const url = new URL('/api/v1/ws', window.location.href);
   url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const token =
+    typeof window !== 'undefined'
+      ? sessionStorage.getItem('eecp_access_token')
+      : null;
+  if (token) {
+    url.searchParams.set('token', token);
+  }
   return url.toString();
 }
 

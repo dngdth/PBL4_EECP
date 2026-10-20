@@ -153,7 +153,11 @@ async def gateway_uplink(websocket: WebSocket, gateway_id: str) -> None:
                 raw = await asyncio.wait_for(websocket.receive_text(), timeout=0.2)
                 envelope = GatewayEnvelope.model_validate_json(raw)
                 response = await _handle_gateway_message(
-                    gateway_id, envelope, container, websocket.app.state.presence
+                    gateway_id,
+                    envelope,
+                    container,
+                    websocket.app.state.presence,
+                    getattr(websocket.app.state, "realtime_hub", None),
                 )
                 if response is not None:
                     await websocket.send_text(response.to_json())
@@ -176,7 +180,11 @@ async def gateway_uplink(websocket: WebSocket, gateway_id: str) -> None:
 
 
 async def _handle_gateway_message(
-    gateway_id: str, envelope: GatewayEnvelope, container, presence_store=None
+    gateway_id: str,
+    envelope: GatewayEnvelope,
+    container,
+    presence_store=None,
+    realtime_hub=None,
 ) -> GatewayEnvelope | None:
     if envelope.message_type == GatewayMessageType.GATEWAY_HEALTH:
         health = GatewayHealth.model_validate(envelope.payload)
@@ -222,6 +230,8 @@ async def _handle_gateway_message(
         container.bind_agent_to_gateway(
             BindAgentToGatewayInput(hello.agent_id, gateway_id)
         )
+        if realtime_hub is not None:
+            await realtime_hub.publish_change(method="POST", path="/api/v1/agents")
         return
 
     if envelope.message_type == GatewayMessageType.DELIVERY_FAILURE:
@@ -237,6 +247,8 @@ async def _handle_gateway_message(
                 reason=failure.reason,
             )
         )
+        if realtime_hub is not None:
+            await realtime_hub.publish_change(method="POST", path="/api/v1/commands")
         return
 
     binding = container.resolve_gateway_for_agent(envelope.source_id)
@@ -253,6 +265,8 @@ async def _handle_gateway_message(
             presence_store.set_agent(
                 presence.agent_id, presence.model_dump(mode="json", exclude_none=True)
             )
+        if realtime_hub is not None:
+            await realtime_hub.publish_change(method="PATCH", path="/api/v1/agents")
         return
 
     if envelope.message_type == GatewayMessageType.ACK:
@@ -268,6 +282,8 @@ async def _handle_gateway_message(
                 actor=envelope.source_id,
             )
         )
+        if realtime_hub is not None:
+            await realtime_hub.publish_change(method="POST", path="/api/v1/commands")
         return
 
     if envelope.message_type == GatewayMessageType.EVENT:
@@ -299,6 +315,12 @@ async def _handle_gateway_message(
                     )
                 )
             )
+            if not duplicate and realtime_hub is not None:
+                await realtime_hub.publish_change(
+                    method="POST",
+                    path=f"/api/v1/sessions/{event.session_id}",
+                    session_id=event.session_id,
+                )
         except DomainError as exc:
             logger.warning(
                 "event=EVENT_REJECTED gateway_id=%s agent_id=%s session_id=%s "

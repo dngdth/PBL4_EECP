@@ -20,6 +20,7 @@ from agent.infrastructure.windows.firewall_enforcer import (
     FirewallRule,
     WindowsFirewallEnforcer,
 )
+from contracts.v2.policy import validate_hostname
 
 POLICY_MARKER_START = "# BEGIN EECP MANAGED POLICY"
 POLICY_MARKER_END = "# END EECP MANAGED POLICY"
@@ -205,6 +206,8 @@ class WindowsPolicyEnforcer:
         )
 
     def _write_blocked_domains(self, domains: list[str]) -> None:
+        for domain in domains:
+            validate_hostname(domain, field="hosts domain")
         try:
             content = self._read_hosts()
             cleaned = _remove_managed_hosts_block(content).rstrip()

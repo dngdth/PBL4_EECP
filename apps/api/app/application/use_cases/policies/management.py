@@ -94,6 +94,15 @@ class DeletePolicyProfile:
             uow.commit()
 
 
+class ListTargetCommands:
+    def __init__(self, uow_factory: UnitOfWorkFactory):
+        self._uow_factory = uow_factory
+
+    def __call__(self, target_id: str) -> list[Command]:
+        with self._uow_factory() as uow:
+            return uow.commands.list_for_target(target_id.strip())
+
+
 class GetPendingCommands:
     def __init__(self, uow_factory: UnitOfWorkFactory, clock: Clock = utc_now):
         self._uow_factory = uow_factory
@@ -127,6 +136,12 @@ class AcknowledgeCommand:
         timed_out = False
         with self._uow_factory() as uow:
             command = uow.commands.get(data.command_id.strip())
+            if not data.actor or data.actor.strip() != command.target_id.strip():
+                raise PolicyValidationError(
+                    f"command target {command.target_id} does not match actor {data.actor}"
+                )
+            if command.status == CommandStatus.PENDING and data.auto_deliver:
+                command.deliver(at)
             if command.status != CommandStatus.DELIVERED:
                 raise InvalidStateTransitionError(
                     "command is not awaiting acknowledgement"

@@ -30,6 +30,7 @@ from app.application.use_cases.policies.management import (
     DeletePolicyProfile,
     GetPendingCommands,
     ListPolicyProfiles,
+    ListTargetCommands,
     UpdatePolicyProfile,
 )
 from app.config import Settings
@@ -52,6 +53,7 @@ class Container:
     create_policy_profile: CreatePolicyProfile
     update_policy_profile: UpdatePolicyProfile
     delete_policy_profile: DeletePolicyProfile
+    list_target_commands: ListTargetCommands
     get_pending_commands: GetPendingCommands
     acknowledge_command: AcknowledgeCommand
     register_gateway: RegisterGateway
@@ -85,6 +87,7 @@ def build_container(settings: Settings) -> Container:
         create_policy_profile=CreatePolicyProfile(database.unit_of_work),
         update_policy_profile=UpdatePolicyProfile(database.unit_of_work),
         delete_policy_profile=DeletePolicyProfile(database.unit_of_work),
+        list_target_commands=ListTargetCommands(database.unit_of_work),
         get_pending_commands=GetPendingCommands(database.unit_of_work),
         acknowledge_command=AcknowledgeCommand(database.unit_of_work),
         register_gateway=RegisterGateway(database.unit_of_work),

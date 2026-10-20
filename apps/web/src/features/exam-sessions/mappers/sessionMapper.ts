@@ -53,6 +53,9 @@ function mapAgentToWorkstation(agent: any, sessionWorkstation?: any): Workstatio
     gateway_id: agent.gateway_id || null,
     service_health: agent.service_health || null,
     active_policy_hash: agent.active_policy_hash || null,
+    actual_policy_hash: sessionWorkstation?.actual_policy_hash || null,
+    desired_policy_hash: sessionWorkstation?.desired_policy_hash || null,
+    policy_compliant: Boolean(sessionWorkstation?.policy_compliant),
   };
 }
 
@@ -72,6 +75,10 @@ function mapLegacyWorkstations(workstationsDict: Record<string, any>): Workstati
       preflight_status: checks.length ? (passedAll ? 'PASSED' : 'FAILED') : 'PENDING',
       last_heartbeat: '',
       agent_version: 'unknown',
+      active_policy_hash: null,
+      actual_policy_hash: val?.actual_policy_hash || null,
+      desired_policy_hash: val?.desired_policy_hash || null,
+      policy_compliant: Boolean(val?.policy_compliant),
     };
   });
 }
@@ -83,13 +90,34 @@ function mapPolicy(rawPolicy: any): PolicyConfig | undefined {
   if (!rawPolicy || typeof rawPolicy !== 'object') return undefined;
 
   const rules = rawPolicy.rules || {};
+  const network = rules.network || {};
+  const devices = rules.devices || {};
+  const applications = rules.applications || {};
+
+  const blockedCategories = network.block || network.blocked_categories || [];
+  const networkLockdown =
+    network.network_lockdown ??
+    rawPolicy.network_lockdown ??
+    (Array.isArray(blockedCategories) && blockedCategories.length > 0);
+
+  const usbBlocked =
+    rules.usb_storage_blocked ??
+    devices.usb_storage_blocked ??
+    (devices.usb ? devices.usb === 'deny' : devices.usb_storage === 'deny') ??
+    true;
+
+  const deniedProcesses = Array.isArray(applications.deny) ? applications.deny : [];
+  // strict_mode is active only if denylist is non-empty
+  const strictMode = deniedProcesses.length > 0;
+
   return {
     policy_id: rawPolicy.policy_hash || rawPolicy.policy_id || 'pol-default',
     name: rawPolicy.profile || rawPolicy.name || 'Chính sách tiêu chuẩn',
-    strict_mode: rules.network?.strict_mode ?? rawPolicy.strict_mode ?? true,
-    network_lockdown: rules.network?.network_lockdown ?? rawPolicy.network_lockdown ?? true,
-    usb_storage_blocked: rules.usb_storage_blocked ?? (rules.devices?.usb === 'deny') ?? true,
-    allowed_processes: rules.applications?.allow || rawPolicy.allowed_processes || ['exam-browser.exe'],
+    strict_mode: strictMode,
+    network_lockdown: networkLockdown,
+    usb_storage_blocked: usbBlocked,
+    allowed_processes: applications.allow || rawPolicy.allowed_processes || ['exam-browser.exe'],
+    denied_processes: deniedProcesses,
     deployed_at: rawPolicy.deployed_at,
   };
 }
@@ -182,6 +210,7 @@ export function normalizeSession(raw: any): ExamSession {
     room: raw.room || raw.room_id || 'Chưa chỉ định',
     room_id: raw.room || raw.room_id || 'Chưa chỉ định',
     gateway_id: raw.gateway_id ?? null,
+    gateway_policy_hash: raw.gateway_policy_hash ?? null,
     status,
     workstations,
     agents: Array.isArray(raw.agents) ? raw.agents : undefined,

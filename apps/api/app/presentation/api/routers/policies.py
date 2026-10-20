@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from app.application.dtos.policies import (
     AcknowledgeCommandInput,
@@ -13,8 +13,8 @@ from app.presentation.api.deps import (
     AcknowledgeCommandUseCase,
     CreatePolicyProfileUseCase,
     DeletePolicyProfileUseCase,
-    GetPendingCommandsUseCase,
     ListPolicyProfilesUseCase,
+    ListTargetCommandsUseCase,
     UpdatePolicyProfileUseCase,
     authorize,
 )
@@ -84,7 +84,7 @@ def delete_policy_profile(
 
 @router.get("/agents/{target_id}/commands", response_model=list[CommandView])
 def pending_commands(
-    target_id: str, use_case: GetPendingCommandsUseCase, request: Request
+    target_id: str, use_case: ListTargetCommandsUseCase, request: Request
 ) -> list[CommandView]:
     authorize(request, Permission.CONTROL_AGENT)
     return [_command_view(command) for command in use_case(target_id)]
@@ -97,9 +97,22 @@ def acknowledge_command(
     use_case: AcknowledgeCommandUseCase,
     request: Request,
 ) -> SessionView:
+    if request.app.state.settings.environment == "production-like":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "direct HTTP acknowledgement is disabled in production-like environment; "
+            "use Gateway WebSocket",
+        )
     authorize(request, Permission.CONTROL_AGENT)
     session = use_case(
-        AcknowledgeCommandInput(command_id=command_id, **body.model_dump())
+        AcknowledgeCommandInput(
+            command_id=command_id,
+            success=body.success,
+            policy_hash=body.policy_hash,
+            error=body.error,
+            actor=body.actor,
+            auto_deliver=True,
+        )
     )
     return _session_view(session)
 

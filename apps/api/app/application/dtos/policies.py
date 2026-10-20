@@ -9,6 +9,7 @@ class AcknowledgeCommandInput:
     policy_hash: str | None = None
     error: str | None = None
     actor: str = "agent"
+    auto_deliver: bool = False
 
 
 @dataclass(frozen=True, slots=True)

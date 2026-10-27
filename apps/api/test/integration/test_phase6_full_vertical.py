@@ -4,6 +4,7 @@ import asyncio
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.application.dtos.agents import RegisterAgentInput
 from app.application.dtos.gateways import BindAgentToGatewayInput, RegisterGatewayInput
@@ -302,6 +303,9 @@ def test_apply_policy_full_vertical_preserves_hash_and_backend_state(tmp_path: P
             arguments, 0, stdout="", stderr=""
         ),
         firewall=firewall,
+        domain_resolver=SimpleNamespace(
+            resolve=lambda domains: {domain: ("203.0.113.20",) for domain in domains}
+        ),
     )
 
     ack, routed, wrong_socket, pipe = asyncio.run(
@@ -318,6 +322,7 @@ def test_apply_policy_full_vertical_preserves_hash_and_backend_state(tmp_path: P
     assert {rule.remote_address for rule in firewall.rules.values()} == {
         "203.0.113.10",
         "198.51.100.0/24",
+        "203.0.113.20",
     }
     with container.database.unit_of_work() as uow:
         persisted = uow.commands.get(command.id)

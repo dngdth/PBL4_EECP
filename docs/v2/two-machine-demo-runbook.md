@@ -220,17 +220,38 @@ Record each case as `PASS`, `FAIL`, or `BLOCKED`, with timestamps from both host
   taskkill result, journal, Agent spool and Gateway buffer.
 - Cleanup: remove the test executable from policy after the session.
 
-### T04 — lock/unlock
+### T04 — blocked domain after policy apply
 
-- Prerequisites: T02 PASS and an interactive student session.
-- Steps: lock Windows, wait, unlock and sign in.
-- Expected: distinct USER_SESSION_CHANGED LOCK and UNLOCK events; no startup fake
-  LOGON and no duplicate on Client restart.
-- Evidence: Windows session ID, Service log and Dashboard event IDs/timestamps.
-- If failed: inspect Application log for WTS notification parsing and journal rows.
-- Cleanup: none.
+- Prerequisites: T02 PASS; capture the target domain's A/AAAA answers before Apply.
+- Steps: after Apply, make a new browser request and a new TCP connection to the
+  blocked domain. Test IPv4 and IPv6 when available.
+- Expected: classify the result as `DOMAIN_BLOCKED`, `DOMAIN_STILL_ACCESSIBLE`, or
+  `INCONCLUSIVE`. A page failing to render alone is not packet-level proof.
+- Evidence: DNS snapshot, exact inbound/outbound EECP rules, browser Network trace,
+  timestamps and packet capture from the isolated lab when permitted.
+- If failed: inspect DoH/VPN/proxy use, shared CDN addresses, Gateway overlap,
+  Firewall profiles, Service maintenance error and rule verification fields.
+- Cleanup: keep the session running for T05.
 
-### T05 — managed integrity recovery
+### T05 — connection/tab opened before policy apply
+
+- Prerequisites: restore baseline first; open a controlled TCP/UDP stream and the
+  target browser tab before starting a new Enforce session.
+- Steps: exchange baseline data, Apply policy, then send new data over the same
+  sockets. Repeat with a new connection; test UDP/QUIC and IPv6 when feasible.
+- Expected: record each transport separately as `DOMAIN_BLOCKED`,
+  `DOMAIN_STILL_ACCESSIBLE`, or `INCONCLUSIVE`. Already-rendered/buffered page data
+  is not proof that new network data passed.
+- Evidence: peer logs, packet timestamps, browser Network trace, resolved IP set,
+  Firewall rules and Gateway connectivity throughout the test.
+- If failed: verify the active connection's remote IP was discovered before hosts
+  mutation; check browser-private DNS, proxy/VPN and Windows Firewall behavior.
+- Cleanup: finish and restore this test session before continuing.
+
+Session-monitoring regression should also be sampled here: LOCK then UNLOCK must
+produce distinct USER_SESSION_CHANGED events without a startup fake LOGON.
+
+### T06 — managed integrity recovery
 
 - Prerequisites: isolated lab machine and saved baseline; T02 PASS.
 - Steps: elevated tester changes only one EECP-owned Firewall rule or the text
@@ -243,7 +264,7 @@ Record each case as `PASS`, `FAIL`, or `BLOCKED`, with timestamps from both host
 - If failed: inspect `_rule_matches` fields, PowerShell error, Service log and ACL.
 - Cleanup: allow automatic recovery, then compare the complete OS baseline.
 
-### T06 — offline delivery and restore
+### T07 — offline delivery and pending-event synchronization
 
 - Prerequisites: T02 PASS; Gateway/Backend remain running.
 - Steps: stop only the Standard User Client; trigger the harmless denied executable;
@@ -251,13 +272,25 @@ Record each case as `PASS`, `FAIL`, or `BLOCKED`, with timestamps from both host
 - Expected: the Service journal retains the original event_id/occurred_at. Client
   discovers pending session metadata, writes to Agent spool before journal ACK,
   submits it as a late event within 24 hours, and does not reactivate Enforce.
-  Duplicate delivery is idempotent. Finish/restore returns Firewall, hosts and USB
-  to baseline.
+  Duplicate delivery is idempotent and the old event does not reactivate Enforce.
 - Evidence: Service journal count, Agent/Gateway logs, stable event_id across hops,
   Backend late-arrival audit, Dashboard event and final OS baseline.
 - If failed: inspect token/Agent binding, journal, Agent spool quarantine/backoff,
   Gateway `FAILED_TERMINAL`, Backend rejection reason and session timestamps.
-- Cleanup: Finish Session, execute Restore, verify baseline, then stop components.
+- Cleanup: preserve evidence and continue to T08.
+
+### T08 — finish, restore and network baseline
+
+- Prerequisites: T04–T07 evidence captured; original Firewall/hosts/USB baseline saved.
+- Steps: Finish Session, execute Restore, open an allowed site and repeat baseline
+  TCP/UDP checks. Query only exact EECP rule names.
+- Expected: recorded EECP-owned rules and hosts block are gone, USB equals baseline,
+  allowed networking and Gateway connectivity work, and no unrelated rule changed.
+- Evidence: before/after OS state, RESTORE ACK, Service/Gateway logs and allowed-site
+  request trace.
+- If failed: do not reset Windows Firewall globally; inspect persisted policy state,
+  exact managed rule list, restore ACK and Service errors.
+- Cleanup: stop Client/Service only after evidence collection.
 
 ## E. Cleanup and acceptance boundary
 
@@ -266,6 +299,6 @@ remains, USB state equals its captured baseline, the test process is absent, and
 the session is no longer RUNNING. Preserve databases/logs when investigating a
 failure. Do not delete evidence or reset Windows Firewall globally.
 
-The build is only `TWO-MACHINE DEMO VERIFIED` after T01–T06 pass on the two real
+The build is only `TWO-MACHINE DEMO VERIFIED` after T01–T08 pass on the two real
 Windows machines. Mock/unit tests and this runbook establish code readiness, not
 that deployment result.

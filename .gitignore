@@ -14,6 +14,7 @@ node_modules/
 .next/
 *.tsbuildinfo
 .tmp_doc_review/
+.tmp/
 doc_review_pages/
 .worktrees/
 .env

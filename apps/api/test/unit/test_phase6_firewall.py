@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -81,15 +82,17 @@ class WindowsFirewallRunner:
         if arguments[0] == "powershell.exe":
             script = arguments[4]
             if "New-NetFirewallRule" in script:
-                name, display_name, group, remote = arguments[5:9]
+                name, display_name, group, remote, direction = arguments[5:10]
                 self.rules[name] = {
                     "Name": name,
                     "DisplayName": display_name,
                     "Group": group,
                     "Enabled": True,
-                    "Direction": "Outbound",
+                    "Direction": direction,
                     "Action": "Block",
                     "Profile": "Any",
+                    "Protocol": "Any",
+                    "LocalAddress": ["Any"],
                     "RemoteAddress": [remote],
                 }
                 return subprocess.CompletedProcess(arguments, 0, "", "")
@@ -122,6 +125,9 @@ def _enforcer(tmp_path: Path, firewall: MemoryFirewall):
             hosts_path=hosts,
             runner=runner,
             firewall=firewall,
+            domain_resolver=SimpleNamespace(
+                resolve=lambda domains: {domain: ("203.0.113.20",) for domain in domains}
+            ),
         ),
         hosts,
         calls,
@@ -208,6 +214,7 @@ def test_windows_adapter_uses_exact_name_and_argument_safe_powershell() -> None:
     assert add_arguments[6] == planned[0].name
     assert add_arguments[7] == planned[0].group
     assert add_arguments[8] == "203.0.113.10"
+    assert add_arguments[9] == "Outbound"
     assert "shell" not in add_kwargs
     assert adapter.verify_rules(planned)
 
@@ -221,6 +228,8 @@ def test_windows_adapter_uses_exact_name_and_argument_safe_powershell() -> None:
         ("Direction", "in"),
         ("Action", "allow"),
         ("Profile", "private"),
+        ("Protocol", "TCP"),
+        ("LocalAddress", ["192.0.2.10"]),
         ("RemoteAddress", ["198.51.100.99"]),
     ],
 )
@@ -256,6 +265,8 @@ def test_duplicate_display_name_cannot_replace_unique_managed_name() -> None:
         "Direction": "Outbound",
         "Action": "Block",
         "Profile": "Any",
+        "Protocol": "Any",
+        "LocalAddress": ["Any"],
         "RemoteAddress": [managed.remote_address],
     }
 

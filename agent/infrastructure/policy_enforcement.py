@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -18,10 +19,16 @@ from agent.domain.policy import (
     PolicySpecification,
     parse_policy_payload,
 )
+from agent.infrastructure.windows.domain_resolver import (
+    DomainResolver,
+    WindowsDomainResolver,
+    traffic_address,
+)
 from agent.infrastructure.windows.firewall_enforcer import (
     FirewallEnforcer,
     FirewallRule,
     WindowsFirewallEnforcer,
+    domain_traffic_rules,
 )
 from contracts.v2.policy import validate_hostname
 
@@ -89,14 +96,15 @@ class WindowsPolicyEnforcer:
             Callable[[ProcessIdentity], ProcessIdentityStatus | bool] | None
         ) = None,
         process_owner_provider: Callable[[int], str | None] | None = None,
+        domain_resolver: DomainResolver | None = None,
+        domain_refresh_seconds: float = 60.0,
+        clock: Callable[[], float] = time.monotonic,
     ):
+        if domain_refresh_seconds <= 0:
+            raise ValueError("domain_refresh_seconds must be positive")
         self._state_path = state_path
         self._hosts_path = hosts_path or (
-            Path(os.getenv("SYSTEMROOT", r"C:\Windows"))
-            / "System32"
-            / "drivers"
-            / "etc"
-            / "hosts"
+            Path(os.getenv("SYSTEMROOT", r"C:\Windows")) / "System32" / "drivers" / "etc" / "hosts"
         )
         self._runner = runner
         self._firewall = firewall or WindowsFirewallEnforcer(runner=runner)
@@ -118,6 +126,10 @@ class WindowsPolicyEnforcer:
         self._seen_processes: set[tuple[int, str]] = set()
         self._process_outcomes: dict[tuple[int, str], str] = {}
         self._degraded_error: str | None = None
+        self._domain_resolver = domain_resolver or WindowsDomainResolver(runner=runner)
+        self._domain_refresh_seconds = domain_refresh_seconds
+        self._clock = clock
+        self._next_domain_refresh = 0.0
 
     def set_event_sink(self, sink: Callable[..., None]) -> None:
         self._event_sink = sink
@@ -134,29 +146,30 @@ class WindowsPolicyEnforcer:
         self._degraded_error = None
         specification = parse_policy_payload(payload)
         current = self._load_state()
-        desired_rules = self._firewall.plan(
-            specification.session_id,
-            specification.blocked_ips,
-            specification.blocked_cidrs,
-        )
+        if (
+            current
+            and current.get("mode") == "enforce"
+            and current.get("policy_hash") == specification.policy_hash
+            and current.get("session_id") == specification.session_id
+            and "managed_firewall_rules" in current
+            and "domain_addresses" in current
+        ):
+            self.maintain()
+            return specification.policy_hash
+        state = _state_from_specification(specification, mode="enforce")
+        # Discover real/cached destinations before hosts redirects names and
+        # flushdns destroys cache entries belonging to already-open connections.
+        state["domain_addresses"] = self._discover_domain_addresses(state, current)
+        desired_rules = self._rules_from_state(state)
+        state["managed_firewall_rules"] = [rule.name for rule in desired_rules]
         LOGGER.info(
             "policy operation=apply session_id=%s policy_hash=%s firewall_rules=%d",
             specification.session_id,
             specification.policy_hash,
             len(desired_rules),
         )
-        if (
-            current
-            and current.get("mode") == "enforce"
-            and current.get("policy_hash") == specification.policy_hash
-            and "managed_firewall_rules" in current
-        ):
-            self.maintain()
-            return specification.policy_hash
         self._seen_processes.clear()
         self._process_outcomes.clear()
-        state = _state_from_specification(specification, mode="enforce")
-        state["managed_firewall_rules"] = [rule.name for rule in desired_rules]
         previous_usb_deny = bool(
             current and current.get("mode") == "enforce" and current.get("usb_deny")
         )
@@ -173,8 +186,10 @@ class WindowsPolicyEnforcer:
         previous_rules = self._rules_from_state(current)
         current_names = self._managed_rule_names(current)
         try:
-            self._write_blocked_domains(state["blocked_domains"])
+            # Block packets before modifying name resolution. Inbound + outbound
+            # rules cover existing responses as well as subsequent requests.
             self._firewall.reconcile(desired_rules, current_names)
+            self._write_blocked_domains(state["blocked_domains"])
             if specification.usb_deny and not previous_usb_deny:
                 self._set_usb_start(4)
             elif previous_usb_deny and not specification.usb_deny:
@@ -186,6 +201,7 @@ class WindowsPolicyEnforcer:
             )
             self._store_process_observations(state)
             _write_state(self._state_path, state)
+            self._next_domain_refresh = self._clock() + self._domain_refresh_seconds
             LOGGER.info(
                 "policy operation=apply session_id=%s policy_hash=%s result=succeeded",
                 specification.session_id,
@@ -228,6 +244,7 @@ class WindowsPolicyEnforcer:
         self._state_path.unlink(missing_ok=True)
         self._seen_processes.clear()
         self._process_outcomes.clear()
+        self._next_domain_refresh = 0.0
 
     def maintain(self) -> None:
         with self._operation_lock:
@@ -281,6 +298,22 @@ class WindowsPolicyEnforcer:
                 self._terminate_denied(denied, session_id=session_id)
                 self._store_process_observations(state)
                 _write_state(self._state_path, state)
+            if state.get("blocked_domains") and self._clock() >= self._next_domain_refresh:
+                # Rate-limit retries too. Existing rules remain installed on DNS
+                # failure; the Service reports maintenance_error instead of
+                # silently declaring full coverage.
+                self._next_domain_refresh = self._clock() + self._domain_refresh_seconds
+                refreshed = dict(state)
+                refreshed["domain_addresses"] = self._discover_domain_addresses(state, state)
+                desired = self._rules_from_state(refreshed)
+                refreshed["managed_firewall_rules"] = [rule.name for rule in desired]
+                try:
+                    self._firewall.reconcile(desired, self._managed_rule_names(state))
+                    _write_state(self._state_path, refreshed)
+                except (OSError, ValueError):
+                    with suppress(OSError, ValueError):
+                        self._firewall.reconcile(rules, tuple(rule.name for rule in desired))
+                    raise
 
     def _load_state(self) -> dict[str, Any] | None:
         try:
@@ -316,11 +349,47 @@ class WindowsPolicyEnforcer:
     def _rules_from_state(self, state: dict[str, Any] | None) -> tuple[FirewallRule, ...]:
         if not state or state.get("mode") != "enforce":
             return ()
-        return self._firewall.plan(
+        explicit = self._firewall.plan(
             str(state.get("session_id", "")),
             _state_string_list(state, "blocked_ips"),
             _state_string_list(state, "blocked_cidrs"),
         )
+        discovered = _domain_addresses(state)
+        domain_rules = self._firewall.plan(
+            str(state.get("session_id", "")),
+            sorted({address for values in discovered.values() for address in values}),
+            (),
+        )
+        return (*explicit, *domain_traffic_rules(domain_rules))
+
+    def _discover_domain_addresses(
+        self, state: dict[str, Any], previous: dict[str, Any] | None
+    ) -> dict[str, list[str]]:
+        domains = _state_string_list(state, "blocked_domains")
+        if not domains:
+            return {}
+        retained = _domain_addresses(previous) if previous else {}
+        # Keep addresses until this policy is removed, including DNS answers no
+        # longer advertised but still used by persistent browser connections.
+        previous_is_enforced = previous and previous.get("mode") == "enforce"
+        resolved = self._domain_resolver.resolve(domains)
+        discovered: dict[str, list[str]] = {}
+        for domain in domains:
+            known = {
+                address
+                for old_domain, values in retained.items()
+                if previous_is_enforced
+                and (old_domain == domain or old_domain.endswith(f".{domain}"))
+                for address in values
+            }
+            for value in resolved.get(domain, ()):
+                address = traffic_address(value)
+                if address is not None:
+                    known.add(address)
+            if not known:
+                raise OSError(f"cannot enforce domain traffic policy: no real IP for {domain}")
+            discovered[domain] = sorted(known)
+        return discovered
 
     def _write_blocked_domains(self, domains: list[str]) -> None:
         for domain in domains:
@@ -349,9 +418,7 @@ class WindowsPolicyEnforcer:
             check=False,
         )
         if result.returncode != 0:
-            raise OSError(
-                "cannot read USB storage baseline; run the Agent as Administrator"
-            )
+            raise OSError("cannot read USB storage baseline; run the Agent as Administrator")
         match = re.search(r"REG_DWORD\s+0x([0-9a-f]+)", result.stdout, re.IGNORECASE)
         if match is None:
             raise OSError("cannot parse the current USB storage baseline")
@@ -376,9 +443,7 @@ class WindowsPolicyEnforcer:
             check=False,
         )
         if result.returncode != 0:
-            raise OSError(
-                "cannot update USB storage policy; run the Agent as Administrator"
-            )
+            raise OSError("cannot update USB storage policy; run the Agent as Administrator")
 
     def _terminate_denied(
         self, applications: list[str], *, session_id: str | None = None
@@ -732,9 +797,7 @@ class WindowsPolicyEnforcer:
             LOGGER.error("security event journal write failed: %s", str(exc)[:500])
 
 
-def _state_from_specification(
-    specification: PolicySpecification, mode: str
-) -> dict[str, Any]:
+def _state_from_specification(specification: PolicySpecification, mode: str) -> dict[str, Any]:
     domains = sorted(
         {
             domain
@@ -780,3 +843,23 @@ def _state_string_list(state: dict[str, Any], key: str) -> tuple[str, ...]:
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
         raise OSError(f"EECP policy state field {key} is invalid")
     return tuple(values)
+
+
+def _domain_addresses(state: dict[str, Any]) -> dict[str, list[str]]:
+    values = state.get("domain_addresses", {})
+    if not isinstance(values, dict):
+        raise OSError("EECP domain address state is invalid")
+    result: dict[str, list[str]] = {}
+    for domain, addresses in values.items():
+        validate_hostname(domain, field="persisted traffic domain")
+        if not isinstance(addresses, list) or not all(
+            isinstance(value, str) for value in addresses
+        ):
+            raise OSError("EECP domain address state is invalid")
+        result[domain] = []
+        for value in addresses:
+            address = traffic_address(value)
+            if address is None:
+                raise OSError("EECP domain address state contains a sinkhole address")
+            result[domain].append(address)
+    return result

@@ -7,9 +7,14 @@ Security evidence created by the privileged Windows Service is written first to
 ACLs and grants full control only to LocalSystem and Built-in Administrators.
 
 The normal-user Agent reads bounded batches over the existing local-only Named Pipe
-using `READ_SECURITY_EVENTS`. After each event has been durably written to the
-AgentEventSpool, it sends `ACK_SECURITY_EVENTS`. Neither operation can execute SQL,
-access a file, run a shell command, or mutate Windows enforcement state.
+using `LIST_PENDING_SECURITY_SESSIONS` and `READ_SECURITY_EVENTS`. The listing is
+metadata-only and every request is bound to the configured Agent identity plus the
+machine-local token. This lets a reconnecting Client drain events after Session
+FINISHED without reactivating Enforce. After each event has been durably written to
+the AgentEventSpool, it sends `ACK_SECURITY_EVENTS`. None of these operations can
+execute SQL, access an arbitrary file, run a shell command, or mutate enforcement.
+The original event ID and occurrence time are preserved. A Backend permanent reject
+is quarantined rather than retried forever or silently deleted.
 
 ```text
 Windows Service -> Service SQLite journal -> authenticated read/ack IPC
@@ -38,6 +43,9 @@ legacy process sensor fallback, but Service journal delivery is unavailable.
   identity after `taskkill` returned success.
 - `ENFORCEMENT_ACTION / ALREADY_EXITED`: the process disappeared before termination
   could be confirmed as the result of EECP.
+- `ENFORCEMENT_ACTION / QUERY_FAILED`: Windows did not establish whether the exact
+  PID/creation-time identity still existed. It is not treated as exit or success;
+  Service health degrades and the next maintenance cycle retries.
 - `ENFORCEMENT_ACTION / FAILED`: the same process identity remained active.
 - `ENFORCEMENT_TAMPER / CONFIG_CHANGED`: current OS state differs from the active
   policy. This is integrity evidence, not proof of intentional user tampering.
@@ -65,3 +73,12 @@ Security log record. A state mismatch alone is reported as `CONFIG_CHANGED`.
 
 These paths require an isolated elevated Windows VM for acceptance. No result from a
 mock or non-Windows test should be described as Windows E2E evidence.
+
+Firewall rules are now created with explicit, identical PowerShell `-Name` and
+`-DisplayName` values. Verification and deletion select the unique internal `Name`,
+then verify `DisplayName`, Group, Enabled, Direction, Action, Profile, and
+RemoteAddress before considering the rule healthy. EECP refuses deletion for names
+outside its deterministic ownership format.
+
+See `docs/v2/two-machine-demo-runbook.md` for installation, read-only preflight,
+six acceptance scenarios, evidence collection, and cleanup.

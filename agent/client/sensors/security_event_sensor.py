@@ -20,6 +20,7 @@ class SecurityEventSensor:
         self,
         transport: RequestTransport,
         token: str,
+        agent_id: str,
         report: Callable[..., None],
         *,
         batch_size: int = 50,
@@ -28,6 +29,7 @@ class SecurityEventSensor:
             raise ValueError("local security event IPC token must be at least 16 characters")
         self._transport = transport
         self._token = token
+        self._agent_id = agent_id
         self._report = report
         self._batch_size = max(1, min(batch_size, 100))
         self._session_id: str | None = None
@@ -39,11 +41,21 @@ class SecurityEventSensor:
         self._session_id = None
 
     def poll(self) -> None:
-        if self._session_id is None:
-            return
+        listing = self._request("LIST_PENDING_SECURITY_SESSIONS")
+        if listing.get("status") != "SUCCEEDED":
+            raise OSError("Service pending security session read was rejected")
+        session_ids = listing.get("session_ids")
+        if not isinstance(session_ids, list) or any(
+            not isinstance(value, str) or not value for value in session_ids
+        ):
+            raise ValueError("Service returned invalid pending security sessions")
+        for session_id in session_ids:
+            self._drain_session(session_id)
+
+    def _drain_session(self, session_id: str) -> None:
         response = self._request(
             "READ_SECURITY_EVENTS",
-            session_id=self._session_id,
+            session_id=session_id,
             limit=self._batch_size,
         )
         if response.get("status") != "SUCCEEDED":
@@ -53,9 +65,9 @@ class SecurityEventSensor:
         if not isinstance(events, list):
             raise ValueError("Service returned an invalid security event batch")
         for raw in events:
-            event = _validate_event(raw, self._session_id)
+            event = _validate_event(raw, session_id)
             self._report(
-                self._session_id,
+                session_id,
                 EventType(event["event_type"]),
                 {
                     "severity": event["severity"],
@@ -72,7 +84,7 @@ class SecurityEventSensor:
         if acknowledged:
             ack = self._request(
                 "ACK_SECURITY_EVENTS",
-                session_id=self._session_id,
+                session_id=session_id,
                 event_ids=acknowledged,
             )
             if ack.get("status") != "SUCCEEDED":
@@ -83,6 +95,7 @@ class SecurityEventSensor:
             "protocol_version": 2,
             "operation": operation,
             "request_id": f"local_{uuid.uuid4().hex}",
+            "agent_id": self._agent_id,
             "token": self._token,
             "after_sequence": 0,
             "limit": self._batch_size,

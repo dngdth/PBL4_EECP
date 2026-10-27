@@ -75,7 +75,7 @@ def build_protocol_handler(runtime: AgentServiceRuntime) -> ServiceProtocolHandl
     local_event_token = load_local_security_event_token()
     if runtime.security_journal is not None and local_event_token:
         local_handler = SecurityEventIpcHandler(
-            runtime.security_journal, local_event_token
+            runtime.security_journal, local_event_token, load_agent_id()
         ).try_handle
     return ServiceProtocolHandler(
         runtime.execution_service.handle,

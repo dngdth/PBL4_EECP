@@ -134,6 +134,7 @@ def build_client_runtime(
             SecurityEventSensor(
                 security_event_transport,
                 local_event_token,
+                identity.agent_id,
                 lambda session_id, event_type, payload, **event_identity: backend.report_event(
                     session_id,
                     identity.agent_id,

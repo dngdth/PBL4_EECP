@@ -70,7 +70,7 @@ class MemoryFirewall:
 
 
 class WindowsFirewallRunner:
-    """Stateful test double for netsh mutation and PowerShell exact reads."""
+    """Stateful test double for exact PowerShell Firewall operations."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], dict]] = []
@@ -79,6 +79,23 @@ class WindowsFirewallRunner:
     def __call__(self, arguments, **kwargs):
         self.calls.append((arguments, kwargs))
         if arguments[0] == "powershell.exe":
+            script = arguments[4]
+            if "New-NetFirewallRule" in script:
+                name, display_name, group, remote = arguments[5:9]
+                self.rules[name] = {
+                    "Name": name,
+                    "DisplayName": display_name,
+                    "Group": group,
+                    "Enabled": True,
+                    "Direction": "Outbound",
+                    "Action": "Block",
+                    "Profile": "Any",
+                    "RemoteAddress": [remote],
+                }
+                return subprocess.CompletedProcess(arguments, 0, "", "")
+            if "Remove-NetFirewallRule" in script:
+                existed = self.rules.pop(arguments[-1], None) is not None
+                return subprocess.CompletedProcess(arguments, 0 if existed else 3, "", "")
             rule = self.rules.get(arguments[-1])
             return subprocess.CompletedProcess(
                 arguments,
@@ -87,32 +104,6 @@ class WindowsFirewallRunner:
                 stderr="",
             )
 
-        name = next((item[5:] for item in arguments if item.startswith("name=")), "")
-        if "show" in arguments:
-            return subprocess.CompletedProcess(
-                arguments,
-                0 if name in self.rules else 1,
-                stdout=name if name in self.rules else "",
-                stderr="",
-            )
-        if "delete" in arguments:
-            self.rules.pop(name, None)
-        if "add" in arguments:
-            values = {
-                key.casefold(): value
-                for item in arguments
-                if "=" in item
-                for key, value in [item.split("=", 1)]
-            }
-            self.rules[name] = {
-                "Name": name,
-                "Group": values["group"],
-                "Enabled": values["enable"].casefold() == "yes",
-                "Direction": values["dir"],
-                "Action": values["action"],
-                "Profile": values["profile"],
-                "RemoteAddress": [values["remoteip"]],
-            }
         return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
 
@@ -197,17 +188,26 @@ def test_gateway_address_resolution_uses_trusted_config_and_supports_ipv6() -> N
     ) == ("192.0.2.10",)
 
 
-def test_windows_adapter_builds_argument_list_without_shell_or_raw_command() -> None:
+def test_windows_adapter_uses_exact_name_and_argument_safe_powershell() -> None:
     runner = WindowsFirewallRunner()
     adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
     planned = adapter.plan("SES-001", ["203.0.113.10"], [])
     adapter.reconcile(planned, ())
 
-    add_arguments, add_kwargs = next(item for item in runner.calls if "add" in item[0])
-    assert add_arguments[0] == "netsh"
-    assert "dir=out" in add_arguments
-    assert "action=block" in add_arguments
-    assert "remoteip=203.0.113.10" in add_arguments
+    add_arguments, add_kwargs = next(
+        item for item in runner.calls if "New-NetFirewallRule" in item[0][4]
+    )
+    assert add_arguments[:4] == [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+    ]
+    assert "param([string]$Name" in add_arguments[4]
+    assert add_arguments[5] == planned[0].name
+    assert add_arguments[6] == planned[0].name
+    assert add_arguments[7] == planned[0].group
+    assert add_arguments[8] == "203.0.113.10"
     assert "shell" not in add_kwargs
     assert adapter.verify_rules(planned)
 
@@ -216,6 +216,7 @@ def test_windows_adapter_builds_argument_list_without_shell_or_raw_command() -> 
     ("field", "tampered_value"),
     [
         ("Group", "Other-Owner"),
+        ("DisplayName", "Duplicate friendly name"),
         ("Enabled", False),
         ("Direction", "in"),
         ("Action", "allow"),
@@ -239,6 +240,28 @@ def test_windows_adapter_detects_and_repairs_tampered_owned_rule(
     adapter.reconcile(planned, (rule.name,))
     assert adapter.verify_rules(planned)
     assert runner.rules["School-Allow-DNS"] == {"external": True}
+
+
+def test_duplicate_display_name_cannot_replace_unique_managed_name() -> None:
+    runner = WindowsFirewallRunner()
+    adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
+    planned = adapter.plan("SES-001", ["203.0.113.10"], [])
+    adapter.reconcile(planned, ())
+    managed = planned[0]
+    runner.rules["EXTERNAL-RULE-ID"] = {
+        "Name": "EXTERNAL-RULE-ID",
+        "DisplayName": managed.name,
+        "Group": managed.group,
+        "Enabled": True,
+        "Direction": "Outbound",
+        "Action": "Block",
+        "Profile": "Any",
+        "RemoteAddress": [managed.remote_address],
+    }
+
+    assert adapter.verify_rules(planned)
+    adapter.reconcile(planned, (managed.name,))
+    assert "EXTERNAL-RULE-ID" in runner.rules
 
 
 def test_adapter_refuses_non_eecp_rule_removal_and_non_windows_invocation() -> None:

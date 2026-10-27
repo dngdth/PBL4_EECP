@@ -4,7 +4,14 @@ import hmac
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from agent.service.security_event_journal import SecurityEventJournal
 
@@ -13,9 +20,14 @@ class SecurityEventIpcRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     protocol_version: Literal[2]
-    operation: Literal["READ_SECURITY_EVENTS", "ACK_SECURITY_EVENTS"]
+    operation: Literal[
+        "LIST_PENDING_SECURITY_SESSIONS",
+        "READ_SECURITY_EVENTS",
+        "ACK_SECURITY_EVENTS",
+    ]
     request_id: str = Field(min_length=1, max_length=255)
-    session_id: str = Field(min_length=1, max_length=255)
+    agent_id: str = Field(min_length=1, max_length=255)
+    session_id: str | None = Field(default=None, min_length=1, max_length=255)
     token: str = Field(min_length=16, max_length=512)
     after_sequence: int = Field(default=0, ge=0)
     limit: int = Field(default=100, ge=1, le=100)
@@ -30,15 +42,24 @@ class SecurityEventIpcRequest(BaseModel):
             raise ValueError("event_id is invalid")
         return values
 
+    @model_validator(mode="after")
+    def validate_operation_fields(self) -> SecurityEventIpcRequest:
+        if self.operation != "LIST_PENDING_SECURITY_SESSIONS" and self.session_id is None:
+            raise ValueError("session_id is required for event read and acknowledgement")
+        if self.operation == "ACK_SECURITY_EVENTS" and not self.event_ids:
+            raise ValueError("event_ids are required for acknowledgement")
+        return self
+
 
 class SecurityEventIpcHandler:
     """Read/ack only local API; never dispatches privileged OS operations."""
 
-    def __init__(self, journal: SecurityEventJournal, token: str):
+    def __init__(self, journal: SecurityEventJournal, token: str, agent_id: str):
         if len(token) < 16:
             raise ValueError("local security event IPC token must be at least 16 characters")
         self._journal = journal
         self._token = token
+        self._agent_id = agent_id
 
     def try_handle(self, payload: bytes) -> bytes | None:
         try:
@@ -46,6 +67,7 @@ class SecurityEventIpcHandler:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return None
         if not isinstance(raw, dict) or raw.get("operation") not in {
+            "LIST_PENDING_SECURITY_SESSIONS",
             "READ_SECURITY_EVENTS",
             "ACK_SECURITY_EVENTS",
         }:
@@ -58,7 +80,16 @@ class SecurityEventIpcHandler:
             return _response(safe_id, "REJECTED", error="invalid security event request")
         if not hmac.compare_digest(request.token, self._token):
             return _response(request.request_id, "REJECTED", error="unauthorized")
+        if not hmac.compare_digest(request.agent_id, self._agent_id):
+            return _response(request.request_id, "REJECTED", error="agent mismatch")
+        if request.operation == "LIST_PENDING_SECURITY_SESSIONS":
+            return _response(
+                request.request_id,
+                "SUCCEEDED",
+                session_ids=list(self._journal.pending_sessions(limit=request.limit)),
+            )
         if request.operation == "READ_SECURITY_EVENTS":
+            assert request.session_id is not None
             values = self._journal.pending(
                 session_id=request.session_id,
                 after_sequence=request.after_sequence,
@@ -69,9 +100,8 @@ class SecurityEventIpcHandler:
                 "SUCCEEDED",
                 events=[{"sequence": sequence, **event.to_dict()} for sequence, event in values],
             )
-        acknowledged = self._journal.acknowledge(
-            request.session_id, request.event_ids
-        )
+        assert request.session_id is not None
+        acknowledged = self._journal.acknowledge(request.session_id, request.event_ids)
         return _response(
             request.request_id, "SUCCEEDED", acknowledged_count=acknowledged
         )

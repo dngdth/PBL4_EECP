@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import subprocess
 import threading
@@ -13,9 +14,11 @@ from agent.infrastructure.policy_enforcement import (
     POLICY_MARKER_END,
     POLICY_MARKER_START,
     ProcessIdentity,
+    ProcessIdentityStatus,
     WindowsPolicyEnforcer,
 )
 from agent.ipc.security_events import SecurityEventIpcHandler
+from agent.service.environment import load_service_environment
 from agent.service.runtime import AgentServiceRuntime
 from agent.service.security_event_journal import (
     SecurityEventJournal,
@@ -38,6 +41,29 @@ from contracts.v2 import Event, EventType
 
 NOW = datetime(2026, 10, 27, 3, 0, tzinfo=UTC)
 TOKEN = "test-local-security-event-token"
+
+
+def test_protected_service_environment_accepts_only_allowlisted_unique_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "service.env"
+    source.write_text(
+        "# privileged service only\n"
+        "EECP_AGENT_ID=AGT-001\n"
+        "EECP_POLICY_MODE=enforce\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("EECP_AGENT_ID", raising=False)
+    monkeypatch.delenv("EECP_POLICY_MODE", raising=False)
+
+    load_service_environment(source)
+
+    assert os.environ["EECP_AGENT_ID"] == "AGT-001"
+    assert os.environ["EECP_POLICY_MODE"] == "enforce"
+
+    source.write_text("PATH=C:\\unsafe\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid Service environment"):
+        load_service_environment(source)
 
 
 def _process(name: str, pid: int, created: str) -> ProcessIdentity:
@@ -392,10 +418,11 @@ def test_retention_removes_only_old_acknowledged_events(tmp_path: Path) -> None:
 
 def test_ipc_rejects_bad_token_and_non_allowlisted_operation(tmp_path: Path) -> None:
     journal = SecurityEventJournal(tmp_path / "ipc.db")
-    handler = SecurityEventIpcHandler(journal, TOKEN)
+    handler = SecurityEventIpcHandler(journal, TOKEN, "agent-1")
     base = {
         "protocol_version": 2,
         "request_id": "req-1",
+        "agent_id": "agent-1",
         "session_id": "SES-1",
         "after_sequence": 0,
         "limit": 10,
@@ -418,7 +445,7 @@ def test_ipc_rejects_bad_token_and_non_allowlisted_operation(tmp_path: Path) -> 
 def test_sensor_does_not_ack_before_durable_report_succeeds(tmp_path: Path) -> None:
     journal = SecurityEventJournal(tmp_path / "handoff.db")
     journal.append(_event("evt-1"))
-    handler = SecurityEventIpcHandler(journal, TOKEN)
+    handler = SecurityEventIpcHandler(journal, TOKEN, "agent-1")
 
     class Transport:
         def request(self, payload: bytes) -> bytes:
@@ -434,7 +461,7 @@ def test_sensor_does_not_ack_before_durable_report_succeeds(tmp_path: Path) -> N
         if attempts == 1:
             raise OSError("Agent spool unavailable")
 
-    sensor = SecurityEventSensor(Transport(), TOKEN, report)
+    sensor = SecurityEventSensor(Transport(), TOKEN, "agent-1", report)
     sensor.activate("SES-1", {})
 
     with pytest.raises(OSError, match="spool"):
@@ -444,6 +471,211 @@ def test_sensor_does_not_ack_before_durable_report_succeeds(tmp_path: Path) -> N
     sensor.poll()
     assert journal.pending(session_id="SES-1") == ()
     assert attempts == 2
+
+
+def test_sensor_drains_pending_session_after_active_policy_deactivation(tmp_path: Path) -> None:
+    journal = SecurityEventJournal(tmp_path / "late-handoff.db")
+    journal.append(_event("evt-late"))
+    handler = SecurityEventIpcHandler(journal, TOKEN, "agent-1")
+    reported: list[tuple[str, str]] = []
+
+    class Transport:
+        def request(self, payload: bytes) -> bytes:
+            response = handler.try_handle(payload)
+            assert response is not None
+            return response
+
+    sensor = SecurityEventSensor(
+        Transport(),
+        TOKEN,
+        "agent-1",
+        lambda session_id, _event_type, _payload, **identity: reported.append(
+            (session_id, identity["event_id"])
+        ),
+    )
+    sensor.activate("SES-1", {})
+    sensor.deactivate()
+    sensor.poll()
+
+    assert reported == [("SES-1", "evt-late")]
+    assert journal.pending(session_id="SES-1") == ()
+
+
+def test_sensor_restart_after_spool_persist_before_journal_ack_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    journal = SecurityEventJournal(tmp_path / "crash-window.db")
+    journal.append(_event("evt-crash-window"))
+    handler = SecurityEventIpcHandler(journal, TOKEN, "agent-1")
+    spooled: set[str] = set()
+
+    class Transport:
+        def request(self, payload: bytes) -> bytes:
+            response = handler.try_handle(payload)
+            assert response is not None
+            return response
+
+    def persist_then_crash(_session_id, _event_type, _payload, **identity):
+        spooled.add(identity["event_id"])
+        raise OSError("simulated Client crash before journal ACK")
+
+    first = SecurityEventSensor(Transport(), TOKEN, "agent-1", persist_then_crash)
+    with pytest.raises(OSError, match="crash"):
+        first.poll()
+    assert spooled == {"evt-crash-window"}
+    assert journal.pending(session_id="SES-1")
+
+    restarted = SecurityEventSensor(
+        Transport(),
+        TOKEN,
+        "agent-1",
+        lambda _session_id, _event_type, _payload, **identity: spooled.add(
+            identity["event_id"]
+        ),
+    )
+    restarted.poll()
+
+    assert spooled == {"evt-crash-window"}
+    assert journal.pending(session_id="SES-1") == ()
+
+
+def test_security_event_ipc_rejects_agent_identity_mismatch(tmp_path: Path) -> None:
+    journal = SecurityEventJournal(tmp_path / "agent-binding.db")
+    journal.append(_event("evt-1"))
+    handler = SecurityEventIpcHandler(journal, TOKEN, "agent-1")
+
+    response = handler.try_handle(
+        json.dumps(
+            {
+                "protocol_version": 2,
+                "operation": "LIST_PENDING_SECURITY_SESSIONS",
+                "request_id": "req-1",
+                "agent_id": "agent-2",
+                "token": TOKEN,
+                "after_sequence": 0,
+                "limit": 10,
+                "event_ids": [],
+            }
+        ).encode()
+    )
+
+    assert response is not None
+    assert json.loads(response)["status"] == "REJECTED"
+
+
+@pytest.mark.parametrize(
+    ("responses", "expected_outcome", "attempted", "degraded"),
+    [
+        ((ProcessIdentityStatus.NOT_FOUND,), "ALREADY_EXITED", False, False),
+        ((ProcessIdentityStatus.QUERY_FAILED,), "QUERY_FAILED", False, True),
+        (
+            (ProcessIdentityStatus.EXISTS, ProcessIdentityStatus.NOT_FOUND),
+            "TERMINATED",
+            True,
+            False,
+        ),
+        (
+            (ProcessIdentityStatus.EXISTS, ProcessIdentityStatus.QUERY_FAILED),
+            "QUERY_FAILED",
+            True,
+            True,
+        ),
+    ],
+)
+def test_process_identity_tri_state_controls_termination(
+    tmp_path: Path,
+    responses: tuple[ProcessIdentityStatus, ...],
+    expected_outcome: str,
+    attempted: bool,
+    degraded: bool,
+) -> None:
+    process = _process("blocked.exe", 42, "created")
+    values = iter(responses)
+    calls: list[list[str]] = []
+
+    def runner(args, **_kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    enforcer = WindowsPolicyEnforcer(
+        tmp_path / "state.json",
+        runner=runner,
+        process_provider=lambda: (process,),
+        process_identity_checker=lambda _process: next(values),
+    )
+    result = enforcer._terminate_denied(["blocked.exe"], session_id="SES-1")
+
+    assert result[0].outcome == expected_outcome
+    assert result[0].termination_attempted is attempted
+    assert any(call[:3] == ["taskkill", "/F", "/PID"] for call in calls) is attempted
+    assert (enforcer.health_error is not None) is degraded
+
+
+def test_process_identity_query_failure_retries_on_next_maintenance_cycle(
+    tmp_path: Path,
+) -> None:
+    process = _process("blocked.exe", 42, "created")
+    values = iter(
+        (
+            ProcessIdentityStatus.QUERY_FAILED,
+            ProcessIdentityStatus.EXISTS,
+            ProcessIdentityStatus.NOT_FOUND,
+        )
+    )
+    taskkills: list[list[str]] = []
+
+    def runner(args, **_kwargs):
+        if args[:3] == ["taskkill", "/F", "/PID"]:
+            taskkills.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    enforcer = WindowsPolicyEnforcer(
+        tmp_path / "state.json",
+        runner=runner,
+        process_provider=lambda: (process,),
+        process_identity_checker=lambda _process: next(values),
+    )
+
+    first = enforcer._terminate_denied(["blocked.exe"], session_id="SES-1")
+    second = enforcer._terminate_denied(["blocked.exe"], session_id="SES-1")
+
+    assert first[0].outcome == "QUERY_FAILED"
+    assert second[0].outcome == "TERMINATED"
+    assert taskkills == [["taskkill", "/F", "/PID", "42"]]
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    [
+        (3, "", ProcessIdentityStatus.NOT_FOUND),
+        (1, "query failed", ProcessIdentityStatus.QUERY_FAILED),
+        (0, "not-json", ProcessIdentityStatus.QUERY_FAILED),
+        (
+            0,
+            json.dumps({"Pid": 42, "CreationTime": "created"}),
+            ProcessIdentityStatus.EXISTS,
+        ),
+        (
+            0,
+            json.dumps({"Pid": 42, "CreationTime": "reused"}),
+            ProcessIdentityStatus.NOT_FOUND,
+        ),
+    ],
+)
+def test_windows_process_identity_query_distinguishes_failure_and_absence(
+    tmp_path: Path,
+    returncode: int,
+    stdout: str,
+    expected: ProcessIdentityStatus,
+) -> None:
+    def runner(args, **_kwargs):
+        return subprocess.CompletedProcess(args, returncode, stdout, "")
+
+    enforcer = WindowsPolicyEnforcer(tmp_path / "state.json", runner=runner)
+
+    assert enforcer._windows_process_identity_exists(
+        _process("blocked.exe", 42, "created")
+    ) == expected
 
 
 def test_hosts_integrity_ignores_unmanaged_lines_and_detects_managed_change(

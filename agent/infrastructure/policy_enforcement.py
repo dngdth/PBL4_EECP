@@ -9,6 +9,7 @@ import threading
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,12 @@ class ProcessIdentity:
     pid: int
     creation_time: str
     username: str | None = None
+
+
+class ProcessIdentityStatus(StrEnum):
+    EXISTS = "EXISTS"
+    NOT_FOUND = "NOT_FOUND"
+    QUERY_FAILED = "QUERY_FAILED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +85,9 @@ class WindowsPolicyEnforcer:
         firewall: FirewallEnforcer | None = None,
         event_sink: Callable[..., None] | None = None,
         process_provider: Callable[[], tuple[ProcessIdentity, ...]] | None = None,
-        process_identity_checker: Callable[[ProcessIdentity], bool] | None = None,
+        process_identity_checker: (
+            Callable[[ProcessIdentity], ProcessIdentityStatus | bool] | None
+        ) = None,
         process_owner_provider: Callable[[int], str | None] | None = None,
     ):
         self._state_path = state_path
@@ -412,8 +421,34 @@ class WindowsPolicyEnforcer:
                     username=process.username,
                     process_creation_time=process.creation_time,
                 )
-            confirmed = self._process_identity_checker(process)
-            if not confirmed:
+            before = self._identity_status(process)
+            if before == ProcessIdentityStatus.QUERY_FAILED:
+                enforcement = ProcessEnforcementResult(
+                    process=process,
+                    detected=True,
+                    termination_attempted=False,
+                    outcome="QUERY_FAILED",
+                    error="process identity query failed before termination",
+                )
+                results.append(enforcement)
+                if self._process_outcomes.get(identity) != "QUERY_FAILED":
+                    self._record(
+                        session_id,
+                        "ENFORCEMENT_ACTION",
+                        "FORBIDDEN_PROCESS",
+                        "QUERY_FAILED",
+                        "CRITICAL",
+                        process_name=process.name,
+                        pid=process.pid,
+                        username=process.username,
+                        process_creation_time=process.creation_time,
+                        enforcement_result="QUERY_FAILED",
+                        error=enforcement.error,
+                    )
+                self._process_outcomes[identity] = "QUERY_FAILED"
+                self._degraded_error = enforcement.error
+                continue
+            if before == ProcessIdentityStatus.NOT_FOUND:
                 enforcement = ProcessEnforcementResult(
                     process=process,
                     detected=True,
@@ -442,17 +477,22 @@ class WindowsPolicyEnforcer:
                 text=True,
                 check=False,
             )
-            still_running = self._process_identity_checker(process)
-            if not still_running:
+            after = self._identity_status(process)
+            if after == ProcessIdentityStatus.NOT_FOUND:
                 outcome = "TERMINATED" if result.returncode == 0 else "ALREADY_EXITED"
+                error = None
+            elif after == ProcessIdentityStatus.QUERY_FAILED:
+                outcome = "QUERY_FAILED"
+                error = "process identity query failed after termination"
             else:
                 outcome = "FAILED"
+                error = "process remained active"
             enforcement = ProcessEnforcementResult(
                 process=process,
                 detected=True,
                 termination_attempted=True,
                 outcome=outcome,
-                error=(None if outcome != "FAILED" else "process remained active"),
+                error=error,
             )
             results.append(enforcement)
             if self._process_outcomes.get(identity) != outcome:
@@ -461,7 +501,7 @@ class WindowsPolicyEnforcer:
                     "ENFORCEMENT_ACTION",
                     "FORBIDDEN_PROCESS",
                     "BLOCKED" if outcome == "TERMINATED" else outcome,
-                    "WARNING" if outcome != "FAILED" else "CRITICAL",
+                    "CRITICAL" if outcome in {"FAILED", "QUERY_FAILED"} else "WARNING",
                     process_name=process.name,
                     pid=process.pid,
                     username=process.username,
@@ -469,11 +509,18 @@ class WindowsPolicyEnforcer:
                     enforcement_result=outcome,
                 )
             self._process_outcomes[identity] = outcome
-            if outcome == "FAILED":
-                self._degraded_error = (
+            if outcome in {"FAILED", "QUERY_FAILED"}:
+                self._degraded_error = error or (
                     f"denied process remained active: {process.name} pid={process.pid}"
                 )
         return tuple(results)
+
+    def _identity_status(self, process: ProcessIdentity) -> ProcessIdentityStatus:
+        """Normalize legacy injected boolean checkers while production uses tri-state."""
+        result = self._process_identity_checker(process)
+        if isinstance(result, ProcessIdentityStatus):
+            return result
+        return ProcessIdentityStatus.EXISTS if result else ProcessIdentityStatus.NOT_FOUND
 
     def _load_process_observations(self, state: dict[str, Any]) -> None:
         values = state.get("observed_processes", [])
@@ -534,7 +581,9 @@ class WindowsPolicyEnforcer:
             and item.get("CreationTime")
         )
 
-    def _windows_process_identity_exists(self, process: ProcessIdentity) -> bool:
+    def _windows_process_identity_exists(
+        self, process: ProcessIdentity
+    ) -> ProcessIdentityStatus:
         script = (
             "& { param([int]$ProcessId) "
             "$process=Get-CimInstance Win32_Process -Filter "
@@ -556,17 +605,20 @@ class WindowsPolicyEnforcer:
             text=True,
             check=False,
         )
+        if result.returncode == 3:
+            return ProcessIdentityStatus.NOT_FOUND
         if result.returncode != 0:
-            return False
+            return ProcessIdentityStatus.QUERY_FAILED
         try:
             value = json.loads(result.stdout)
         except (json.JSONDecodeError, TypeError):
-            return False
-        return bool(
+            return ProcessIdentityStatus.QUERY_FAILED
+        matches = bool(
             isinstance(value, dict)
             and value.get("Pid") == process.pid
             and str(value.get("CreationTime")) == process.creation_time
         )
+        return ProcessIdentityStatus.EXISTS if matches else ProcessIdentityStatus.NOT_FOUND
 
     def _windows_process_owner(self, process_id: int) -> str | None:
         script = (

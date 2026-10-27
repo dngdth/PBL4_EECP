@@ -140,6 +140,9 @@ class EECPWindowsService(_ServiceFrameworkBase):
             )
 
     def SvcDoRun(self) -> None:
+        from agent.service.environment import load_service_environment
+
+        load_service_environment()
         from agent.service.main import build_protocol_handler, build_service_runtime
 
         servicemanager.LogInfoMsg(f"{SERVICE_NAME} starting")

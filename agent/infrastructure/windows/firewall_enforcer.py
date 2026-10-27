@@ -115,20 +115,24 @@ class WindowsFirewallEnforcer:
                 )
                 continue
             self._remove_rule(rule.name)
+            script = (
+                "& { param([string]$Name,[string]$DisplayName,[string]$Group,"
+                "[string]$RemoteAddress) "
+                "New-NetFirewallRule -Name $Name -DisplayName $DisplayName "
+                "-Group $Group -Direction Outbound -Action Block -Profile Any "
+                "-Enabled True -RemoteAddress $RemoteAddress -ErrorAction Stop|Out-Null }"
+            )
             result = self._run(
                 [
-                    "netsh",
-                    "advfirewall",
-                    "firewall",
-                    "add",
-                    "rule",
-                    f"name={rule.name}",
-                    f"group={rule.group}",
-                    "dir=out",
-                    "action=block",
-                    f"remoteip={rule.remote_address}",
-                    "profile=any",
-                    "enable=yes",
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    script,
+                    rule.name,
+                    rule.name,
+                    rule.group,
+                    rule.remote_address,
                 ]
             )
             if result.returncode != 0:
@@ -178,7 +182,8 @@ class WindowsFirewallEnforcer:
             "$rule=Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue;"
             "if($null -eq $rule){exit 3};"
             "$filter=$rule|Get-NetFirewallAddressFilter;"
-            "[PSCustomObject]@{Name=$rule.Name;Group=$rule.Group;"
+            "[PSCustomObject]@{Name=$rule.Name;DisplayName=$rule.DisplayName;"
+            "Group=$rule.Group;"
             "Enabled=$rule.Enabled.ToString();"
             "Direction=$rule.Direction.ToString();Action=$rule.Action.ToString();"
             "Profile=$rule.Profile.ToString();RemoteAddress=@($filter.RemoteAddress)}|"
@@ -225,6 +230,7 @@ class WindowsFirewallEnforcer:
         return bool(
             isinstance(value, dict)
             and value.get("Name") == rule.name
+            and value.get("DisplayName") == rule.name
             and value.get("Group") == rule.group
             and str(value.get("Enabled", "")).casefold() == "true"
             and direction_matches
@@ -236,14 +242,24 @@ class WindowsFirewallEnforcer:
     def _remove_rule(self, name: str) -> None:
         if not _is_owned_rule_name(name):
             raise ValueError(f"refusing to remove non-EECP Firewall rule: {name}")
-        existing = self._run(
-            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={name}"]
+        script = (
+            "& { param([string]$RuleName) "
+            "$rule=Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue;"
+            "if($null -eq $rule){exit 3};"
+            "$rule|Remove-NetFirewallRule -ErrorAction Stop }"
         )
-        if existing.returncode != 0:
-            return
         result = self._run(
-            ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"]
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+                name,
+            ]
         )
+        if result.returncode == 3:
+            return
         if result.returncode != 0:
             raise OSError(f"cannot remove Windows Firewall rule {name}")
 

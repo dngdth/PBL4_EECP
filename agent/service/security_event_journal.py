@@ -158,6 +158,22 @@ class SecurityEventJournal:
             (int(row["sequence"]), _decode_event(row["event_json"])) for row in rows
         )
 
+    def pending_sessions(self, *, limit: int = 100) -> tuple[str, ...]:
+        """Return only session identifiers that still have unacknowledged events."""
+        bounded_limit = max(1, min(limit, 100))
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT session_id, MIN(sequence) AS first_sequence
+                FROM security_events
+                WHERE acknowledged_at IS NULL AND session_id IS NOT NULL
+                GROUP BY session_id
+                ORDER BY first_sequence ASC LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+        return tuple(str(row["session_id"]) for row in rows)
+
     def acknowledge(self, session_id: str, event_ids: tuple[str, ...]) -> int:
         if not event_ids:
             return 0

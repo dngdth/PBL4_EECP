@@ -48,6 +48,24 @@ def _payload() -> dict:
     }
 
 
+@pytest.fixture(autouse=True)
+def _isolate_network_adapters(monkeypatch):
+    # These tests exercise hosts/process/USB behavior. Network enforcement has
+    # separate tests and must never invoke real DNS/firewall on the test host.
+    monkeypatch.setattr(
+        "agent.infrastructure.windows.domain_resolver.WindowsDomainResolver.resolve",
+        lambda self, domains: {domain: ("203.0.113.20",) for domain in domains},
+    )
+    monkeypatch.setattr(
+        "agent.infrastructure.windows.firewall_enforcer.WindowsFirewallEnforcer.reconcile",
+        lambda *args: None,
+    )
+    monkeypatch.setattr(
+        "agent.infrastructure.windows.firewall_enforcer.WindowsFirewallEnforcer.remove_rules",
+        lambda *args: None,
+    )
+
+
 def test_command_processor_applies_and_acknowledges_policy(tmp_path: Path) -> None:
     acknowledgements = []
     lifecycle = []

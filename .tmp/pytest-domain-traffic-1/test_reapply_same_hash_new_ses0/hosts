@@ -1,0 +1,6 @@
+127.0.0.1 localhost
+
+# BEGIN EECP MANAGED POLICY
+127.0.0.1 chatgpt.com
+127.0.0.1 www.chatgpt.com
+# END EECP MANAGED POLICY

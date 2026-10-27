@@ -1,0 +1,25 @@
+{
+  "blocked_cidrs": [],
+  "blocked_domains": [
+    "chatgpt.com"
+  ],
+  "blocked_ips": [],
+  "denied_applications": [],
+  "domain_addresses": {
+    "chatgpt.com": [
+      "2001:db8::10",
+      "203.0.113.10"
+    ]
+  },
+  "managed_firewall_rules": [
+    "EECP-ABFEFDEF0759-DOMAIN-CD131B405946",
+    "EECP-ABFEFDEF0759-DOMAIN-CD131B405946-IN"
+  ],
+  "mode": "enforce",
+  "policy_hash": "e1c8d5c31f181122ef6c75b91cb64efc52ad48578e3e98e0419d531e1eb0f735",
+  "profile": "TRAFFIC",
+  "session_id": "SES-OTHER",
+  "usb_deny": false,
+  "usb_previous": null,
+  "version": 1
+}

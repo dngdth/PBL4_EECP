@@ -1,0 +1,23 @@
+{
+  "blocked_cidrs": [
+    "198.51.100.0/24"
+  ],
+  "blocked_domains": [
+    "blocked.example"
+  ],
+  "blocked_ips": [
+    "203.0.113.10"
+  ],
+  "denied_applications": [],
+  "managed_firewall_rules": [
+    "EECP-5DB0D6811F1B-CIDR-9E6315B57545",
+    "EECP-5DB0D6811F1B-IP-631F08140B24"
+  ],
+  "mode": "enforce",
+  "policy_hash": "bb2efb620ce36fab10dcdcb9566c32ded5d9b7e8ca17f5a3b81a70663f4b08f1",
+  "profile": "NETWORK_TEST",
+  "session_id": "ses_5c38f8f2b9c443e799434f42c9aad451",
+  "usb_deny": false,
+  "usb_previous": null,
+  "version": 1
+}

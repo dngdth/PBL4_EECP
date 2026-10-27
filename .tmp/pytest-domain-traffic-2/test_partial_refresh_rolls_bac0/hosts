@@ -1,0 +1,6 @@
+127.0.0.1 localhost
+
+# BEGIN EECP MANAGED POLICY
+127.0.0.1 claude.ai
+127.0.0.1 www.claude.ai
+# END EECP MANAGED POLICY

@@ -1,0 +1,16 @@
+{
+  "blocked_cidrs": [
+    "198.51.100.0/24"
+  ],
+  "blocked_domains": [],
+  "blocked_ips": [
+    "203.0.113.10"
+  ],
+  "denied_applications": [],
+  "mode": "audit",
+  "policy_hash": "16d491aa5a53f3f4a8730f11cec2c10a845304bf2b06e6ec8bca40d96693efde",
+  "profile": "NETWORK_TEST",
+  "session_id": "SES-001",
+  "usb_deny": false,
+  "version": 1
+}

@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import logging
+import re
 import socket
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 from urllib.parse import urlparse
 
@@ -46,7 +47,7 @@ class FirewallEnforcer(Protocol):
 
 
 class WindowsFirewallEnforcer:
-    """Manage exact EECP-owned outbound block rules through argument-safe netsh."""
+    """Manage exact EECP-owned, all-protocol block rules through netsh."""
 
     def __init__(
         self,
@@ -102,9 +103,6 @@ class WindowsFirewallEnforcer:
     ) -> None:
         self._require_windows()
         desired_names = {rule.name for rule in desired}
-        for name in sorted(set(current_rule_names) - desired_names):
-            LOGGER.info("firewall operation=remove rule=%s result=started", name)
-            self._remove_rule(name)
         for rule in desired:
             if self._rule_matches(rule):
                 LOGGER.info(
@@ -123,10 +121,11 @@ class WindowsFirewallEnforcer:
                     "rule",
                     f"name={rule.name}",
                     f"group={rule.group}",
-                    "dir=out",
+                    f"dir={rule.direction}",
                     "action=block",
                     f"remoteip={rule.remote_address}",
                     "profile=any",
+                    "protocol=any",
                     "enable=yes",
                 ]
             )
@@ -137,6 +136,11 @@ class WindowsFirewallEnforcer:
                 rule.name,
                 rule.remote_address,
             )
+        # Install replacements before removing old addresses: refreshing DNS
+        # must not create a window where previously blocked flows can resume.
+        for name in sorted(set(current_rule_names) - desired_names):
+            LOGGER.info("firewall operation=remove rule=%s result=started", name)
+            self._remove_rule(name)
         if not self.verify_rules(desired):
             raise OSError("Windows Firewall rule verification failed")
 
@@ -185,28 +189,39 @@ class WindowsFirewallEnforcer:
         )
         if result.returncode != 0:
             return False
-        output = result.stdout.casefold()
-        return all(
-            value.casefold() in output
-            for value in (rule.name, rule.remote_address, "block", "out")
+        fields = {
+            match[1].strip().casefold(): match[2].strip().casefold()
+            for line in result.stdout.splitlines()
+            if (match := re.match(r"^\s*([A-Za-z][A-Za-z ]*):\s*(.*?)\s*$", line))
+        }
+        direction = {"out", "outbound"} if rule.direction == "out" else {"in", "inbound"}
+        profiles = {value.strip() for value in fields.get("profiles", "").split(",")}
+        return (
+            fields.get("rule name") == rule.name.casefold()
+            and fields.get("direction") in direction
+            and fields.get("action") == "block"
+            and fields.get("enabled") == "yes"
+            and fields.get("protocol") == "any"
+            and fields.get("localip") == "any"
+            and profiles in ({"any"}, {"domain", "private", "public"})
+            and _same_remote_addresses(fields.get("remoteip", ""), rule.remote_address)
         )
 
     def _remove_rule(self, name: str) -> None:
         if not _is_owned_rule_name(name):
             raise ValueError(f"refusing to remove non-EECP Firewall rule: {name}")
-        existing = self._run(
-            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={name}"]
-        )
+        existing = self._run(["netsh", "advfirewall", "firewall", "show", "rule", f"name={name}"])
         if existing.returncode != 0:
             return
-        result = self._run(
-            ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"]
-        )
+        result = self._run(["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"])
         if result.returncode != 0:
             raise OSError(f"cannot remove Windows Firewall rule {name}")
 
     def _run(self, arguments: list[str]) -> subprocess.CompletedProcess[str]:
-        return self._runner(arguments, capture_output=True, text=True, check=False)
+        try:
+            return self._runner(arguments, capture_output=True, text=True, check=False, timeout=5.0)
+        except subprocess.TimeoutExpired as exc:
+            raise OSError("Windows Firewall command timed out") from exc
 
     def _require_windows(self) -> None:
         if self._platform != "win32":
@@ -232,9 +247,7 @@ def resolve_gateway_addresses(
             raise OSError(f"cannot resolve configured Gateway endpoint: {hostname}") from exc
         addresses = sorted({str(ipaddress.ip_address(record[4][0])) for record in records})
         if not addresses:
-            raise OSError(
-                f"configured Gateway endpoint has no IP address: {hostname}"
-            ) from None
+            raise OSError(f"configured Gateway endpoint has no IP address: {hostname}") from None
         return tuple(addresses)
 
 
@@ -244,11 +257,49 @@ def _digest(value: str) -> str:
 
 def _is_owned_rule_name(name: str) -> bool:
     parts = name.split("-")
+    if len(parts) == 5 and parts[-1] == "IN":
+        parts = parts[:-1]
     return (
         len(parts) == 4
         and parts[0] == "EECP"
         and len(parts[1]) == 12
-        and parts[2] in {"IP", "CIDR"}
+        and parts[2] in {"IP", "CIDR", "DOMAIN"}
         and len(parts[3]) == 12
         and all(character in "0123456789ABCDEF" for character in parts[1] + parts[3])
     )
+
+
+def domain_traffic_rules(validated_ip_rules: tuple[FirewallRule, ...]) -> tuple[FirewallRule, ...]:
+    """Group validated IPs into one rule per direction, covering TCP and UDP.
+
+    Incoming blocks also stop an already-running response/one-way stream. The
+    caller must use plan() first so protected Gateway addresses are rejected.
+    """
+    if not validated_ip_rules:
+        return ()
+    remote = ",".join(sorted({rule.remote_address for rule in validated_ip_rules}))
+    first = validated_ip_rules[0]
+    outbound = replace(
+        first,
+        name=f"{first.group}-DOMAIN-{_digest(remote)}",
+        remote_address=remote,
+        address_type="DOMAIN",
+    )
+    return (outbound, replace(outbound, name=f"{outbound.name}-IN", direction="in"))
+
+
+def _same_remote_addresses(actual: str, expected: str) -> bool:
+    def normalized(value: str) -> set[str]:
+        networks = [ipaddress.ip_network(item.strip(), strict=False) for item in value.split(",")]
+        return {
+            str(network)
+            for version in (4, 6)
+            for network in ipaddress.collapse_addresses(
+                item for item in networks if item.version == version
+            )
+        }
+
+    try:
+        return normalized(actual) == normalized(expected)
+    except ValueError:
+        return False

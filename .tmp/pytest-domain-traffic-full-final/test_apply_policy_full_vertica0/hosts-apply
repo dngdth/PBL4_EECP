@@ -1,0 +1,6 @@
+127.0.0.1 localhost
+
+# BEGIN EECP MANAGED POLICY
+127.0.0.1 blocked.example
+127.0.0.1 www.blocked.example
+# END EECP MANAGED POLICY

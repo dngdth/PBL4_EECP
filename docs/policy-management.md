@@ -117,6 +117,12 @@ not move session state, preventing the two lifecycle modes from being mixed.
 
 ## Clean Architecture placement
 
+Domain network policies also install Service-owned, bidirectional Firewall
+blocks for discovered real IPv4/IPv6 destinations. This complements hosts
+blocking so existing browser connections are covered by network rules. See
+[Domain traffic enforcement](domain-traffic-enforcement.md) for DNS discovery,
+refresh/restore behavior, limitations and the live existing-connection test.
+
 - The domain profile model validates selectable business rules, not YAML formatting.
 - Application policy use cases manage profile CRUD, fetch commands, and process ACKs.
 - The presentation layer generates the YAML preview and exposes HTTP schemas/routes.

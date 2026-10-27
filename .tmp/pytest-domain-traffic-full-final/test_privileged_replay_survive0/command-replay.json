@@ -1,0 +1,1 @@
+{"entries":[{"command_id":"CMD-001","expires_at":"2026-09-28T15:05:00Z","fingerprint":"f9d4fb7b4f4a316ff61877966be4236de535a4aa8f26ca0c9dd21cb3bce44369","result":{"command_id":"CMD-001","correlation_id":"CORR-001","occurred_at":"2026-09-28T15:00:00Z","protocol_version":2,"request_id":"REQ-CMD-001","service_version":"2.0","status":"SUCCEEDED"}}],"version":1}

@@ -1,0 +1,24 @@
+{
+  "blocked_cidrs": [],
+  "blocked_domains": [
+    "claude.ai"
+  ],
+  "blocked_ips": [],
+  "denied_applications": [],
+  "domain_addresses": {
+    "claude.ai": [
+      "203.0.113.12"
+    ]
+  },
+  "managed_firewall_rules": [
+    "EECP-8AA80A409305-DOMAIN-A9FCCA236A6B",
+    "EECP-8AA80A409305-DOMAIN-A9FCCA236A6B-IN"
+  ],
+  "mode": "enforce",
+  "policy_hash": "97d90dba770ef80ea281a2413e3bb3592533c4fa7894f5ab6b79dd2d88c01445",
+  "profile": "TRAFFIC",
+  "session_id": "SES-TRAFFIC",
+  "usb_deny": false,
+  "usb_previous": null,
+  "version": 1
+}

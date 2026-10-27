@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -84,6 +85,9 @@ def _enforcer(tmp_path: Path, firewall: MemoryFirewall):
             hosts_path=hosts,
             runner=runner,
             firewall=firewall,
+            domain_resolver=SimpleNamespace(
+                resolve=lambda domains: {domain: ("203.0.113.20",) for domain in domains}
+            ),
         ),
         hosts,
         calls,
@@ -161,7 +165,11 @@ def test_windows_adapter_builds_argument_list_without_shell_or_raw_command() -> 
             if name not in installed:
                 return subprocess.CompletedProcess(arguments, 1, stdout="", stderr="")
             rule = planned[0]
-            output = f"{rule.name} Outbound Block {rule.remote_address}"
+            output = (
+                f"Rule Name: {rule.name}\nDirection: Out\nAction: Block\n"
+                f"RemoteIP: {rule.remote_address}\nLocalIP: Any\n"
+                "Enabled: Yes\nProtocol: Any\nProfiles: Domain,Private,Public\n"
+            )
             return subprocess.CompletedProcess(arguments, 0, stdout=output, stderr="")
         if "add" in arguments:
             installed.add(name)

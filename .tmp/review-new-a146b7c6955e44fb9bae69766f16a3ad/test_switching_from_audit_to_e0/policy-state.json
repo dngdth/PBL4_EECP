@@ -1,0 +1,23 @@
+{
+  "blocked_cidrs": [],
+  "blocked_domains": [
+    "chatgpt.com",
+    "claude.ai",
+    "copilot.microsoft.com",
+    "gemini.google.com",
+    "openai.com",
+    "perplexity.ai"
+  ],
+  "blocked_ips": [],
+  "denied_applications": [
+    "anydesk.exe"
+  ],
+  "managed_firewall_rules": [],
+  "mode": "enforce",
+  "policy_hash": "3c4ec6c2ffe1c9408a93127290f91574c17ac874012279b9107a4362a9653cab",
+  "profile": "INTERNET_NO_AI",
+  "session_id": "legacy-3c4ec6c2ffe1",
+  "usb_deny": true,
+  "usb_previous": 3,
+  "version": 1
+}

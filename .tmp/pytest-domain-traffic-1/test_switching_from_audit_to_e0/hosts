@@ -1,0 +1,16 @@
+127.0.0.1 localhost
+
+# BEGIN EECP MANAGED POLICY
+127.0.0.1 chatgpt.com
+127.0.0.1 www.chatgpt.com
+127.0.0.1 claude.ai
+127.0.0.1 www.claude.ai
+127.0.0.1 copilot.microsoft.com
+127.0.0.1 www.copilot.microsoft.com
+127.0.0.1 gemini.google.com
+127.0.0.1 www.gemini.google.com
+127.0.0.1 openai.com
+127.0.0.1 www.openai.com
+127.0.0.1 perplexity.ai
+127.0.0.1 www.perplexity.ai
+# END EECP MANAGED POLICY

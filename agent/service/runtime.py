@@ -17,6 +17,10 @@ from agent.infrastructure.policy_enforcement import (
     WindowsPolicyEnforcer,
 )
 from agent.service.application.execution_service import ExecutionService
+from agent.service.security_event_journal import (
+    SecurityEventJournal,
+    SecurityEventRecord,
+)
 
 EnforcerFactory = Callable[[Path], PolicyEnforcer]
 
@@ -45,6 +49,7 @@ class AgentServiceRuntime:
         *,
         server: RequestServer | None = None,
         maintenance_interval_seconds: float = 5.0,
+        security_journal: SecurityEventJournal | None = None,
     ):
         if maintenance_interval_seconds <= 0:
             raise ValueError("maintenance_interval_seconds must be positive")
@@ -58,6 +63,8 @@ class AgentServiceRuntime:
         self._lifecycle = ServiceLifecycle.STOPPED
         self._lifecycle_lock = threading.Lock()
         self._maintenance_error: str | None = None
+        self.security_journal = security_journal
+        self._session_snapshot: dict[int, str] = {}
 
     @classmethod
     def build(
@@ -77,6 +84,7 @@ class AgentServiceRuntime:
         require_authorized_commands: bool = False,
         command_target_id: str = "",
         replay_path: Path | None = None,
+        security_journal: SecurityEventJournal | None = None,
     ) -> AgentServiceRuntime:
         if policy_mode == "audit":
             enforcer = audit_factory(state_path)
@@ -84,6 +92,12 @@ class AgentServiceRuntime:
             enforcer = windows_factory(state_path)
         else:
             raise ValueError("EECP_POLICY_MODE must be 'enforce' or 'audit'")
+        if security_journal is not None and hasattr(enforcer, "set_event_sink"):
+            enforcer.set_event_sink(
+                lambda **values: security_journal.append(
+                    SecurityEventRecord.create(**values)
+                )
+            )
         privileged_executor = InProcessPrivilegedExecutor(enforcer, service_version)
         active_policy_hash, active_session_id = _load_active_policy_state(state_path)
         execution_service = ExecutionService(
@@ -105,6 +119,7 @@ class AgentServiceRuntime:
             execution_service,
             server=server,
             maintenance_interval_seconds=maintenance_interval_seconds,
+            security_journal=security_journal,
         )
 
     @property
@@ -160,6 +175,58 @@ class AgentServiceRuntime:
 
     def maintain_once(self) -> None:
         self.privileged_executor.maintain()
+
+    def record_session_change(
+        self,
+        *,
+        action: str,
+        windows_session_id: int,
+        username: str | None,
+        domain: str | None,
+    ) -> None:
+        if self.security_journal is None:
+            return
+        active_session_id = self.execution_service.active_session_id
+        if active_session_id is None:
+            if username:
+                self._session_snapshot[windows_session_id] = username
+            return
+        normalized = (username or self._session_snapshot.get(windows_session_id) or "").strip()
+        if not normalized or normalized.casefold() in {
+            "system",
+            "local service",
+            "network service",
+        }:
+            return
+        if action == "LOGON" and self._session_snapshot.get(windows_session_id) == normalized:
+            return
+        if action in {"LOGON", "UNLOCK", "REMOTE_CONNECT"}:
+            self._session_snapshot[windows_session_id] = normalized
+        elif action == "LOGOFF":
+            self._session_snapshot.pop(windows_session_id, None)
+        self.security_journal.append(
+            SecurityEventRecord.create(
+                session_id=active_session_id,
+                event_type="USER_SESSION_CHANGED",
+                category="WINDOWS_SESSION",
+                action=action,
+                severity="INFO",
+                source="windows-service-session-notification",
+                details={
+                    "windows_session_id": windows_session_id,
+                    "username": normalized,
+                    "domain": domain,
+                },
+            )
+        )
+
+    def seed_session_snapshot(self, sessions: dict[int, str]) -> None:
+        """Record startup state without representing it as a new logon event."""
+        self._session_snapshot = {
+            int(session_id): username.strip()
+            for session_id, username in sessions.items()
+            if username.strip()
+        }
 
     def _maintenance_loop(self) -> None:
         while not self._stop_event.wait(self._maintenance_interval_seconds):

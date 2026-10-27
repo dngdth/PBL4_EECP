@@ -153,7 +153,9 @@ def authorize(
             resource_type="SESSION" if session_id else "API_RESOURCE",
             resource_id=session_id or permission.value,
             reason_code=str(exc).upper().replace(" ", "_")[:128],
-            session_id=session_id,
+            # A denied request must not require the target session to exist and
+            # must not attach an out-of-scope resource to its per-session chain.
+            session_id=None,
             correlation_id=request.headers.get("x-correlation-id"),
         )
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc

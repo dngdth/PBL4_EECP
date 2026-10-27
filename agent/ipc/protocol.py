@@ -34,12 +34,18 @@ class ServiceProtocolHandler:
         dispatch: Callable[[ServiceRequest], ServiceResult],
         service_version: str,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        local_handler: Callable[[bytes], bytes | None] | None = None,
     ):
         self._dispatch = dispatch
         self._service_version = service_version
         self._clock = clock
+        self._local_handler = local_handler
 
     def __call__(self, payload: bytes) -> bytes:
+        if self._local_handler is not None:
+            local_response = self._local_handler(payload)
+            if local_response is not None:
+                return local_response
         raw = _best_effort_object(payload)
         try:
             request = deserialize_request(payload)

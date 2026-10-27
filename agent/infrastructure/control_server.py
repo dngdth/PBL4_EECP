@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
@@ -100,6 +101,10 @@ class AgentClient:
         agent_id: str,
         event_type: EventType,
         payload: dict[str, Any],
+        *,
+        event_id: str | None = None,
+        occurred_at=None,
+        correlation_id: str | None = None,
     ) -> None:
         self._post(
             f"/api/v1/sessions/{session_id}/telemetry",
@@ -111,6 +116,9 @@ class AgentClient:
                 "action": str(payload.get("action", "OBSERVED")),
                 "destination": payload.get("destination"),
                 "payload": payload,
+                "event_id": event_id or f"evt_{uuid.uuid4().hex}",
+                "occurred_at": occurred_at.isoformat() if occurred_at else None,
+                "correlation_id": correlation_id,
             },
         )
 

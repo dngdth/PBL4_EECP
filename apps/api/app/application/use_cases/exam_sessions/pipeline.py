@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import json
+from datetime import UTC, datetime, timedelta
 
 from app.application.dtos.exam_pipeline import (
     CreateSessionInput,
@@ -153,9 +154,44 @@ class ExamPipelineService:
         event, incident_id, _duplicate = self.ingest_protocol_event(data)
         return event, incident_id
 
+    def list_security_events(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        agent_id: str | None = None,
+        event_type: str | None = None,
+        severity: str | None = None,
+        occurred_from: datetime | None = None,
+        occurred_to: datetime | None = None,
+    ) -> tuple[list[TelemetryEvent], int]:
+        with self._uow_factory() as uow:
+            uow.sessions.get(session_id)
+            events = uow.telemetry.list_for_session(session_id)
+        filtered = [
+            event
+            for event in events
+            if (agent_id is None or event.workstation_id == agent_id)
+            and (event_type is None or event.event_type == event_type)
+            and (severity is None or event.severity.value == severity)
+            and (occurred_from is None or event.occurred_at >= occurred_from)
+            and (occurred_to is None or event.occurred_at <= occurred_to)
+        ]
+        filtered.sort(key=lambda event: (event.occurred_at, event.id), reverse=True)
+        return filtered[offset : offset + limit], len(filtered)
+
     def ingest_protocol_event(
         self, data: TelemetryInput
     ) -> tuple[TelemetryEvent, str | None, bool]:
+        encoded_payload = json.dumps(data.payload, separators=(",", ":")).encode()
+        if len(encoded_payload) > 64 * 1024:
+            raise PolicyValidationError("telemetry payload exceeds 64 KiB")
+        if data.occurred_at is not None:
+            if data.occurred_at.tzinfo is None:
+                raise PolicyValidationError("telemetry timestamp must be timezone-aware")
+            if data.occurred_at > datetime.now(UTC) + timedelta(minutes=5):
+                raise PolicyValidationError("telemetry timestamp is too far in the future")
         event = TelemetryEvent(
             id=data.event_id or new_id("evt"),
             session_id=data.session_id,

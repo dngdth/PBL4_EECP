@@ -225,22 +225,31 @@ class GatewayControlClient:
         agent_id: str,
         event_type: EventType,
         payload: dict[str, Any],
+        *,
+        event_id: str | None = None,
+        occurred_at: datetime | None = None,
+        correlation_id: str | None = None,
     ) -> None:
         self._require_identity(agent_id)
+        event_id = event_id or f"evt_{uuid.uuid4().hex}"
+        if event_id in self._enqueued_event_ids or (
+            self._event_spool is not None and self._event_spool.has(event_id)
+        ):
+            self._enqueue_pending_spool()
+            return
         with self._state_lock:
             self._event_sequence += 1
             sequence = self._event_sequence
-        event_id = f"evt_{uuid.uuid4().hex}"
         event = Event(
             protocol_version=2,
             event_id=event_id,
             session_id=session_id,
             agent_id=agent_id,
             event_type=event_type,
-            occurred_at=datetime.now(UTC),
+            occurred_at=occurred_at or datetime.now(UTC),
             sequence=sequence,
             payload=payload,
-            correlation_id=f"event_{session_id}",
+            correlation_id=correlation_id or f"event_{session_id}",
         )
         envelope = GatewayEnvelope(
             protocol_version=2,

@@ -52,4 +52,24 @@ export interface ExamSession {
   created_at: string;
   updated_at: string;
   activity_log: ActivityItem[];
+  security_events: SecurityEvent[];
+}
+
+export interface SecurityEvent {
+  event_id: string;
+  session_id: string;
+  agent_id: string;
+  event_type: string;
+  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  category: string;
+  action: string;
+  occurred_at: string;
+  source?: string | null;
+  process_name?: string | null;
+  pid?: number | null;
+  username?: string | null;
+  target?: string | null;
+  enforcement_result?: string | null;
+  recovery_status?: string | null;
+  payload: Record<string, unknown>;
 }

@@ -19,8 +19,11 @@ export const AlertPanel: React.FC<AlertPanelProps> = ({
   const failedWorkstations = wsList.filter((w) => w.status === 'FAILED');
 
   const totalAnomalies = warningWorkstations.length + failedWorkstations.length;
+  const securityAlerts = (session?.security_events || []).filter(
+    (event) => event.severity === 'WARNING' || event.severity === 'CRITICAL'
+  ).slice(0, 10);
 
-  if (totalAnomalies === 0) return null;
+  if (totalAnomalies === 0 && securityAlerts.length === 0) return null;
 
   return (
     <div className="p-4 sm:p-4.5 bg-warning-soft/50 border-2 border-warning/50 rounded shadow-xs space-y-3">
@@ -28,7 +31,7 @@ export const AlertPanel: React.FC<AlertPanelProps> = ({
         <div className="flex items-center gap-2 text-warning-dark">
           <ShieldAlert className="w-4 h-4 shrink-0 text-warning-dark" />
           <h3 className="font-sans font-bold text-xs uppercase tracking-wider">
-            Phát hiện {totalAnomalies} máy trạm cần chú ý ({failedWorkstations.length} lỗi, {warningWorkstations.length} cảnh báo)
+            Phát hiện {totalAnomalies} máy trạm và {securityAlerts.length} security event cần chú ý
           </h3>
         </div>
         <span className="text-[11px] text-text-muted font-sans">
@@ -37,6 +40,22 @@ export const AlertPanel: React.FC<AlertPanelProps> = ({
       </div>
 
       <div className="flex flex-wrap gap-2.5 pt-0.5">
+        {securityAlerts.map((event) => (
+          <button
+            key={event.event_id}
+            type="button"
+            onClick={() => onInspectWorkstation(event.agent_id)}
+            className="group flex items-center justify-between gap-3 px-3.5 py-2 rounded bg-surface border-2 border-warning/70 text-left"
+          >
+            <span className="font-mono text-xs font-bold">{event.agent_id}</span>
+            <span className="font-sans text-xs">
+              {event.username ? `${event.username} — ` : ''}
+              {event.process_name ? `${event.process_name} — ` : ''}
+              {event.category} — {event.enforcement_result || event.recovery_status || event.action}
+            </span>
+            <span className="text-[10px] font-bold">{event.severity}</span>
+          </button>
+        ))}
         {failedWorkstations.map((ws) => (
           <button
             key={ws.id}

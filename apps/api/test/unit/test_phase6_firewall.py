@@ -69,6 +69,53 @@ class MemoryFirewall:
         return all(self.rules.get(rule.name) == rule for rule in rules)
 
 
+class WindowsFirewallRunner:
+    """Stateful test double for netsh mutation and PowerShell exact reads."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], dict]] = []
+        self.rules: dict[str, dict] = {}
+
+    def __call__(self, arguments, **kwargs):
+        self.calls.append((arguments, kwargs))
+        if arguments[0] == "powershell.exe":
+            rule = self.rules.get(arguments[-1])
+            return subprocess.CompletedProcess(
+                arguments,
+                0 if rule is not None else 3,
+                stdout=json.dumps(rule) if rule is not None else "",
+                stderr="",
+            )
+
+        name = next((item[5:] for item in arguments if item.startswith("name=")), "")
+        if "show" in arguments:
+            return subprocess.CompletedProcess(
+                arguments,
+                0 if name in self.rules else 1,
+                stdout=name if name in self.rules else "",
+                stderr="",
+            )
+        if "delete" in arguments:
+            self.rules.pop(name, None)
+        if "add" in arguments:
+            values = {
+                key.casefold(): value
+                for item in arguments
+                if "=" in item
+                for key, value in [item.split("=", 1)]
+            }
+            self.rules[name] = {
+                "Name": name,
+                "Group": values["group"],
+                "Enabled": values["enable"].casefold() == "yes",
+                "Direction": values["dir"],
+                "Action": values["action"],
+                "Profile": values["profile"],
+                "RemoteAddress": [values["remoteip"]],
+            }
+        return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+
 def _enforcer(tmp_path: Path, firewall: MemoryFirewall):
     hosts = tmp_path / "hosts"
     hosts.write_text("127.0.0.1 localhost\n", encoding="utf-8")
@@ -151,32 +198,47 @@ def test_gateway_address_resolution_uses_trusted_config_and_supports_ipv6() -> N
 
 
 def test_windows_adapter_builds_argument_list_without_shell_or_raw_command() -> None:
-    calls = []
-    installed: set[str] = set()
-
-    def runner(arguments, **kwargs):
-        calls.append((arguments, kwargs))
-        name = next((item[5:] for item in arguments if item.startswith("name=")), "")
-        if "show" in arguments:
-            if name not in installed:
-                return subprocess.CompletedProcess(arguments, 1, stdout="", stderr="")
-            rule = planned[0]
-            output = f"{rule.name} Outbound Block {rule.remote_address}"
-            return subprocess.CompletedProcess(arguments, 0, stdout=output, stderr="")
-        if "add" in arguments:
-            installed.add(name)
-        return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
-
+    runner = WindowsFirewallRunner()
     adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
     planned = adapter.plan("SES-001", ["203.0.113.10"], [])
     adapter.reconcile(planned, ())
 
-    add_arguments, add_kwargs = next(item for item in calls if "add" in item[0])
+    add_arguments, add_kwargs = next(item for item in runner.calls if "add" in item[0])
     assert add_arguments[0] == "netsh"
     assert "dir=out" in add_arguments
     assert "action=block" in add_arguments
     assert "remoteip=203.0.113.10" in add_arguments
     assert "shell" not in add_kwargs
+    assert adapter.verify_rules(planned)
+
+
+@pytest.mark.parametrize(
+    ("field", "tampered_value"),
+    [
+        ("Group", "Other-Owner"),
+        ("Enabled", False),
+        ("Direction", "in"),
+        ("Action", "allow"),
+        ("Profile", "private"),
+        ("RemoteAddress", ["198.51.100.99"]),
+    ],
+)
+def test_windows_adapter_detects_and_repairs_tampered_owned_rule(
+    field: str, tampered_value: object
+) -> None:
+    runner = WindowsFirewallRunner()
+    adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
+    planned = adapter.plan("SES-001", ["203.0.113.10"], [])
+    adapter.reconcile(planned, ())
+    rule = planned[0]
+    runner.rules["School-Allow-DNS"] = {"external": True}
+
+    runner.rules[rule.name][field] = tampered_value
+
+    assert not adapter.verify_rules(planned)
+    adapter.reconcile(planned, (rule.name,))
+    assert adapter.verify_rules(planned)
+    assert runner.rules["School-Allow-DNS"] == {"external": True}
 
 
 def test_adapter_refuses_non_eecp_rule_removal_and_non_windows_invocation() -> None:

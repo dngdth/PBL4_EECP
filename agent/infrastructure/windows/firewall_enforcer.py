@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 import logging
 import socket
 import subprocess
@@ -172,23 +173,44 @@ class WindowsFirewallEnforcer:
                 )
 
     def _rule_matches(self, rule: FirewallRule) -> bool:
+        script = (
+            "$rule=Get-NetFirewallRule -Name $args[0] -ErrorAction SilentlyContinue;"
+            "if($null -eq $rule){exit 3};"
+            "$filter=$rule|Get-NetFirewallAddressFilter;"
+            "[PSCustomObject]@{Name=$rule.Name;Group=$rule.Group;"
+            "Enabled=$rule.Enabled.ToString();"
+            "Direction=$rule.Direction.ToString();Action=$rule.Action.ToString();"
+            "Profile=$rule.Profile.ToString();RemoteAddress=@($filter.RemoteAddress)}|"
+            "ConvertTo-Json -Compress"
+        )
         result = self._run(
             [
-                "netsh",
-                "advfirewall",
-                "firewall",
-                "show",
-                "rule",
-                f"name={rule.name}",
-                "verbose",
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+                rule.name,
             ]
         )
         if result.returncode != 0:
             return False
-        output = result.stdout.casefold()
-        return all(
-            value.casefold() in output
-            for value in (rule.name, rule.remote_address, "block", "out")
+        try:
+            value = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        remote = value.get("RemoteAddress", []) if isinstance(value, dict) else []
+        if isinstance(remote, str):
+            remote = [remote]
+        return bool(
+            isinstance(value, dict)
+            and value.get("Name") == rule.name
+            and value.get("Group") == rule.group
+            and str(value.get("Enabled", "")).casefold() == "true"
+            and str(value.get("Direction", "")).casefold() == rule.direction
+            and str(value.get("Action", "")).casefold() == rule.action
+            and str(value.get("Profile", "")).casefold() == rule.profiles
+            and rule.remote_address in remote
         )
 
     def _remove_rule(self, name: str) -> None:

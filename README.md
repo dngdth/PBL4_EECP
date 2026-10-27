@@ -81,6 +81,9 @@ Agent Service is installed separately under Windows SCM/LocalSystem; do not run
 the Client as Administrator to compensate for a missing Service. See
 [`docs/v2/final-demo-guide.md`](docs/v2/final-demo-guide.md).
 
+Enforce-mode process, Windows-session, and integrity event delivery is described in
+[`docs/v2/enforce-security-monitoring.md`](docs/v2/enforce-security-monitoring.md).
+
 ## Production-like Docker stack
 
 Copy `.env.example` to a protected local `.env`, replace every required secret and

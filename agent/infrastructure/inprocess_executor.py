@@ -61,6 +61,13 @@ class InProcessPrivilegedExecutor(PrivilegedExecutionPort):
                 return self._success(request)
 
             if request.operation == CommandType.HEALTH_CHECK:
+                health_error = getattr(self._enforcer, "health_error", None)
+                if health_error:
+                    return self._failure(
+                        request,
+                        ErrorCode.EXECUTION_FAILED,
+                        str(health_error)[:500],
+                    )
                 return self._success(request)
 
             return self._failure(

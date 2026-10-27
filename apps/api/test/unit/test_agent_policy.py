@@ -10,6 +10,7 @@ from agent.application.policy_commands import PolicyCommandProcessor
 from agent.infrastructure.policy_enforcement import (
     POLICY_MARKER_START,
     AuditPolicyEnforcer,
+    ProcessIdentity,
     WindowsPolicyEnforcer,
 )
 from agent.infrastructure.violation_monitor import (
@@ -287,13 +288,28 @@ def test_windows_enforcer_applies_reversible_controls(tmp_path: Path) -> None:
     hosts_path.write_text("127.0.0.1 localhost\n", encoding="utf-8")
     state_path = tmp_path / "policy-state.json"
     calls: list[list[str]] = []
+    denied_process = ProcessIdentity(
+        name="AnyDesk.exe",
+        pid=4242,
+        creation_time="20260928102031.000000+000",
+        username=r"LAB\student01",
+    )
+    running = [denied_process]
 
     def runner(arguments, **_kwargs):
         calls.append(arguments)
+        if arguments[:3] == ["taskkill", "/F", "/PID"]:
+            assert arguments[3] == str(denied_process.pid)
+            running.clear()
         stdout = "    Start    REG_DWORD    0x3" if arguments[:2] == ["reg", "query"] else ""
         return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
 
-    enforcer = WindowsPolicyEnforcer(state_path, hosts_path=hosts_path, runner=runner)
+    enforcer = WindowsPolicyEnforcer(
+        state_path,
+        hosts_path=hosts_path,
+        runner=runner,
+        process_provider=lambda: tuple(running),
+    )
 
     assert enforcer.apply(_payload()) == POLICY_HASH
     state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -301,7 +317,14 @@ def test_windows_enforcer_applies_reversible_controls(tmp_path: Path) -> None:
     assert state["usb_previous"] == 3
     assert POLICY_MARKER_START in hosts_path.read_text(encoding="utf-8")
     assert "chatgpt.com" in hosts_path.read_text(encoding="utf-8")
-    assert ["taskkill", "/F", "/IM", "anydesk.exe"] in calls
+    assert ["taskkill", "/F", "/PID", str(denied_process.pid)] in calls
+    assert state["observed_processes"] == [
+        {
+            "pid": denied_process.pid,
+            "creation_time": denied_process.creation_time,
+            "outcome": "TERMINATED",
+        }
+    ]
     assert any(call[:2] == ["reg", "add"] and "4" in call for call in calls)
 
     enforcer.restore()

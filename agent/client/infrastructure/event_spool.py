@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from contracts.v2 import Event, GatewayEnvelope, GatewayMessageType
@@ -46,6 +46,22 @@ class AgentEventSpool:
                 );
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(agent_events)").fetchall()
+            }
+            additions = {
+                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "next_attempt_at": "TEXT",
+                "last_error_code": "TEXT",
+                "last_error_message": "TEXT",
+                "updated_at": "TEXT",
+            }
+            for name, definition in additions.items():
+                if name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE agent_events ADD COLUMN {name} {definition}"
+                    )
             connection.commit()
 
     def record(self, envelope: GatewayEnvelope, *, now: datetime | None = None) -> bool:
@@ -63,9 +79,7 @@ class AgentEventSpool:
                 if existing["envelope_json"] != encoded:
                     raise ValueError("event_id collision with different event content")
                 return False
-            count = connection.execute(
-                "SELECT COUNT(*) FROM agent_events WHERE status = 'PENDING'"
-            ).fetchone()[0]
+            count = connection.execute("SELECT COUNT(*) FROM agent_events").fetchone()[0]
             if count >= self.max_rows:
                 raise EventSpoolFullError(
                     f"Agent event spool is full (capacity={self.max_rows})"
@@ -100,16 +114,20 @@ class AgentEventSpool:
             connection.commit()
             return True
 
-    def pending(self, limit: int = 100) -> list[GatewayEnvelope]:
+    def pending(
+        self, limit: int = 100, *, now: datetime | None = None
+    ) -> list[GatewayEnvelope]:
+        at = now or datetime.now(UTC)
         with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
                 """
                 SELECT envelope_json FROM agent_events
                  WHERE status = 'PENDING'
+                   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
                  ORDER BY sequence ASC, created_at ASC
                  LIMIT ?
                 """,
-                (limit,),
+                (at.isoformat(), limit),
             ).fetchall()
         return [GatewayEnvelope.model_validate_json(row["envelope_json"]) for row in rows]
 
@@ -122,11 +140,62 @@ class AgentEventSpool:
             connection.commit()
             return cursor.rowcount > 0
 
+    def reject(
+        self,
+        event_id: str,
+        *,
+        permanent: bool,
+        error_code: str,
+        error_message: str | None,
+        now: datetime | None = None,
+    ) -> bool:
+        at = now or datetime.now(UTC)
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT attempt_count FROM agent_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            attempts = int(row["attempt_count"] or 0) + 1
+            next_attempt = None
+            status = "QUARANTINED" if permanent else "PENDING"
+            if not permanent:
+                delay = min(300, 2 ** min(attempts, 8))
+                next_attempt = (at + timedelta(seconds=delay)).isoformat()
+            connection.execute(
+                """
+                UPDATE agent_events
+                   SET status = ?, attempt_count = ?, next_attempt_at = ?,
+                       last_error_code = ?, last_error_message = ?, updated_at = ?
+                 WHERE event_id = ?
+                """,
+                (
+                    status,
+                    attempts,
+                    next_attempt,
+                    error_code[:128],
+                    (error_message or "")[:500] or None,
+                    at.isoformat(),
+                    event_id,
+                ),
+            )
+            connection.commit()
+            return True
+
     def count(self) -> int:
         with self._lock, closing(self._connect()) as connection:
             return int(
                 connection.execute(
                     "SELECT COUNT(*) FROM agent_events WHERE status = 'PENDING'"
+                ).fetchone()[0]
+            )
+
+    def quarantined_count(self) -> int:
+        with self._lock, closing(self._connect()) as connection:
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM agent_events WHERE status = 'QUARANTINED'"
                 ).fetchone()[0]
             )
 

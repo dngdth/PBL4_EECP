@@ -21,13 +21,15 @@ from app.application.security import Permission
 from app.domain.entities.gateway import GatewayStatus
 from app.domain.entities.operations import Command as DomainCommand
 from app.domain.exceptions.errors import DomainError
-from app.domain.value_objects.enums import Severity
+from app.domain.value_objects.enums import SessionState, Severity
 from app.infrastructure.security import MachineCredentialRegistry
 from app.presentation.api.deps import authorize
 from contracts.v2 import (
     Ack,
     AckStatus,
     AgentHello,
+    AgentSessionState,
+    AgentSessionStateStatus,
     ApplyPolicyPayload,
     Command,
     CommandType,
@@ -232,6 +234,17 @@ async def _handle_gateway_message(
         )
         if realtime_hub is not None:
             await realtime_hub.publish_change(method="POST", path="/api/v1/agents")
+        state = _agent_session_state(container, hello.agent_id)
+        if state.status == AgentSessionStateStatus.ACTIVE:
+            return GatewayEnvelope(
+                protocol_version=2,
+                message_type=GatewayMessageType.AGENT_SESSION_STATE,
+                message_id=f"session-state_{hello.agent_id}",
+                correlation_id=f"session-state_{hello.agent_id}",
+                source_id="backend",
+                target_id=hello.agent_id,
+                payload=state.model_dump(mode="json", exclude_none=True),
+            )
         return
 
     if envelope.message_type == GatewayMessageType.DELIVERY_FAILURE:
@@ -361,6 +374,56 @@ async def _handle_gateway_message(
         )
 
     raise ValueError(f"unsupported gateway message: {envelope.message_type}")
+
+
+def _agent_session_state(container, agent_id: str) -> AgentSessionState:
+    with container.database.unit_of_work() as uow:
+        running = [
+            session
+            for session in uow.sessions.list_all()
+            if session.state == SessionState.RUNNING and agent_id in session.workstations
+        ]
+    if not running:
+        return AgentSessionState(
+            protocol_version=2,
+            agent_id=agent_id,
+            status=AgentSessionStateStatus.INACTIVE,
+            reason="Backend has no RUNNING session for Agent",
+        )
+    if len(running) != 1:
+        return AgentSessionState(
+            protocol_version=2,
+            agent_id=agent_id,
+            status=AgentSessionStateStatus.MISMATCH,
+            reason="Backend found multiple RUNNING sessions for Agent",
+        )
+    session = running[0]
+    workstation = session.workstations[agent_id]
+    if (
+        session.policy is None
+        or workstation.actual_policy_hash != session.policy.policy_hash
+    ):
+        return AgentSessionState(
+            protocol_version=2,
+            agent_id=agent_id,
+            status=AgentSessionStateStatus.MISMATCH,
+            reason="RUNNING session has no verified Agent policy acknowledgement",
+        )
+    policy = session.policy
+    return AgentSessionState(
+        protocol_version=2,
+        agent_id=agent_id,
+        status=AgentSessionStateStatus.ACTIVE,
+        session_id=session.id,
+        policy_hash=policy.policy_hash,
+        policy={
+            "format": "eecp-policy/v1",
+            "policy_hash": policy.policy_hash,
+            "version": policy.version,
+            "profile": policy.profile,
+            "rules": policy.rules,
+        },
+    )
 
 
 async def _route_pending_commands(gateway_id: str, container, registry) -> None:

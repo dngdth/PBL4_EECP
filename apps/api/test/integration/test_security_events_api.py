@@ -5,7 +5,10 @@ from pathlib import Path
 from app.application.security import Principal, Role
 from app.infrastructure.security import TokenService
 from app.main import create_app
+from app.presentation.api.routers.gateways import _agent_session_state
 from fastapi.testclient import TestClient
+
+from contracts.v2 import AgentSessionStateStatus
 
 AUTH_KEY = "security-event-api-test-key-at-least-32-bytes"
 
@@ -187,7 +190,118 @@ def test_security_events_reject_non_running_and_finished_sessions(tmp_path: Path
             occurred_at=datetime.now(UTC) - timedelta(seconds=5),
         )
 
-        assert late.status_code == 409
+        assert late.status_code == 422
+
+
+def test_late_privileged_event_is_accepted_without_reactivating_session(
+    tmp_path: Path,
+) -> None:
+    app = create_app(tmp_path / "late-event.db")
+    with TestClient(app) as client:
+        session_id = _running_session(client)
+        occurred_at = datetime.now(UTC)
+        assert client.patch(
+            f"/api/v1/sessions/{session_id}/status", json={"status": "FINISHED"}
+        ).status_code == 200
+
+        first = _post_event(
+            client,
+            session_id,
+            event_id="evt-late-valid",
+            event_type="ENFORCEMENT_ACTION",
+            severity="WARNING",
+            action="BLOCKED",
+            occurred_at=occurred_at,
+            payload={
+                "source": "privileged-service",
+                "process_name": "blocked.exe",
+                "pid": 42,
+            },
+        )
+        duplicate = _post_event(
+            client,
+            session_id,
+            event_id="evt-late-valid",
+            event_type="ENFORCEMENT_ACTION",
+            severity="WARNING",
+            action="BLOCKED",
+            occurred_at=occurred_at,
+            payload={
+                "source": "privileged-service",
+                "process_name": "blocked.exe",
+                "pid": 42,
+            },
+        )
+
+        assert first.status_code == duplicate.status_code == 202
+        events = client.get(f"/api/v1/sessions/{session_id}/security-events").json()
+        assert events["total"] == 1
+        assert events["items"][0]["payload"]["late_arrival"] is True
+        assert _agent_session_state(app.state.container, "PC01").status == (
+            AgentSessionStateStatus.INACTIVE
+        )
+
+
+def test_late_event_rejects_untrusted_source_collision_and_expired_grace(
+    tmp_path: Path,
+) -> None:
+    app = create_app(tmp_path / "late-event-reject.db")
+    with TestClient(app) as client:
+        session_id = _running_session(client)
+        occurred_at = datetime.now(UTC)
+        assert client.patch(
+            f"/api/v1/sessions/{session_id}/status", json={"status": "FINISHED"}
+        ).status_code == 200
+        session = app.state.container.pipeline_service.get_session(session_id)
+
+        untrusted = _post_event(
+            client,
+            session_id,
+            event_id="evt-untrusted",
+            event_type="ENFORCEMENT_ACTION",
+            severity="WARNING",
+            action="BLOCKED",
+            occurred_at=occurred_at,
+            payload={"source": "agent-user-process"},
+        )
+        accepted = _post_event(
+            client,
+            session_id,
+            event_id="evt-collision",
+            event_type="ENFORCEMENT_ACTION",
+            severity="WARNING",
+            action="BLOCKED",
+            occurred_at=occurred_at,
+            payload={"source": "privileged-service", "pid": 42},
+        )
+        collision = _post_event(
+            client,
+            session_id,
+            event_id="evt-collision",
+            event_type="ENFORCEMENT_ACTION",
+            severity="WARNING",
+            action="BLOCKED",
+            occurred_at=occurred_at,
+            payload={"source": "privileged-service", "pid": 99},
+        )
+        app.state.container.pipeline_service._clock = lambda: (
+            session.finished_at + timedelta(hours=25)
+        )
+        expired = _post_event(
+            client,
+            session_id,
+            event_id="evt-expired",
+            event_type="ENFORCEMENT_ACTION",
+            severity="WARNING",
+            action="BLOCKED",
+            occurred_at=occurred_at,
+            payload={"source": "privileged-service"},
+        )
+
+        assert untrusted.status_code == 422
+        assert accepted.status_code == 202
+        assert collision.status_code == 422
+        assert expired.status_code == 422
 
 
 def test_security_event_api_requires_auth_and_session_scope(tmp_path: Path) -> None:

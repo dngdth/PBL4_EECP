@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("Install", "Remove", "Start", "Stop", "Status")]
+    [ValidateSet("Install", "Remove", "Start", "Stop", "Restart", "Status")]
     [string]$Action = "Status",
     [string]$PythonExe = "python"
 )
@@ -17,5 +17,6 @@ switch ($Action) {
     "Remove" { & $PythonExe -m agent.service.main --scm remove }
     "Start" { & $PythonExe -m agent.service.main --scm start }
     "Stop" { & $PythonExe -m agent.service.main --scm stop }
+    "Restart" { & $PythonExe -m agent.service.main --scm restart }
     "Status" { Get-Service -Name $serviceName }
 }

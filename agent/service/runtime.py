@@ -64,7 +64,7 @@ class AgentServiceRuntime:
         self._lifecycle_lock = threading.Lock()
         self._maintenance_error: str | None = None
         self.security_journal = security_journal
-        self._session_snapshot: dict[int, str] = {}
+        self._session_snapshot: dict[int, tuple[str, str | None]] = {}
 
     @classmethod
     def build(
@@ -189,19 +189,21 @@ class AgentServiceRuntime:
         active_session_id = self.execution_service.active_session_id
         if active_session_id is None:
             if username:
-                self._session_snapshot[windows_session_id] = username
+                self._session_snapshot[windows_session_id] = (username, domain)
             return
-        normalized = (username or self._session_snapshot.get(windows_session_id) or "").strip()
+        previous = self._session_snapshot.get(windows_session_id)
+        normalized = (username or (previous[0] if previous else "")).strip()
+        normalized_domain = (domain or (previous[1] if previous else None) or "").strip() or None
         if not normalized or normalized.casefold() in {
             "system",
             "local service",
             "network service",
         }:
             return
-        if action == "LOGON" and self._session_snapshot.get(windows_session_id) == normalized:
+        if action == "LOGON" and previous is not None and previous[0] == normalized:
             return
         if action in {"LOGON", "UNLOCK", "REMOTE_CONNECT"}:
-            self._session_snapshot[windows_session_id] = normalized
+            self._session_snapshot[windows_session_id] = (normalized, normalized_domain)
         elif action == "LOGOFF":
             self._session_snapshot.pop(windows_session_id, None)
         self.security_journal.append(
@@ -215,18 +217,24 @@ class AgentServiceRuntime:
                 details={
                     "windows_session_id": windows_session_id,
                     "username": normalized,
-                    "domain": domain,
+                    "domain": normalized_domain,
                 },
             )
         )
 
-    def seed_session_snapshot(self, sessions: dict[int, str]) -> None:
+    def seed_session_snapshot(
+        self, sessions: dict[int, str | tuple[str, str | None]]
+    ) -> None:
         """Record startup state without representing it as a new logon event."""
-        self._session_snapshot = {
-            int(session_id): username.strip()
-            for session_id, username in sessions.items()
-            if username.strip()
-        }
+        snapshot: dict[int, tuple[str, str | None]] = {}
+        for session_id, identity in sessions.items():
+            username, domain = identity if isinstance(identity, tuple) else (identity, None)
+            if username.strip():
+                snapshot[int(session_id)] = (
+                    username.strip(),
+                    domain.strip() if domain and domain.strip() else None,
+                )
+        self._session_snapshot = snapshot
 
     def _maintenance_loop(self) -> None:
         while not self._stop_event.wait(self._maintenance_interval_seconds):

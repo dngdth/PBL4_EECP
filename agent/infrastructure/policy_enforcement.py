@@ -78,6 +78,8 @@ class WindowsPolicyEnforcer:
         firewall: FirewallEnforcer | None = None,
         event_sink: Callable[..., None] | None = None,
         process_provider: Callable[[], tuple[ProcessIdentity, ...]] | None = None,
+        process_identity_checker: Callable[[ProcessIdentity], bool] | None = None,
+        process_owner_provider: Callable[[int], str | None] | None = None,
     ):
         self._state_path = state_path
         self._hosts_path = hosts_path or (
@@ -91,6 +93,18 @@ class WindowsPolicyEnforcer:
         self._firewall = firewall or WindowsFirewallEnforcer(runner=runner)
         self._event_sink = event_sink
         self._process_provider = process_provider or self._windows_processes
+        self._process_identity_checker = process_identity_checker or (
+            self._windows_process_identity_exists
+            if process_provider is None
+            else lambda process: any(
+                candidate.pid == process.pid
+                and candidate.creation_time == process.creation_time
+                for candidate in self._process_provider()
+            )
+        )
+        self._process_owner_provider = process_owner_provider or (
+            self._windows_process_owner if process_provider is None else lambda _pid: None
+        )
         self._operation_lock = threading.RLock()
         self._seen_processes: set[tuple[int, str]] = set()
         self._process_outcomes: dict[tuple[int, str], str] = {}
@@ -377,6 +391,13 @@ class WindowsPolicyEnforcer:
             identity = (process.pid, process.creation_time)
             if process.name.casefold() not in denied:
                 continue
+            if process.username is None:
+                process = ProcessIdentity(
+                    name=process.name,
+                    pid=process.pid,
+                    creation_time=process.creation_time,
+                    username=self._process_owner_provider(process.pid),
+                )
             is_new = identity not in self._seen_processes
             if is_new:
                 self._seen_processes.add(identity)
@@ -391,11 +412,7 @@ class WindowsPolicyEnforcer:
                     username=process.username,
                     process_creation_time=process.creation_time,
                 )
-            confirmed = any(
-                candidate.pid == process.pid
-                and candidate.creation_time == process.creation_time
-                for candidate in self._process_provider()
-            )
+            confirmed = self._process_identity_checker(process)
             if not confirmed:
                 enforcement = ProcessEnforcementResult(
                     process=process,
@@ -425,11 +442,7 @@ class WindowsPolicyEnforcer:
                 text=True,
                 check=False,
             )
-            still_running = any(
-                candidate.pid == process.pid
-                and candidate.creation_time == process.creation_time
-                for candidate in self._process_provider()
-            )
+            still_running = self._process_identity_checker(process)
             if not still_running:
                 outcome = "TERMINATED" if result.returncode == 0 else "ALREADY_EXITED"
             else:
@@ -491,10 +504,8 @@ class WindowsPolicyEnforcer:
     def _windows_processes(self) -> tuple[ProcessIdentity, ...]:
         script = (
             "@(Get-CimInstance Win32_Process | ForEach-Object { "
-            "$owner=Invoke-CimMethod -InputObject $_ -MethodName GetOwner; "
             "[PSCustomObject]@{Name=$_.Name;Pid=$_.ProcessId;"
-            "CreationTime=$_.CreationDate;Username=if($owner.ReturnValue -eq 0)"
-            "{$owner.Domain+'\\'+$owner.User}else{$null}} }) | ConvertTo-Json -Compress"
+            "CreationTime=$_.CreationDate} }) | ConvertTo-Json -Compress"
         )
         result = self._runner(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
@@ -514,7 +525,7 @@ class WindowsPolicyEnforcer:
                 name=str(item["Name"]).lower(),
                 pid=int(item["Pid"]),
                 creation_time=str(item["CreationTime"]),
-                username=(str(item["Username"]) if item.get("Username") else None),
+                username=None,
             )
             for item in values
             if isinstance(item, dict)
@@ -522,6 +533,65 @@ class WindowsPolicyEnforcer:
             and item.get("Pid") is not None
             and item.get("CreationTime")
         )
+
+    def _windows_process_identity_exists(self, process: ProcessIdentity) -> bool:
+        script = (
+            "& { param([int]$ProcessId) "
+            "$process=Get-CimInstance Win32_Process -Filter "
+            "(\"ProcessId = $ProcessId\") -ErrorAction SilentlyContinue;"
+            "if($null -eq $process){exit 3};"
+            "[PSCustomObject]@{Pid=$process.ProcessId;CreationTime=$process.CreationDate}|"
+            "ConvertTo-Json -Compress }"
+        )
+        result = self._runner(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+                str(process.pid),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return False
+        try:
+            value = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return bool(
+            isinstance(value, dict)
+            and value.get("Pid") == process.pid
+            and str(value.get("CreationTime")) == process.creation_time
+        )
+
+    def _windows_process_owner(self, process_id: int) -> str | None:
+        script = (
+            "& { param([int]$ProcessId) "
+            "$process=Get-CimInstance Win32_Process -Filter "
+            "(\"ProcessId = $ProcessId\") -ErrorAction SilentlyContinue;"
+            "if($null -eq $process){exit 3};"
+            "$owner=Invoke-CimMethod -InputObject $process -MethodName GetOwner;"
+            "if($owner.ReturnValue -eq 0){$owner.Domain+'\\'+$owner.User} }"
+        )
+        result = self._runner(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+                str(process_id),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        owner = result.stdout.strip() if result.returncode == 0 else ""
+        return owner or None
 
     def _hosts_match(self, expected_domains: tuple[str, ...]) -> bool:
         content = self._read_hosts()

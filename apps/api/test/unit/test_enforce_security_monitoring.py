@@ -21,6 +21,19 @@ from agent.service.security_event_journal import (
     SecurityEventJournal,
     SecurityEventRecord,
 )
+from agent.service.windows_service import (
+    WTS_CONSOLE_CONNECT,
+    WTS_CONSOLE_DISCONNECT,
+    WTS_REMOTE_CONNECT,
+    WTS_REMOTE_DISCONNECT,
+    WTS_SESSION_LOCK,
+    WTS_SESSION_LOGOFF,
+    WTS_SESSION_LOGON,
+    WTS_SESSION_UNLOCK,
+    EECPWindowsService,
+    parse_windows_session_id,
+    session_action,
+)
 from contracts.v2 import Event, EventType
 
 NOW = datetime(2026, 10, 27, 3, 0, tzinfo=UTC)
@@ -183,6 +196,148 @@ def test_session_snapshot_and_service_accounts_do_not_create_events(tmp_path: Pa
     )
 
     assert journal.pending(session_id="SES-1") == ()
+
+
+def test_windows_service_entrypoint_and_wts_mapping_are_importable() -> None:
+    assert EECPWindowsService.__module__ == "agent.service.windows_service"
+    assert "<locals>" not in EECPWindowsService.__qualname__
+    assert EECPWindowsService._svc_name_ == "EECPAgentService"
+    assert session_action(WTS_CONSOLE_CONNECT) is None
+    assert session_action(WTS_CONSOLE_DISCONNECT) is None
+    assert {
+        session_action(WTS_SESSION_LOGON),
+        session_action(WTS_SESSION_LOGOFF),
+        session_action(WTS_SESSION_LOCK),
+        session_action(WTS_SESSION_UNLOCK),
+        session_action(WTS_REMOTE_CONNECT),
+        session_action(WTS_REMOTE_DISCONNECT),
+    } == {"LOGON", "LOGOFF", "LOCK", "UNLOCK", "REMOTE_CONNECT", "REMOTE_DISCONNECT"}
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (7, 7),
+        ((7,), 7),
+        ([7], 7),
+        ({"SessionId": 7}, 7),
+        ({"session_id": 7}, 7),
+        ((7, 8), None),
+        (("7",), None),
+        (-1, None),
+        (True, None),
+        (None, None),
+    ],
+)
+def test_windows_session_notification_data_is_parsed_safely(raw, expected) -> None:
+    assert parse_windows_session_id(raw) == expected
+
+
+def test_all_six_session_actions_use_snapshot_fallback_and_active_exam(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({"policy_hash": "a" * 64, "session_id": "SES-1"}),
+        encoding="utf-8",
+    )
+    journal = SecurityEventJournal(tmp_path / "session-events.db")
+    runtime = AgentServiceRuntime.build(
+        policy_mode="audit",
+        state_path=state_path,
+        service_version="test",
+        security_journal=journal,
+    )
+    runtime.seed_session_snapshot({7: ("student", "LAB")})
+
+    runtime.record_session_change(
+        action="LOCK", windows_session_id=7, username="student", domain="LAB"
+    )
+    runtime.record_session_change(
+        action="UNLOCK", windows_session_id=7, username="student", domain="LAB"
+    )
+    runtime.record_session_change(
+        action="REMOTE_CONNECT", windows_session_id=7, username="student", domain="LAB"
+    )
+    runtime.record_session_change(
+        action="REMOTE_DISCONNECT", windows_session_id=7, username="student", domain="LAB"
+    )
+    runtime.record_session_change(
+        action="LOGOFF", windows_session_id=7, username=None, domain=None
+    )
+    runtime.record_session_change(
+        action="LOGON", windows_session_id=8, username="student", domain="LAB"
+    )
+
+    events = [event for _sequence, event in journal.pending(session_id="SES-1")]
+    assert [event.action for event in events] == [
+        "LOCK",
+        "UNLOCK",
+        "REMOTE_CONNECT",
+        "REMOTE_DISCONNECT",
+        "LOGOFF",
+        "LOGON",
+    ]
+    assert events[4].details == {
+        "windows_session_id": 7,
+        "username": "student",
+        "domain": "LAB",
+    }
+
+
+def test_session_change_no_active_exam_seeds_snapshot_and_no_event(tmp_path: Path) -> None:
+    journal = SecurityEventJournal(tmp_path / "no-session.db")
+    runtime = AgentServiceRuntime.build(
+        policy_mode="audit",
+        state_path=tmp_path / "nonexistent-state.json",
+        service_version="test",
+        security_journal=journal,
+    )
+    # Session not RUNNING (active_session_id is None)
+    runtime.record_session_change(
+        action="LOGON", windows_session_id=10, username="student1", domain="LAB"
+    )
+    assert journal.pending(session_id="SES-NONE") == ()
+    assert runtime._session_snapshot.get(10) == ("student1", "LAB")
+
+
+def test_session_change_ignores_system_accounts_and_restart_duplicates(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({"policy_hash": "a" * 64, "session_id": "SES-1"}),
+        encoding="utf-8",
+    )
+    journal = SecurityEventJournal(tmp_path / "sys-accounts.db")
+    runtime = AgentServiceRuntime.build(
+        policy_mode="audit",
+        state_path=state_path,
+        service_version="test",
+        security_journal=journal,
+    )
+    # System accounts must not be journaled as student logon events
+    for sys_account in ("SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE"):
+        runtime.record_session_change(
+            action="LOGON", windows_session_id=1, username=sys_account, domain="NT AUTHORITY"
+        )
+    assert journal.pending(session_id="SES-1") == ()
+
+    # Seed startup snapshot
+    runtime.seed_session_snapshot({10: ("student1", "LAB")})
+    # Receiving LOGON for the already logged in student after service restart must be ignored
+    runtime.record_session_change(
+        action="LOGON", windows_session_id=10, username="student1", domain="LAB"
+    )
+    assert journal.pending(session_id="SES-1") == ()
+
+
+def test_windows_service_cli_choices_include_restart() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--scm",
+        choices=("install", "remove", "start", "stop", "restart", "debug"),
+    )
+    args = parser.parse_args(["--scm", "restart"])
+    assert args.scm == "restart"
 
 
 def test_journal_persists_pages_and_ack_is_session_bound(tmp_path: Path) -> None:

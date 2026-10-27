@@ -174,14 +174,15 @@ class WindowsFirewallEnforcer:
 
     def _rule_matches(self, rule: FirewallRule) -> bool:
         script = (
-            "$rule=Get-NetFirewallRule -Name $args[0] -ErrorAction SilentlyContinue;"
+            "& { param([string]$RuleName) "
+            "$rule=Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue;"
             "if($null -eq $rule){exit 3};"
             "$filter=$rule|Get-NetFirewallAddressFilter;"
             "[PSCustomObject]@{Name=$rule.Name;Group=$rule.Group;"
             "Enabled=$rule.Enabled.ToString();"
             "Direction=$rule.Direction.ToString();Action=$rule.Action.ToString();"
             "Profile=$rule.Profile.ToString();RemoteAddress=@($filter.RemoteAddress)}|"
-            "ConvertTo-Json -Compress"
+            "ConvertTo-Json -Compress }"
         )
         result = self._run(
             [
@@ -202,14 +203,33 @@ class WindowsFirewallEnforcer:
         remote = value.get("RemoteAddress", []) if isinstance(value, dict) else []
         if isinstance(remote, str):
             remote = [remote]
+        direction = str(value.get("Direction", "")).casefold()
+        expected_dir = rule.direction.casefold()
+        direction_matches = (
+            direction == expected_dir
+            or (expected_dir in {"out", "outbound"} and direction in {"out", "outbound"})
+            or (expected_dir in {"in", "inbound"} and direction in {"in", "inbound"})
+        )
+        profile = str(value.get("Profile", "")).casefold()
+        expected_profile = rule.profiles.casefold()
+        profile_matches = (
+            profile == expected_profile
+            or (
+                expected_profile == "any"
+                and (
+                    profile == "any"
+                    or ("public" in profile and "private" in profile and "domain" in profile)
+                )
+            )
+        )
         return bool(
             isinstance(value, dict)
             and value.get("Name") == rule.name
             and value.get("Group") == rule.group
             and str(value.get("Enabled", "")).casefold() == "true"
-            and str(value.get("Direction", "")).casefold() == rule.direction
-            and str(value.get("Action", "")).casefold() == rule.action
-            and str(value.get("Profile", "")).casefold() == rule.profiles
+            and direction_matches
+            and str(value.get("Action", "")).casefold() == rule.action.casefold()
+            and profile_matches
             and rule.remote_address in remote
         )
 

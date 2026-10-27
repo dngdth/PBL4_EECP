@@ -12,6 +12,7 @@ from apps.gateway.app.application.ports import (
 from contracts.v2 import (
     Ack,
     AgentHello,
+    AgentSessionState,
     Command,
     DeliveryFailure,
     Event,
@@ -147,6 +148,19 @@ class GatewayRouter:
             if envelope.source_id != "backend" or envelope.target_id != self._gateway_id:
                 raise ValueError("Event receipt identity does not match Gateway")
             await self._event_flusher.handle_receipt(envelope)
+            return
+        if envelope.message_type == GatewayMessageType.AGENT_SESSION_STATE:
+            state = AgentSessionState.model_validate(envelope.payload)
+            if (
+                envelope.source_id != "backend"
+                or envelope.target_id != state.agent_id
+            ):
+                raise ValueError("Agent session state identity does not match envelope")
+            delivered = await self._connections.send(
+                state.agent_id, envelope.to_json()
+            )
+            if not delivered:
+                raise ValueError("Agent session state target is not connected")
             return
         if envelope.message_type != GatewayMessageType.COMMAND:
             raise ValueError("backend message type is not routable")

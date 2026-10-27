@@ -21,12 +21,19 @@ class GatewayMessageType(StrEnum):
     ERROR = "ERROR"
     EVENT_RECEIPT = "EVENT_RECEIPT"
     SECURITY_AUDIT = "SECURITY_AUDIT"
+    AGENT_SESSION_STATE = "AGENT_SESSION_STATE"
 
 
 class EventReceiptStatus(StrEnum):
     ACCEPTED = "ACCEPTED"
     ALREADY_PROCESSED = "ALREADY_PROCESSED"
     REJECTED = "REJECTED"
+
+
+class AgentSessionStateStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"
+    MISMATCH = "MISMATCH"
 
 
 class GatewayEnvelope(VersionedContract):
@@ -66,6 +73,36 @@ class AgentHello(VersionedContract):
     hostname: OpaqueId
     ip_address: OpaqueId
     agent_version: OpaqueId
+
+
+class AgentSessionState(VersionedContract):
+    """Backend-authoritative session state sent after an Agent reconnects."""
+
+    agent_id: OpaqueId
+    status: AgentSessionStateStatus
+    session_id: OpaqueId | None = None
+    policy_hash: OpaqueId | None = None
+    policy: JsonObject | None = None
+    reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_state(self) -> AgentSessionState:
+        values = (self.session_id, self.policy_hash, self.policy)
+        if self.status == AgentSessionStateStatus.ACTIVE and any(
+            value is None for value in values
+        ):
+            raise ValueError("active Agent session state requires session and policy")
+        if (
+            self.status == AgentSessionStateStatus.ACTIVE
+            and self.policy is not None
+            and self.policy.get("policy_hash") != self.policy_hash
+        ):
+            raise ValueError("Agent session policy hash does not match state")
+        if self.status != AgentSessionStateStatus.ACTIVE and any(
+            value is not None for value in values
+        ):
+            raise ValueError("inactive Agent session state cannot include policy")
+        return self
 
 
 class DeliveryFailure(VersionedContract):

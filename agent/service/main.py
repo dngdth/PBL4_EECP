@@ -111,7 +111,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument(
         "--scm",
-        choices=("install", "remove", "start", "stop", "debug"),
+        choices=("install", "remove", "start", "stop", "restart", "debug"),
         help="manage the optional pywin32 Windows Service wrapper",
     )
     args = parser.parse_args(argv)

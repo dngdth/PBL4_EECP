@@ -15,7 +15,9 @@ export interface RequestOptions extends RequestInit {
 export async function apiClient<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
   const { timeout = API_CONFIG.DEFAULT_TIMEOUT_MS, params, headers, ...customConfig } = options;
 
-  let url = `${API_CONFIG.BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
+  let url = endpoint.startsWith('/api/')
+    ? endpoint
+    : `${API_CONFIG.BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
 
   if (params) {
     const searchParams = new URLSearchParams();
@@ -37,6 +39,8 @@ export async function apiClient<T>(endpoint: string, options: RequestOptions = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
   };
+  const accessToken = sessionStorage.getItem('eecp_access_token');
+  if (accessToken) defaultHeaders.Authorization = `Bearer ${accessToken}`;
 
   try {
     const response = await fetch(url, {

@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.domain.value_objects.enums import (
     AgentStatus,
     SessionState,
     Severity,
 )
+from contracts.v2.policy import PolicyRules
 
 
 class ApiModel(BaseModel):
@@ -42,6 +43,17 @@ class DeployPolicyRequest(ApiModel):
     rules: dict[str, Any]
     actor: str = Field(default="teacher", min_length=1)
 
+    @field_validator("rules")
+    @classmethod
+    def validate_rules(cls, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError("policy rules must be an object")
+        try:
+            PolicyRules.model_validate(value)
+        except (ValueError, ValidationError) as exc:
+            raise ValueError(f"invalid policy rules: {exc}") from exc
+        return value
+
 
 class PreflightCheckRequest(ApiModel):
     name: str = Field(min_length=1)
@@ -53,6 +65,17 @@ class PreflightCheckRequest(ApiModel):
 class SubmitPreflightRequest(ApiModel):
     checks: list[PreflightCheckRequest] = Field(min_length=1)
     actor: str = Field(default="agent", min_length=1)
+
+
+class RequestPreflightRequest(ApiModel):
+    actor: str = Field(default="teacher", min_length=1)
+
+
+class PreflightHealthCheckView(ApiModel):
+    command_id: str
+    session_id: str
+    workstation_id: str
+    status: str
 
 
 class StartSessionRequest(ApiModel):
@@ -74,11 +97,41 @@ class TelemetryRequest(ApiModel):
     destination: str | None = None
     correlation_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+    event_id: str | None = Field(default=None, min_length=1, max_length=255)
+    occurred_at: datetime | None = None
 
 
 class TelemetryAcceptedView(ApiModel):
     event_id: str
     incident_id: str | None
+
+
+class SecurityEventView(ApiModel):
+    event_id: str
+    session_id: str
+    agent_id: str
+    event_type: str
+    severity: Severity
+    category: str
+    action: str
+    destination: str | None
+    correlation_id: str | None
+    occurred_at: datetime
+    source: str | None = None
+    process_name: str | None = None
+    pid: int | None = None
+    username: str | None = None
+    target: str | None = None
+    enforcement_result: str | None = None
+    recovery_status: str | None = None
+    payload: dict[str, Any]
+
+
+class SecurityEventPage(ApiModel):
+    items: list[SecurityEventView]
+    total: int
+    offset: int
+    limit: int
 
 
 class SessionView(ApiModel):
@@ -104,16 +157,22 @@ class AssignedAgentView(ApiModel):
     id: str
     hostname: str | None
     ip_address: str | None
+    agent_version: str | None = None
     status: AgentStatus | None
     last_seen: datetime | None
     assigned_at: datetime | None
     policy_status: str
+    presence_health: str | None = None
+    service_health: str | None = None
+    active_policy_hash: str | None = None
+    gateway_id: str | None = None
 
 
 class PolicyViolationView(ApiModel):
     workstation_id: str
     destination: str | None
     category: str
+    action: str
     occurred_at: datetime
 
 

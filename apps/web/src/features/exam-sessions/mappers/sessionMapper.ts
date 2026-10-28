@@ -9,34 +9,53 @@ import {
 /**
  * Maps an AssignedAgentView from Backend management API into a Workstation entity for UI.
  */
-function mapAgentToWorkstation(agent: any): Workstation {
+function mapAgentToWorkstation(agent: any, sessionWorkstation?: any): Workstation {
   const isOnline = agent.status === 'ONLINE';
-  const isApplied = agent.policy_status === 'APPLIED' || agent.policy_status === 'RESTORED';
   const isFailed = agent.policy_status === 'FAILED';
 
   const status: Workstation['status'] = isFailed ? 'FAILED' : isOnline ? 'READY' : 'PENDING';
-  const preflight_status: Workstation['preflight_status'] = isFailed
+  const readiness = sessionWorkstation?.readiness;
+  const preflight_status: Workstation['preflight_status'] = isFailed || readiness === 'FAILED'
     ? 'FAILED'
-    : isApplied
-    ? 'PASSED'
-    : isOnline
-    ? 'PASSED'
-    : 'PENDING';
+    : readiness === 'READY'
+      ? 'PASSED'
+      : readiness === 'WARNING'
+        ? 'WARNING'
+        : 'PENDING';
+  const checks = Array.isArray(sessionWorkstation?.preflight_checks)
+    ? sessionWorkstation.preflight_checks
+    : [];
+  const checkPassed = (...names: string[]) => {
+    const match = checks.find((check: any) => names.includes(check.name));
+    return match ? Boolean(match.passed) : false;
+  };
+  const preflight_details = checks.length
+    ? {
+        os_lockdown: checkPassed('os_lockdown', 'exam_app', 'kiosk_mode'),
+        network_firewall: checkPassed('network_firewall', 'dns_policy', 'policy_compliant'),
+        agent_health: checkPassed('agent_health', 'agent_online'),
+        peripheral_check: checkPassed('peripheral_check', 'display_peripherals'),
+        notes: checks
+          .filter((check: any) => check.details)
+          .map((check: any) => check.details)
+          .join('; ') || undefined,
+      }
+    : undefined;
 
   return {
     id: agent.id,
-    ip: agent.ip_address || '127.0.0.1',
+    ip: agent.ip_address || 'unknown',
     status,
     preflight_status,
-    preflight_details: {
-      os_lockdown: isApplied,
-      network_firewall: isApplied,
-      agent_health: isOnline,
-      peripheral_check: true,
-      notes: agent.policy_status ? `Chính sách: ${agent.policy_status}` : undefined,
-    },
-    last_heartbeat: agent.last_seen || new Date().toISOString(),
-    agent_version: agent.agent_version || 'v1.0.0',
+    preflight_details,
+    last_heartbeat: agent.last_seen || '',
+    agent_version: agent.agent_version || 'unknown',
+    gateway_id: agent.gateway_id || null,
+    service_health: agent.service_health || null,
+    active_policy_hash: agent.active_policy_hash || null,
+    actual_policy_hash: sessionWorkstation?.actual_policy_hash || null,
+    desired_policy_hash: sessionWorkstation?.desired_policy_hash || null,
+    policy_compliant: Boolean(sessionWorkstation?.policy_compliant),
   };
 }
 
@@ -51,11 +70,15 @@ function mapLegacyWorkstations(workstationsDict: Record<string, any>): Workstati
 
     return {
       id: wsId,
-      ip: '127.0.0.1',
+      ip: 'unknown',
       status: readiness === 'READY' ? 'READY' : readiness === 'WARNING' ? 'WARNING' : 'FAILED',
-      preflight_status: passedAll ? 'PASSED' : 'FAILED',
-      last_heartbeat: new Date().toISOString(),
-      agent_version: 'v1.0.0',
+      preflight_status: checks.length ? (passedAll ? 'PASSED' : 'FAILED') : 'PENDING',
+      last_heartbeat: '',
+      agent_version: 'unknown',
+      active_policy_hash: null,
+      actual_policy_hash: val?.actual_policy_hash || null,
+      desired_policy_hash: val?.desired_policy_hash || null,
+      policy_compliant: Boolean(val?.policy_compliant),
     };
   });
 }
@@ -67,13 +90,34 @@ function mapPolicy(rawPolicy: any): PolicyConfig | undefined {
   if (!rawPolicy || typeof rawPolicy !== 'object') return undefined;
 
   const rules = rawPolicy.rules || {};
+  const network = rules.network || {};
+  const devices = rules.devices || {};
+  const applications = rules.applications || {};
+
+  const blockedCategories = network.block || network.blocked_categories || [];
+  const networkLockdown =
+    network.network_lockdown ??
+    rawPolicy.network_lockdown ??
+    (Array.isArray(blockedCategories) && blockedCategories.length > 0);
+
+  const usbBlocked =
+    rules.usb_storage_blocked ??
+    devices.usb_storage_blocked ??
+    (devices.usb ? devices.usb === 'deny' : devices.usb_storage === 'deny') ??
+    true;
+
+  const deniedProcesses = Array.isArray(applications.deny) ? applications.deny : [];
+  // strict_mode is active only if denylist is non-empty
+  const strictMode = deniedProcesses.length > 0;
+
   return {
     policy_id: rawPolicy.policy_hash || rawPolicy.policy_id || 'pol-default',
     name: rawPolicy.profile || rawPolicy.name || 'Chính sách tiêu chuẩn',
-    strict_mode: rules.network?.strict_mode ?? rawPolicy.strict_mode ?? true,
-    network_lockdown: rules.network?.network_lockdown ?? rawPolicy.network_lockdown ?? true,
-    usb_storage_blocked: rules.usb_storage_blocked ?? (rules.devices?.usb === 'deny') ?? true,
-    allowed_processes: rules.applications?.allow || rawPolicy.allowed_processes || ['exam-browser.exe'],
+    strict_mode: strictMode,
+    network_lockdown: networkLockdown,
+    usb_storage_blocked: usbBlocked,
+    allowed_processes: applications.allow || rawPolicy.allowed_processes || ['exam-browser.exe'],
+    denied_processes: deniedProcesses,
     deployed_at: rawPolicy.deployed_at,
   };
 }
@@ -82,20 +126,44 @@ function mapPolicy(rawPolicy: any): PolicyConfig | undefined {
  * Extracts and synthesizes timeline activity logs from violations and lifecycle timestamps.
  */
 function mapActivityLog(raw: any): ActivityItem[] {
-  if (Array.isArray(raw.activity_log) && raw.activity_log.length > 0) {
-    return raw.activity_log;
-  }
+  const logs: ActivityItem[] = Array.isArray(raw.activity_log)
+    ? [...raw.activity_log]
+    : [];
 
-  const logs: ActivityItem[] = [];
+  if (Array.isArray(raw.security_events)) {
+    raw.security_events.forEach((event: any) => {
+      const actor = event.username ? ` — ${event.username}` : '';
+      const process = event.process_name
+        ? ` — ${event.process_name}${event.pid ? ` (PID ${event.pid})` : ''}`
+        : '';
+      const result = event.enforcement_result || event.recovery_status || event.action;
+      logs.push({
+        id: event.event_id,
+        timestamp: event.occurred_at || '',
+        level:
+          event.severity === 'CRITICAL'
+            ? 'ERROR'
+            : event.severity === 'WARNING'
+              ? 'WARNING'
+              : 'INFO',
+        message: `${event.agent_id}${actor}${process} — ${event.category} — ${result}`,
+        source: event.source || 'AGENT_SERVICE',
+        details: { payload: event.payload },
+      });
+    });
+  }
 
   // 1. Violations from Backend PolicyViolationView
   if (Array.isArray(raw.violations)) {
     raw.violations.forEach((v: any, idx: number) => {
+      const isObserved = v.action === 'OBSERVED';
       logs.push({
         id: `act-viol-${idx}`,
-        timestamp: v.occurred_at || new Date().toISOString(),
+        timestamp: v.occurred_at || '',
         level: 'WARNING',
-        message: `Máy ${v.workstation_id} vi phạm: ${v.category}${v.destination ? ` -> ${v.destination}` : ''}`,
+        message: isObserved
+          ? `Audit DNS trên máy ${v.workstation_id} quan sát thấy tên miền bị cấm${v.destination ? `: ${v.destination}` : ''}`
+          : `Máy ${v.workstation_id} bị chặn truy cập${v.destination ? `: ${v.destination}` : ''}`,
         source: 'AGENT',
       });
     });
@@ -132,7 +200,7 @@ function mapActivityLog(raw: any): ActivityItem[] {
     });
   }
 
-  return logs;
+  return logs.sort((left, right) => right.timestamp.localeCompare(left.timestamp));
 }
 
 /**
@@ -145,7 +213,9 @@ export function normalizeSession(raw: any): ExamSession {
   // Extract workstations: prefer raw.agents (Management API), then raw.workstations
   let workstations: Workstation[] = [];
   if (Array.isArray(raw.agents) && raw.agents.length > 0) {
-    workstations = raw.agents.map(mapAgentToWorkstation);
+    workstations = raw.agents.map((agent: any) =>
+      mapAgentToWorkstation(agent, raw.workstations?.[agent.id])
+    );
   } else if (Array.isArray(raw.workstations)) {
     workstations = raw.workstations;
   } else if (raw.workstations && typeof raw.workstations === 'object') {
@@ -161,13 +231,15 @@ export function normalizeSession(raw: any): ExamSession {
     room: raw.room || raw.room_id || 'Chưa chỉ định',
     room_id: raw.room || raw.room_id || 'Chưa chỉ định',
     gateway_id: raw.gateway_id ?? null,
+    gateway_policy_hash: raw.gateway_policy_hash ?? null,
     status,
     workstations,
     agents: Array.isArray(raw.agents) ? raw.agents : undefined,
     agent_count: raw.agent_count ?? (Array.isArray(raw.agents) ? raw.agents.length : workstations.length),
     policy: mapPolicy(raw.policy),
     activity_log: mapActivityLog(raw),
-    created_at: raw.created_at || new Date().toISOString(),
-    updated_at: raw.updated_at || new Date().toISOString(),
+    security_events: Array.isArray(raw.security_events) ? raw.security_events : [],
+    created_at: raw.created_at || '',
+    updated_at: raw.updated_at || '',
   };
 }

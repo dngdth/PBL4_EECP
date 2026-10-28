@@ -1,0 +1,12 @@
+{
+  "protocol_version": 2,
+  "command_id": "cmd-health-1",
+  "command_type": "HEALTH_CHECK",
+  "target_id": "PC01",
+  "session_id": "ses-1",
+  "issued_at": "2026-09-28T10:20:31Z",
+  "deadline": "2026-09-28T10:21:31Z",
+  "policy_hash": null,
+  "payload": {"nonce": "health-1"},
+  "correlation_id": "corr-3"
+}

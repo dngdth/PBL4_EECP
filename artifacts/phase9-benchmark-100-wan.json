@@ -1,0 +1,71 @@
+{
+  "configuration": {
+    "agents": 100,
+    "events_per_agent": 1,
+    "scenarios": [
+      "wan"
+    ]
+  },
+  "environment": {
+    "backend": "Protocol v2 benchmark peer (no PostgreSQL/Redis in timed path)",
+    "gateway": "in-process uvicorn using production Gateway components",
+    "tls": false,
+    "transport": "real loopback WebSocket"
+  },
+  "format": "eecp-phase9-benchmark/v1",
+  "results": [
+    {
+      "acks_received": 0,
+      "agents": 100,
+      "commands_sent": 0,
+      "duration_seconds": 0.629,
+      "event_loss": 0,
+      "events_accepted": 0,
+      "events_sent": 0,
+      "failed_connections": 0,
+      "flush_seconds": null,
+      "gateway_python_peak_mib": null,
+      "logical_duplicates": 0,
+      "messages_received": 0,
+      "messages_sent": 0,
+      "notes": [],
+      "p50_ms": 577.889,
+      "p95_ms": 624.365,
+      "p99_ms": 627.631,
+      "peak_backlog": 0,
+      "queue_saturation_count": 0,
+      "scenario": "connections",
+      "successful_connections": 100,
+      "throughput_per_second": 158.977,
+      "wrong_target_count": 0
+    },
+    {
+      "acks_received": 0,
+      "agents": 100,
+      "commands_sent": 0,
+      "duration_seconds": 99.694,
+      "event_loss": 0,
+      "events_accepted": 100,
+      "events_sent": 100,
+      "failed_connections": 0,
+      "flush_seconds": 95.588,
+      "gateway_python_peak_mib": null,
+      "logical_duplicates": 0,
+      "messages_received": 0,
+      "messages_sent": 0,
+      "notes": [
+        "at-least-once duplicate deliveries deduplicated: 2"
+      ],
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "peak_backlog": 100,
+      "queue_saturation_count": 0,
+      "scenario": "wan",
+      "successful_connections": 0,
+      "throughput_per_second": 1.003,
+      "wrong_target_count": 0
+    }
+  ],
+  "started_at": "2026-09-28T16:03:22.062358Z"
+}

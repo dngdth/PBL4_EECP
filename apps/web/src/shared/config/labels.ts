@@ -17,6 +17,10 @@ export const WORKSTATION_STATUS_LABELS: Record<WorkstationStatus, string> = {
   WARNING: 'Cảnh báo',
   FAILED: 'Lỗi',
   PENDING: 'Đang chờ',
+  ONLINE: 'Online',
+  DEGRADED: 'Degraded',
+  OFFLINE: 'Offline',
+  UNKNOWN: 'Unknown',
 };
 
 export const PREFLIGHT_STATUS_LABELS: Record<PreflightStatus, string> = {
@@ -24,6 +28,7 @@ export const PREFLIGHT_STATUS_LABELS: Record<PreflightStatus, string> = {
   WARNING: 'Cảnh báo',
   FAILED: 'Lỗi',
   PENDING: 'Đang chờ',
+  UNKNOWN: 'Unknown',
 };
 
 export const UI_LABELS = {
@@ -75,9 +80,16 @@ export const UI_LABELS = {
     title: 'CHÍNH SÁCH BẢO MẬT',
     network: 'Mạng',
     usb: 'USB',
-    strict: 'Nghiêm ngặt',
-    acknowledged: 'Đã xác nhận',
-    dispatching: 'Đang gửi',
+    strict: 'Chặn app cấm',
+    blockedWeb: 'Chặn web cấm',
+    blockedApps: 'Chặn app cấm',
+    blockUsb: 'Chặn USB lưu trữ',
+    queued: 'Lệnh trong hàng đợi (QUEUED)',
+    awaitingAck: 'Đang phát lệnh & chờ xác nhận (AWAITING ACK)',
+    ackSucceeded: 'Đã xác nhận & thực thi (ACK SUCCEEDED)',
+    degraded: 'Cảnh báo / Lỗi chính sách',
+    acknowledged: 'Đã xác nhận & thực thi',
+    dispatching: 'Đang gửi lệnh',
     notDeployed: 'Chưa triển khai',
     details: 'Chi tiết →',
     hideDetails: 'Ẩn chi tiết',
@@ -87,6 +99,7 @@ export const UI_LABELS = {
     targetGateway: 'Gateway đích',
     policyHash: 'Mã băm chính sách (Hash)',
     allowedProcesses: 'Tiến trình cho phép',
+    deniedProcesses: 'Tiến trình cấm tự động tắt',
     lastAck: 'Xác nhận lần cuối',
   },
   workstations: {

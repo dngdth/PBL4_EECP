@@ -1,0 +1,22 @@
+{
+  "protocol_version": 2,
+  "policy_id": "INTERNET_NO_AI",
+  "policy_version": 1,
+  "policy_hash": "ae93cd20cf6d57da96425807a77f4ddf6570f746a3a4a361f05fd8992787045c",
+  "session_id": "ses-1",
+  "issued_at": "2026-09-28T10:20:31Z",
+  "expires_at": "2026-09-28T12:20:31Z",
+  "rules": {
+    "applications": {
+      "allow": ["vscode.exe"],
+      "deny": ["anydesk.exe"]
+    },
+    "network": {
+      "block": ["generative_ai"]
+    },
+    "devices": {
+      "usb": "deny"
+    }
+  },
+  "signature": null
+}

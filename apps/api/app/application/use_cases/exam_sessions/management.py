@@ -107,6 +107,7 @@ class CreateExamSession:
                             id=agent.id,
                             hostname=agent.hostname,
                             ip_address=agent.ip_address,
+                            agent_version=agent.agent_version,
                             status=agent.status,
                             last_seen=agent.last_seen,
                             assigned_at=at,
@@ -256,6 +257,7 @@ def _build_details(
                     id=agent_id,
                     hostname=None,
                     ip_address=None,
+                    agent_version=None,
                     status=None,
                     last_seen=None,
                     assigned_at=assigned_at,
@@ -271,10 +273,12 @@ def _build_details(
             workstation_id=event.workstation_id,
             destination=event.destination,
             category=event.category,
+            action=event.action,
             occurred_at=event.occurred_at,
         )
         for event in reversed(uow.telemetry.list_for_session(session.id))
-        if event.event_type == "POLICY_VIOLATION" and event.action == "BLOCKED"
+        if event.event_type == "POLICY_VIOLATION"
+        and event.action in {"BLOCKED", "OBSERVED"}
     ][:10]
     return ExamSessionDetails(session=session, agents=agents, violations=violations)
 
@@ -293,6 +297,7 @@ def _agent_details(
         id=agent.id,
         hostname=agent.hostname,
         ip_address=agent.ip_address,
+        agent_version=agent.agent_version,
         status=agent.status,
         last_seen=agent.last_seen,
         assigned_at=assigned_at,

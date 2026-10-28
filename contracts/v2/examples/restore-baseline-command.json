@@ -1,0 +1,12 @@
+{
+  "protocol_version": 2,
+  "command_id": "cmd-restore-1",
+  "command_type": "RESTORE_BASELINE",
+  "target_id": "PC01",
+  "session_id": "ses-1",
+  "issued_at": "2026-09-28T10:20:31Z",
+  "deadline": "2026-09-28T10:21:31Z",
+  "policy_hash": "ae93cd20cf6d57da96425807a77f4ddf6570f746a3a4a361f05fd8992787045c",
+  "payload": {"baseline": "NORMAL"},
+  "correlation_id": "corr-2"
+}

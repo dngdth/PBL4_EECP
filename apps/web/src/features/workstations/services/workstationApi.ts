@@ -12,6 +12,11 @@ export async function listAgents(): Promise<Agent[]> {
     status: (a.status || 'OFFLINE') as Agent['status'],
     last_seen: a.last_seen || null,
     agent_version: a.agent_version || null,
+    presence_health: a.presence_health || null,
+    service_health: a.service_health || null,
+    active_policy_hash: a.active_policy_hash || null,
+    gateway_id: a.gateway_id || null,
+    latest_incident: a.latest_incident || null,
   }));
 }
 
@@ -37,33 +42,24 @@ export async function retryWorkstationPreflight(
   sessionId: string,
   workstationId: string
 ): Promise<{ message: string; workstation: Workstation; session: ExamSession }> {
-  const defaultChecks = [
-    { name: 'os_lockdown', passed: true, critical: true, details: 'OS Lockdown verified' },
-    { name: 'network_firewall', passed: true, critical: true, details: 'Network firewall rules applied' },
-    { name: 'agent_health', passed: true, critical: true, details: 'Agent process healthy' },
-    { name: 'peripheral_check', passed: true, critical: false, details: 'Peripherals verified' },
-  ];
-
-  const raw = await apiClient<any>(
-    `/sessions/${sessionId}/workstations/${workstationId}/preflight`,
+  const queued = await apiClient<{ command_id: string }>(
+    `/sessions/${sessionId}/workstations/${encodeURIComponent(workstationId)}/preflight/retry`,
     {
       method: 'POST',
-      body: JSON.stringify({ checks: defaultChecks, actor: 'agent' }),
+      body: JSON.stringify({ actor: 'dashboard' }),
     }
   );
 
+  // The command ACK is asynchronous. The session page keeps polling and will
+  // pick up the resulting operational state without the Dashboard attesting it.
+  const raw = await apiClient<any>(`/sessions/${sessionId}`);
+
   const session = normalizeSession(raw);
-  const workstation = session.workstations.find((w) => w.id === workstationId) || {
-    id: workstationId,
-    ip: '127.0.0.1',
-    status: 'READY',
-    preflight_status: 'PASSED',
-    last_heartbeat: new Date().toISOString(),
-    agent_version: 'v1.0.0',
-  };
+  const workstation = session.workstations.find((w) => w.id === workstationId);
+  if (!workstation) throw new Error(`Backend did not return workstation ${workstationId}`);
 
   return {
-    message: `Máy trạm ${workstationId} đã vượt qua kiểm tra tiền kiểm.`,
+    message: `Đã gửi HEALTH_CHECK ${queued.command_id} tới ${workstationId}.`,
     workstation,
     session,
   };

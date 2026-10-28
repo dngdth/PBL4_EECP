@@ -1,5 +1,5 @@
 import { Workstation, Agent } from './workstation';
-import { PolicyConfig } from './security-policy';
+import { PolicyConfig, PolicyRules } from './security-policy';
 import { ActivityItem } from './activity';
 
 export type SessionStatus =
@@ -27,10 +27,14 @@ export interface CreateSessionRequest {
 export interface DeployPolicyRequest {
   profile?: string;
   policy_name?: string;
+  /** Legacy flag: toggles applications.deny list termination. NOT Kiosk Mode. */
   strict_mode?: boolean;
+  /** Legacy flag: toggles network.block category rules. */
   network_lockdown?: boolean;
   usb_storage_blocked?: boolean;
   allowed_processes?: string[];
+  denied_processes?: string[];
+  rules?: PolicyRules;
 }
 
 export interface ExamSession {
@@ -39,6 +43,7 @@ export interface ExamSession {
   room: string;
   room_id: string;
   gateway_id: string | null;
+  gateway_policy_hash?: string | null;
   status: SessionStatus;
   workstations: Workstation[];
   agents?: Agent[];
@@ -47,4 +52,24 @@ export interface ExamSession {
   created_at: string;
   updated_at: string;
   activity_log: ActivityItem[];
+  security_events: SecurityEvent[];
+}
+
+export interface SecurityEvent {
+  event_id: string;
+  session_id: string;
+  agent_id: string;
+  event_type: string;
+  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  category: string;
+  action: string;
+  occurred_at: string;
+  source?: string | null;
+  process_name?: string | null;
+  pid?: number | null;
+  username?: string | null;
+  target?: string | null;
+  enforcement_result?: string | null;
+  recovery_status?: string | null;
+  payload: Record<string, unknown>;
 }

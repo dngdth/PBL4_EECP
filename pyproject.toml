@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "EECP monorepo workspace"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic>=2.11,<3.0",
+    "websockets>=15,<18",
+]
 
 [dependency-groups]
 dev = [
@@ -18,7 +21,7 @@ dev = [
 package = false
 
 [tool.uv.workspace]
-members = ["apps/api"]
+members = ["apps/api", "apps/gateway"]
 
 [tool.pytest.ini_options]
 testpaths = ["apps/api/test"]

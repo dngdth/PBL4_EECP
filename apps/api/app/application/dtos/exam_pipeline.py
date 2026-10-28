@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from app.domain.entities.exam_session import PreflightCheck
@@ -31,6 +32,13 @@ class SubmitPreflightInput:
 
 
 @dataclass(frozen=True, slots=True)
+class RequestPreflightInput:
+    session_id: str
+    workstation_id: str
+    actor: str = "teacher"
+
+
+@dataclass(frozen=True, slots=True)
 class StartSessionInput:
     session_id: str
     actor: str
@@ -49,3 +57,5 @@ class TelemetryInput:
     destination: str | None = None
     correlation_id: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
+    event_id: str | None = None
+    occurred_at: datetime | None = None

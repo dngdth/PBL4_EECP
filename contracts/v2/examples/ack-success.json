@@ -1,0 +1,12 @@
+{
+  "protocol_version": 2,
+  "ack_id": "ack-1",
+  "command_id": "cmd-apply-1",
+  "status": "SUCCEEDED",
+  "applied_hash": "ae93cd20cf6d57da96425807a77f4ddf6570f746a3a4a361f05fd8992787045c",
+  "service_version": "1.1.0",
+  "error_code": null,
+  "error_message": null,
+  "occurred_at": "2026-09-28T10:20:35Z",
+  "correlation_id": "corr-1"
+}

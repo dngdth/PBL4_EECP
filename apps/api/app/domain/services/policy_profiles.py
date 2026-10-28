@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ipaddress
 import re
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
 from app.domain.exceptions.errors import PolicyValidationError
+from contracts.v2.policy import validate_hostname
 
 DEFAULT_POLICY_PROFILE = "INTERNET_NO_AI"
 
@@ -110,12 +112,32 @@ def _normalize_rules(value: dict[str, Any]) -> dict[str, Any]:
 
     if "network" in value:
         network = _mapping(value["network"], "network")
-        unknown = sorted(set(network) - {"block"})
+        unknown = sorted(
+            set(network)
+            - {
+                "block",
+                "blocked_domains",
+                "blocked_ips",
+                "blocked_cidrs",
+            }
+        )
         if unknown:
             raise PolicyValidationError(f"unknown network rules: {', '.join(unknown)}")
-        normalized["network"] = {
+        normalized_network = {
             "block": _string_list(network.get("block", []), "network.block")
         }
+        for field in ("blocked_domains", "blocked_ips", "blocked_cidrs"):
+            if field in network:
+                if field == "blocked_domains":
+                    values = _domain_list(network[field], f"network.{field}")
+                else:
+                    values = _string_list(network[field], f"network.{field}")
+                    if field == "blocked_ips":
+                        values = _ip_list(values)
+                    elif field == "blocked_cidrs":
+                        values = _cidr_list(values)
+                normalized_network[field] = values
+        normalized["network"] = normalized_network
 
     if "devices" in value:
         devices = _mapping(value["devices"], "devices")
@@ -145,6 +167,37 @@ def _string_list(value: Any, field: str) -> list[str]:
     if len(normalized) != len(set(normalized)):
         raise PolicyValidationError(f"{field} values must be unique")
     return normalized
+
+
+def _domain_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise PolicyValidationError(f"{field} must be a list of strings")
+    if any(not item for item in value):
+        raise PolicyValidationError(f"{field} cannot contain empty values")
+    if len(value) != len(set(value)):
+        raise PolicyValidationError(f"{field} values must be unique")
+    normalized = []
+    for item in value:
+        try:
+            validate_hostname(item, field=field)
+        except ValueError as exc:
+            raise PolicyValidationError(f"invalid {field} value: {exc}") from exc
+        normalized.append(item.lower())
+    return normalized
+
+
+def _ip_list(values: list[str]) -> list[str]:
+    try:
+        return [str(ipaddress.ip_address(value)) for value in values]
+    except ValueError as exc:
+        raise PolicyValidationError(f"invalid blocked IP address: {exc}") from exc
+
+
+def _cidr_list(values: list[str]) -> list[str]:
+    try:
+        return [str(ipaddress.ip_network(value, strict=True)) for value in values]
+    except ValueError as exc:
+        raise PolicyValidationError(f"invalid blocked CIDR network: {exc}") from exc
 
 
 BUILT_IN_POLICY_PROFILES = PolicyProfileCatalog(

@@ -1,6 +1,23 @@
-export type WorkstationStatus = 'READY' | 'WARNING' | 'FAILED' | 'PENDING';
+export type WorkstationStatus =
+  | 'READY'
+  | 'WARNING'
+  | 'FAILED'
+  | 'PENDING'
+  | 'ONLINE'
+  | 'DEGRADED'
+  | 'OFFLINE'
+  | 'UNKNOWN';
 
-export type PreflightStatus = 'PASSED' | 'WARNING' | 'FAILED' | 'PENDING';
+export type PreflightStatus = 'PASSED' | 'WARNING' | 'FAILED' | 'PENDING' | 'UNKNOWN';
+
+export interface LatestIncident {
+  id: string;
+  session_id: string;
+  category: string;
+  severity: string;
+  status: string;
+  created_at: string;
+}
 
 export interface PreflightDetails {
   os_lockdown: boolean;
@@ -18,9 +35,20 @@ export interface Workstation {
   preflight_details?: PreflightDetails;
   last_heartbeat: string;
   agent_version: string;
+  gateway_id?: string | null;
+  service_health?: 'HEALTHY' | 'DEGRADED' | 'UNAVAILABLE' | null;
+  /** Hash reported by Agent via Presence/heartbeat. Does NOT prove session command ACK. */
+  active_policy_hash?: string | null;
+  /** Actual policy hash recorded by Backend after valid command ACK. */
+  actual_policy_hash?: string | null;
+  /** Desired policy hash for this session. */
+  desired_policy_hash?: string | null;
+  /** Whether the workstation has successfully acknowledged the desired policy. */
+  policy_compliant?: boolean;
+  latest_incident?: LatestIncident | null;
 }
 
-export type AgentOnlineStatus = 'ONLINE' | 'OFFLINE';
+export type AgentOnlineStatus = 'ONLINE' | 'DEGRADED' | 'OFFLINE';
 
 export interface Agent {
   id: string;
@@ -29,4 +57,9 @@ export interface Agent {
   status?: AgentOnlineStatus | null;
   last_seen?: string | null;
   agent_version?: string | null;
+  presence_health?: AgentOnlineStatus | null;
+  service_health?: 'HEALTHY' | 'DEGRADED' | 'UNAVAILABLE' | null;
+  active_policy_hash?: string | null;
+  gateway_id?: string | null;
+  latest_incident?: LatestIncident | null;
 }

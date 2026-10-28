@@ -6,8 +6,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from agent.domain.policy import parse_policy_payload
-from agent.infrastructure.policy_enforcement import CATEGORY_DOMAINS
+from agent.domain.policy import CATEGORY_DOMAINS, parse_policy_payload
 
 REPORT_DEBOUNCE_SECONDS = 15.0
 CAPTURE_BYTES = 16_384
@@ -47,7 +46,7 @@ class BlockedDomainMonitor:
             domain
             for category in specification.blocked_categories
             for domain in CATEGORY_DOMAINS[category]
-        }
+        } | set(specification.blocked_domains)
         with self._lock:
             if (
                 self._session_id == session_id

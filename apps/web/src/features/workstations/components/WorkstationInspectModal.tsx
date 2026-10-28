@@ -36,7 +36,7 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
     setFeedback(null);
     try {
       const res = await retryWorkstationPreflight(sessionId, workstation.id);
-      setFeedback('Kiểm tra tiền kiểm lại hoàn tất thành công.');
+      setFeedback(res.message);
       onWorkstationUpdated?.(res.session);
     } catch (err: any) {
       setFeedback(`Kiểm tra lại thất bại: ${err.message}`);
@@ -77,6 +77,33 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
               <PreflightStatusBadge status={workstation.preflight_status} size="md" />
             </div>
           </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+          <div className="border border-border rounded-sm p-2">
+            <span className="text-text-muted">Gateway</span>
+            <div className="font-mono mt-1">{workstation.gateway_id || 'Không có dữ liệu'}</div>
+          </div>
+          <div className="border border-border rounded-sm p-2">
+            <span className="text-text-muted">Agent Service</span>
+            <div className="font-mono mt-1">{workstation.service_health || 'Không có dữ liệu'}</div>
+          </div>
+          <div className="border border-border rounded-sm p-2 min-w-0">
+            <span className="text-text-muted">Policy hash</span>
+            <div className="font-mono mt-1 truncate" title={workstation.active_policy_hash || ''}>
+              {workstation.active_policy_hash || 'Không có dữ liệu'}
+            </div>
+          </div>
+        </div>
+
+        <div className="border border-border rounded-sm p-3 text-xs">
+          <span className="text-text-muted">Latest incident</span>
+          {workstation.latest_incident ? (
+            <div className="mt-1 space-y-1">
+              <div className="font-mono">{workstation.latest_incident.category} / {workstation.latest_incident.severity}</div>
+              <div className="text-text-muted">{workstation.latest_incident.status} / {formatDateTime(workstation.latest_incident.created_at)}</div>
+            </div>
+          ) : <div className="mt-1 text-text-muted">Unavailable</div>}
         </div>
 
         {/* Diagnostic Spec Items */}
@@ -138,17 +165,17 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
                   <p className="text-xs text-text-muted font-sans mt-0.5">Nhịp tim Agent và giám sát tiến trình</p>
                 </div>
               </div>
-              {workstation.status === 'OFFLINE' ? (
+              {workstation.status === 'OFFLINE' || workstation.service_health === 'UNAVAILABLE' ? (
                 <span className="text-error font-bold text-xs flex items-center gap-1">
                   <XCircle className="w-4 h-4" /> Mất kết nối (Ngoại tuyến)
+                </span>
+              ) : details?.agent_health || workstation.service_health === 'HEALTHY' ? (
+                <span className="text-success-dark font-bold text-xs flex items-center gap-1">
+                  <CheckCircle2 className="w-4 h-4" /> Hoạt động tốt
                 </span>
               ) : !details ? (
                 <span className="text-text-muted font-bold text-xs flex items-center gap-1">
                   <Clock className="w-4 h-4" /> Đang chờ tiền kiểm
-                </span>
-              ) : details.agent_health ? (
-                <span className="text-success-dark font-bold text-xs flex items-center gap-1">
-                  <CheckCircle2 className="w-4 h-4" /> Hoạt động tốt
                 </span>
               ) : (
                 <span className="text-error font-bold text-xs flex items-center gap-1">

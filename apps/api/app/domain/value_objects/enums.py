@@ -28,6 +28,7 @@ class Readiness(StrEnum):
 class CommandType(StrEnum):
     APPLY_POLICY = "APPLY_POLICY"
     RESTORE_BASELINE = "RESTORE_BASELINE"
+    HEALTH_CHECK = "HEALTH_CHECK"
 
 
 class CommandStatus(StrEnum):

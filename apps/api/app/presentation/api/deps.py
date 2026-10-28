@@ -1,7 +1,8 @@
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request, status
 
+from app.application.security import AuthorizationDeniedError, Permission
 from app.application.use_cases.agents.management import (
     HeartbeatAgent,
     ListAgents,
@@ -20,6 +21,7 @@ from app.application.use_cases.policies.management import (
     DeletePolicyProfile,
     GetPendingCommands,
     ListPolicyProfiles,
+    ListTargetCommands,
     UpdatePolicyProfile,
 )
 
@@ -77,6 +79,10 @@ def get_list_policy_profiles(request: Request) -> ListPolicyProfiles:
     return request.app.state.container.list_policy_profiles
 
 
+def get_list_target_commands(request: Request) -> ListTargetCommands:
+    return request.app.state.container.list_target_commands
+
+
 def get_pending_commands(request: Request) -> GetPendingCommands:
     return request.app.state.container.get_pending_commands
 
@@ -109,9 +115,47 @@ UpdatePolicyProfileUseCase = Annotated[
 DeletePolicyProfileUseCase = Annotated[
     DeletePolicyProfile, Depends(get_delete_policy_profile)
 ]
+ListTargetCommandsUseCase = Annotated[
+    ListTargetCommands, Depends(get_list_target_commands)
+]
 GetPendingCommandsUseCase = Annotated[
     GetPendingCommands, Depends(get_pending_commands)
 ]
 AcknowledgeCommandUseCase = Annotated[
     AcknowledgeCommand, Depends(get_acknowledge_command)
 ]
+
+
+def authorize(
+    request: Request,
+    permission: Permission,
+    *,
+    session_id: str | None = None,
+    session_state: str | None = None,
+) -> None:
+    if request.app.state.settings.environment != "production-like":
+        return
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "authentication required")
+    try:
+        request.app.state.authorization.require(
+            principal,
+            permission,
+            session_id=session_id,
+            session_state=session_state,
+        )
+    except AuthorizationDeniedError as exc:
+        request.app.state.container.security_audit.record(
+            action="AUTHORIZATION_DENIED",
+            actor=principal.subject,
+            actor_type=principal.role.value,
+            resource_type="SESSION" if session_id else "API_RESOURCE",
+            resource_id=session_id or permission.value,
+            reason_code=str(exc).upper().replace(" ", "_")[:128],
+            # A denied request must not require the target session to exist and
+            # must not attach an out-of-scope resource to its per-session chain.
+            session_id=None,
+            correlation_id=request.headers.get("x-correlation-id"),
+        )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc

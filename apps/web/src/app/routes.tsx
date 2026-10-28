@@ -8,11 +8,20 @@ import { SessionDetailPage } from '@/src/pages/SessionDetailPage';
 
 import { PolicyProfilesPage } from '@/src/pages/PolicyProfilesPage';
 import { WorkstationsPage } from '@/src/pages/WorkstationsPage';
+import { LoginPage } from '@/src/pages/LoginPage';
+import { GatewaysPage } from '@/src/pages/GatewaysPage';
+
+const RequireAuthentication: React.FC<{ children: React.ReactNode }> = ({ children }) =>
+  sessionStorage.getItem('eecp_access_token') ? children : <Navigate to="/login" replace />;
 
 export const router = createBrowserRouter([
   {
+    path: '/login',
+    element: <LoginPage />,
+  },
+  {
     path: '/',
-    element: <AppLayout />,
+    element: <RequireAuthentication><AppLayout /></RequireAuthentication>,
     children: [
       {
         index: true,
@@ -33,6 +42,10 @@ export const router = createBrowserRouter([
       {
         path: 'sessions/:sessionId',
         element: <SessionDetailPage />,
+      },
+      {
+        path: 'gateways',
+        element: <GatewaysPage />,
       },
       {
         path: 'workstations',

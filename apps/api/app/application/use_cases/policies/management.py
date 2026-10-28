@@ -94,6 +94,15 @@ class DeletePolicyProfile:
             uow.commit()
 
 
+class ListTargetCommands:
+    def __init__(self, uow_factory: UnitOfWorkFactory):
+        self._uow_factory = uow_factory
+
+    def __call__(self, target_id: str) -> list[Command]:
+        with self._uow_factory() as uow:
+            return uow.commands.list_for_target(target_id.strip())
+
+
 class GetPendingCommands:
     def __init__(self, uow_factory: UnitOfWorkFactory, clock: Clock = utc_now):
         self._uow_factory = uow_factory
@@ -127,6 +136,12 @@ class AcknowledgeCommand:
         timed_out = False
         with self._uow_factory() as uow:
             command = uow.commands.get(data.command_id.strip())
+            if not data.actor or data.actor.strip() != command.target_id.strip():
+                raise PolicyValidationError(
+                    f"command target {command.target_id} does not match actor {data.actor}"
+                )
+            if command.status == CommandStatus.PENDING and data.auto_deliver:
+                command.deliver(at)
             if command.status != CommandStatus.DELIVERED:
                 raise InvalidStateTransitionError(
                     "command is not awaiting acknowledgement"
@@ -145,21 +160,29 @@ class AcknowledgeCommand:
                     self._record_failure(session, command, data.error)
                     uow.sessions.save(session)
                     uow.commands.save(command)
+                    verification_failure = _policy_verification_failure(data.error)
                     uow.audits.append(
                         session.id,
                         actor=data.actor,
-                        action="COMMAND_FAILED",
+                        action=(
+                            "POLICY_VERIFICATION_FAILED"
+                            if verification_failure
+                            else "COMMAND_FAILED"
+                        ),
                         target=command.target_id,
                         details={
                             "command_id": command.id,
                             "type": command.type,
                             "error": command.error,
+                            "decision": "DENY" if verification_failure else "FAILED",
+                            "reason_code": verification_failure,
                         },
                     )
                     uow.commit()
                     return session
 
                 command.status = CommandStatus.ACKNOWLEDGED
+                command.error = None
                 self._record_success(session, command, data.policy_hash)
                 uow.sessions.save(session)
                 uow.commands.save(command)
@@ -234,6 +257,15 @@ def _record_timeout(
             "attempt_count": command.attempt_count,
         },
     )
+
+
+def _policy_verification_failure(error: str | None) -> str | None:
+    normalized = (error or "").lower()
+    if "signature" in normalized:
+        return "INVALID_POLICY_SIGNATURE"
+    if "policy has expired" in normalized or "policy expired" in normalized:
+        return "POLICY_EXPIRED"
+    return None
 
 
 def _profile_details(profile: PolicyProfileDefinition) -> PolicyProfileDetails:

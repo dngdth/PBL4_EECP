@@ -7,6 +7,7 @@ from datetime import datetime
 
 from app.domain.entities.agent import Agent
 from app.domain.entities.exam_session import ExamSession
+from app.domain.entities.gateway import AgentGatewayBinding, Gateway, GatewayStatus
 from app.domain.entities.operations import AuditEvent, Command, Incident, TelemetryEvent
 from app.domain.entities.session_workstation import SessionWorkstation
 from app.domain.exceptions.errors import ConcurrencyError, EntityNotFoundError
@@ -94,6 +95,127 @@ class SqliteAgentRepository:
             agent_version=row["agent_version"],
             last_seen=datetime.fromisoformat(row["last_seen"]),
             created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteGatewayRepository:
+    def __init__(self, connection: sqlite3.Connection):
+        self._connection = connection
+
+    def add(self, gateway: Gateway) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO gateways(
+                id, room_id, status, version, last_seen, created_at,
+                connected_agent_count, backend_uplink_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            self._values(gateway),
+        )
+
+    def get(self, gateway_id: str) -> Gateway:
+        gateway = self.find(gateway_id)
+        if gateway is None:
+            raise EntityNotFoundError(f"gateway not found: {gateway_id}")
+        return gateway
+
+    def find(self, gateway_id: str) -> Gateway | None:
+        row = self._connection.execute(
+            "SELECT * FROM gateways WHERE id = ?", (gateway_id,)
+        ).fetchone()
+        return self._from_row(row) if row is not None else None
+
+    def save(self, gateway: Gateway) -> None:
+        cursor = self._connection.execute(
+            """
+            UPDATE gateways
+               SET room_id = ?, status = ?, version = ?, last_seen = ?, created_at = ?,
+                   connected_agent_count = ?, backend_uplink_status = ?
+             WHERE id = ?
+            """,
+            (
+                gateway.room_id,
+                gateway.status.value,
+                gateway.version,
+                gateway.last_seen.isoformat(),
+                gateway.created_at.isoformat(),
+                gateway.connected_agent_count,
+                gateway.backend_uplink_status.value,
+                gateway.id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise EntityNotFoundError(f"gateway not found: {gateway.id}")
+
+    def list_all(self) -> list[Gateway]:
+        rows = self._connection.execute("SELECT * FROM gateways ORDER BY id").fetchall()
+        return [self._from_row(row) for row in rows]
+
+    @staticmethod
+    def _values(gateway: Gateway) -> tuple:
+        return (
+            gateway.id,
+            gateway.room_id,
+            gateway.status.value,
+            gateway.version,
+            gateway.last_seen.isoformat(),
+            gateway.created_at.isoformat(),
+            gateway.connected_agent_count,
+            gateway.backend_uplink_status.value,
+        )
+
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> Gateway:
+        return Gateway(
+            id=row["id"],
+            room_id=row["room_id"],
+            status=GatewayStatus(row["status"]),
+            version=row["version"],
+            last_seen=datetime.fromisoformat(row["last_seen"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            connected_agent_count=row["connected_agent_count"],
+            backend_uplink_status=GatewayStatus(row["backend_uplink_status"]),
+        )
+
+
+class SqliteAgentGatewayBindingRepository:
+    def __init__(self, connection: sqlite3.Connection):
+        self._connection = connection
+
+    def bind(self, binding: AgentGatewayBinding) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO agent_gateway_bindings(agent_id, gateway_id, bound_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(agent_id) DO UPDATE SET
+                gateway_id = excluded.gateway_id,
+                bound_at = excluded.bound_at
+            """,
+            (binding.agent_id, binding.gateway_id, binding.bound_at.isoformat()),
+        )
+
+    def find_for_agent(self, agent_id: str) -> AgentGatewayBinding | None:
+        row = self._connection.execute(
+            "SELECT * FROM agent_gateway_bindings WHERE agent_id = ?", (agent_id,)
+        ).fetchone()
+        return self._from_row(row) if row is not None else None
+
+    def list_for_gateway(self, gateway_id: str) -> list[AgentGatewayBinding]:
+        rows = self._connection.execute(
+            """
+            SELECT * FROM agent_gateway_bindings
+             WHERE gateway_id = ? ORDER BY agent_id
+            """,
+            (gateway_id,),
+        ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> AgentGatewayBinding:
+        return AgentGatewayBinding(
+            agent_id=row["agent_id"],
+            gateway_id=row["gateway_id"],
+            bound_at=datetime.fromisoformat(row["bound_at"]),
         )
 
 
@@ -261,6 +383,34 @@ class SqliteCommandRepository:
         ).fetchall()
         return [self._from_row(row) for row in rows]
 
+    def list_for_target(
+        self, target_id: str, *, active_only: bool = True
+    ) -> list[Command]:
+        if active_only:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM commands
+                 WHERE target_id = ?
+                   AND status IN (?, ?)
+                 ORDER BY created_at, id
+                """,
+                (
+                    target_id,
+                    CommandStatus.PENDING.value,
+                    CommandStatus.DELIVERED.value,
+                ),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM commands
+                 WHERE target_id = ?
+                 ORDER BY created_at, id
+                """,
+                (target_id,),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
     @staticmethod
     def _values(command: Command) -> tuple:
         return (
@@ -404,6 +554,26 @@ class SqliteTelemetryRepository:
             ),
         )
 
+    def find(self, event_id: str) -> TelemetryEvent | None:
+        row = self._connection.execute(
+            "SELECT * FROM telemetry_events WHERE id = ?", (event_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return TelemetryEvent(
+            id=row["id"],
+            session_id=row["session_id"],
+            workstation_id=row["workstation_id"],
+            event_type=row["event_type"],
+            severity=Severity(row["severity"]),
+            category=row["category"],
+            action=row["action"],
+            destination=row["destination"],
+            correlation_id=row["correlation_id"],
+            payload=json.loads(row["payload"]),
+            occurred_at=datetime.fromisoformat(row["occurred_at"]),
+        )
+
     def list_for_session(self, session_id: str) -> list[TelemetryEvent]:
         rows = self._connection.execute(
             "SELECT * FROM telemetry_events WHERE session_id = ? ORDER BY occurred_at, id",
@@ -478,15 +648,9 @@ class SqliteAuditRepository:
         self._connection = connection
 
     def append(
-        self, session_id: str, actor: str, action: str, target: str, details: dict
+        self, session_id: str | None, actor: str, action: str, target: str, details: dict
     ) -> AuditEvent:
-        previous = self._connection.execute(
-            """
-            SELECT chain_hash FROM audit_events
-             WHERE session_id = ? ORDER BY sequence DESC LIMIT 1
-            """,
-            (session_id,),
-        ).fetchone()
+        previous = self._last_for_scope(session_id)
         previous_hash = previous["chain_hash"] if previous else self.GENESIS_HASH
         occurred_at = utc_now()
         payload = {
@@ -528,11 +692,16 @@ class SqliteAuditRepository:
         )
         return event
 
-    def list_for_session(self, session_id: str) -> list[AuditEvent]:
-        rows = self._connection.execute(
-            "SELECT * FROM audit_events WHERE session_id = ? ORDER BY sequence",
-            (session_id,),
-        ).fetchall()
+    def list_for_session(self, session_id: str | None) -> list[AuditEvent]:
+        if session_id is None:
+            rows = self._connection.execute(
+                "SELECT * FROM audit_events WHERE session_id IS NULL ORDER BY sequence"
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM audit_events WHERE session_id = ? ORDER BY sequence",
+                (session_id,),
+            ).fetchall()
         return [
             AuditEvent(
                 id=row["id"],
@@ -548,7 +717,7 @@ class SqliteAuditRepository:
             for row in rows
         ]
 
-    def verify_chain(self, session_id: str) -> bool:
+    def verify_chain(self, session_id: str | None) -> bool:
         previous_hash = self.GENESIS_HASH
         for event in self.list_for_session(session_id):
             if event.previous_hash != previous_hash:
@@ -566,6 +735,18 @@ class SqliteAuditRepository:
             previous_hash = event.chain_hash
         return True
 
+    def _last_for_scope(self, session_id: str | None):
+        if session_id is None:
+            return self._connection.execute(
+                "SELECT chain_hash FROM audit_events WHERE session_id IS NULL "
+                "ORDER BY sequence DESC LIMIT 1"
+            ).fetchone()
+        return self._connection.execute(
+            "SELECT chain_hash FROM audit_events WHERE session_id = ? "
+            "ORDER BY sequence DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+
 
 class SqliteUnitOfWork:
     def __init__(self, database: SqliteDatabase):
@@ -576,6 +757,10 @@ class SqliteUnitOfWork:
         self._connection = self._database.connect()
         self._connection.execute("BEGIN IMMEDIATE")
         self.agents = SqliteAgentRepository(self._connection)
+        self.gateways = SqliteGatewayRepository(self._connection)
+        self.agent_gateway_bindings = SqliteAgentGatewayBindingRepository(
+            self._connection
+        )
         self.sessions = SqliteSessionRepository(self._connection)
         self.session_workstations = SqliteSessionWorkstationRepository(self._connection)
         self.commands = SqliteCommandRepository(self._connection)

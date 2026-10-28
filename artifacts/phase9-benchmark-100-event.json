@@ -1,0 +1,69 @@
+{
+  "configuration": {
+    "agents": 100,
+    "events_per_agent": 1,
+    "scenarios": [
+      "event"
+    ]
+  },
+  "environment": {
+    "backend": "Protocol v2 benchmark peer (no PostgreSQL/Redis in timed path)",
+    "gateway": "in-process uvicorn using production Gateway components",
+    "tls": false,
+    "transport": "real loopback WebSocket"
+  },
+  "format": "eecp-phase9-benchmark/v1",
+  "results": [
+    {
+      "acks_received": 0,
+      "agents": 100,
+      "commands_sent": 0,
+      "duration_seconds": 0.635,
+      "event_loss": 0,
+      "events_accepted": 0,
+      "events_sent": 0,
+      "failed_connections": 0,
+      "flush_seconds": null,
+      "gateway_python_peak_mib": null,
+      "logical_duplicates": 0,
+      "messages_received": 0,
+      "messages_sent": 0,
+      "notes": [],
+      "p50_ms": 587.206,
+      "p95_ms": 630.663,
+      "p99_ms": 633.614,
+      "peak_backlog": 0,
+      "queue_saturation_count": 0,
+      "scenario": "connections",
+      "successful_connections": 100,
+      "throughput_per_second": 157.469,
+      "wrong_target_count": 0
+    },
+    {
+      "acks_received": 0,
+      "agents": 100,
+      "commands_sent": 0,
+      "duration_seconds": 25.833,
+      "event_loss": 0,
+      "events_accepted": 100,
+      "events_sent": 100,
+      "failed_connections": 0,
+      "flush_seconds": null,
+      "gateway_python_peak_mib": null,
+      "logical_duplicates": 0,
+      "messages_received": 0,
+      "messages_sent": 0,
+      "notes": [],
+      "p50_ms": 22730.973,
+      "p95_ms": 25630.512,
+      "p99_ms": 25785.389,
+      "peak_backlog": 0,
+      "queue_saturation_count": 0,
+      "scenario": "event",
+      "successful_connections": 0,
+      "throughput_per_second": 3.871,
+      "wrong_target_count": 0
+    }
+  ],
+  "started_at": "2026-09-28T16:02:52.708385Z"
+}

@@ -29,7 +29,9 @@ def _database(tmp_path: Path) -> SqliteDatabase:
     return database
 
 
-def test_command_is_retried_three_times_then_times_out(tmp_path: Path) -> None:
+def test_command_is_retried_during_full_delivery_window_then_times_out(
+    tmp_path: Path,
+) -> None:
     database = _database(tmp_path)
     created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
         CreateExamSessionInput("Exam", "A101", ["PC01"])
@@ -42,17 +44,16 @@ def test_command_is_retried_three_times_then_times_out(tmp_path: Path) -> None:
     command_id = first[0].id
     assert first[0].status == CommandStatus.DELIVERED
     assert first[0].attempt_count == 1
-    assert first[0].next_retry_at == NOW + timedelta(seconds=10)
+    assert first[0].next_retry_at == NOW + timedelta(seconds=30)
 
-    current[0] = NOW + timedelta(seconds=9)
+    current[0] = NOW + timedelta(seconds=29)
     assert get_commands("PC01") == []
 
-    current[0] = NOW + timedelta(seconds=10)
-    assert get_commands("PC01")[0].attempt_count == 2
-    current[0] = NOW + timedelta(seconds=20)
-    assert get_commands("PC01")[0].attempt_count == 3
+    for attempt in range(2, 11):
+        current[0] = NOW + timedelta(seconds=30 * (attempt - 1))
+        assert get_commands("PC01")[0].attempt_count == attempt
 
-    current[0] = NOW + timedelta(seconds=30)
+    current[0] = NOW + timedelta(minutes=5)
     assert get_commands("PC01") == []
 
     with database.unit_of_work() as uow:
@@ -75,7 +76,7 @@ def test_command_expires_even_before_first_delivery(tmp_path: Path) -> None:
 
     commands = GetPendingCommands(
         database.unit_of_work,
-        clock=lambda: NOW + timedelta(minutes=1),
+        clock=lambda: NOW + timedelta(minutes=5),
     )("PC01")
 
     assert commands == []
@@ -96,7 +97,7 @@ def test_acknowledgement_after_deadline_is_rejected_and_persisted(
     with pytest.raises(InvalidStateTransitionError, match="timed out"):
         AcknowledgeCommand(
             database.unit_of_work,
-            clock=lambda: NOW + timedelta(minutes=1),
+            clock=lambda: NOW + timedelta(minutes=5),
         )(
             AcknowledgeCommandInput(
                 command_id=command.id,
@@ -135,6 +136,38 @@ def test_acknowledgement_by_correct_agent_succeeds(tmp_path: Path) -> None:
     assert persisted.status == CommandStatus.ACKNOWLEDGED
     assert persisted.acknowledged_at == NOW
     assert session.workstations["PC01"].actual_policy_hash == command.payload["policy_hash"]
+    assert session.workstations["PC01"].policy_compliant is True
+
+
+def test_long_running_policy_ack_succeeds_within_delivery_window(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
+        CreateExamSessionInput("Exam", "A101", ["PC01"])
+    )
+    command = GetPendingCommands(database.unit_of_work, clock=lambda: NOW)("PC01")[0]
+
+    session = AcknowledgeCommand(
+        database.unit_of_work,
+        clock=lambda: NOW + timedelta(minutes=2),
+    )(
+        AcknowledgeCommandInput(
+            command_id=command.id,
+            success=True,
+            policy_hash=command.payload["policy_hash"],
+            actor="PC01",
+        )
+    )
+
+    with database.unit_of_work() as uow:
+        persisted = uow.commands.get(command.id)
+
+    assert persisted.status == CommandStatus.ACKNOWLEDGED
+    assert persisted.acknowledged_at == NOW + timedelta(minutes=2)
+    # Policy acknowledgement records compliance; the separate preflight action
+    # is still responsible for changing UNKNOWN to READY.
+    assert session.workstations["PC01"].readiness == Readiness.UNKNOWN
     assert session.workstations["PC01"].policy_compliant is True
 
 
@@ -247,7 +280,7 @@ def test_list_target_commands_is_strictly_read_only_and_lifecycle(
     assert dispatched[0].status == CommandStatus.DELIVERED
     assert dispatched[0].attempt_count == 1
     assert dispatched[0].last_attempt_at == NOW
-    assert dispatched[0].next_retry_at == NOW + timedelta(seconds=10)
+    assert dispatched[0].next_retry_at == NOW + timedelta(seconds=30)
 
     # 3. Viewing list after delivery still does not mutate attempt_count or last_attempt_at
     for _ in range(3):

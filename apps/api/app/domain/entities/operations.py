@@ -7,9 +7,13 @@ from typing import Any
 from app.domain.value_objects.enums import CommandStatus, CommandType, IncidentStatus, Severity
 from app.domain.value_objects.primitives import new_id, utc_now
 
-COMMAND_RETRY_DELAY = timedelta(seconds=10)
-COMMAND_TTL = timedelta(minutes=1)
-MAX_COMMAND_ATTEMPTS = 3
+# Applying an Enforce policy can include several DNS A/AAAA lookups and
+# bidirectional Windows Firewall reconciliation.  Keep the delivery window
+# comfortably longer than that privileged operation so a valid ACK is not
+# converted into a preflight failure while the Agent is still working.
+COMMAND_RETRY_DELAY = timedelta(seconds=30)
+COMMAND_TTL = timedelta(minutes=5)
+MAX_COMMAND_ATTEMPTS = 10
 
 
 @dataclass(slots=True)

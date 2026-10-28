@@ -328,8 +328,12 @@ def test_domain_rules_use_all_protocols_and_correct_direction():
     def runner(args, **kwargs):
         script = args[4]
         if "New-NetFirewallRule" in script:
-            additions.append(args)
-            name, display_name, group, remote, direction = args[5:10]
+            additions.append((args, kwargs))
+            payload = json.loads(kwargs["input"])
+            name = payload["name"]
+            display_name = payload["display_name"]
+            group = payload["group"]
+            direction = payload["direction"]
             installed[name] = (
                 {
                     "Name": name,
@@ -341,7 +345,7 @@ def test_domain_rules_use_all_protocols_and_correct_direction():
                     "Profile": "Any",
                     "Protocol": "Any",
                     "LocalAddress": ["Any"],
-                    "RemoteAddress": remote.split(","),
+                    "RemoteAddress": payload["remote_addresses"],
                 }
             )
             return subprocess.CompletedProcess(args, 0, "", "")
@@ -357,8 +361,13 @@ def test_domain_rules_use_all_protocols_and_correct_direction():
     rules = domain_traffic_rules(adapter.plan("SES-TRAFFIC", ["203.0.113.10"], []))
     adapter.reconcile(rules, ())
     assert len(additions) == 2
-    assert all("-Protocol Any" in args[4] and "-Profile Any" in args[4] for args in additions)
-    assert {args[9] for args in additions} == {"Inbound", "Outbound"}
+    assert all(
+        "-Protocol Any" in args[4] and "-Profile Any" in args[4]
+        for args, _kwargs in additions
+    )
+    assert {
+        json.loads(kwargs["input"])["direction"] for _args, kwargs in additions
+    } == {"Inbound", "Outbound"}
     # Direction verification must not accept an inbound rule as outbound.
     installed[rules[0].name]["Direction"] = "Inbound"
     assert not adapter.verify_rules(rules)

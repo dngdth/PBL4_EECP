@@ -82,7 +82,11 @@ class WindowsFirewallRunner:
         if arguments[0] == "powershell.exe":
             script = arguments[4]
             if "New-NetFirewallRule" in script:
-                name, display_name, group, remote, direction = arguments[5:10]
+                payload = json.loads(kwargs["input"])
+                name = payload["name"]
+                display_name = payload["display_name"]
+                group = payload["group"]
+                direction = payload["direction"]
                 self.rules[name] = {
                     "Name": name,
                     "DisplayName": display_name,
@@ -93,7 +97,7 @@ class WindowsFirewallRunner:
                     "Profile": "Any",
                     "Protocol": "Any",
                     "LocalAddress": ["Any"],
-                    "RemoteAddress": [remote],
+                    "RemoteAddress": payload["remote_addresses"],
                 }
                 return subprocess.CompletedProcess(arguments, 0, "", "")
             if "Remove-NetFirewallRule" in script:
@@ -209,14 +213,74 @@ def test_windows_adapter_uses_exact_name_and_argument_safe_powershell() -> None:
         "-NonInteractive",
         "-Command",
     ]
-    assert "param([string]$Name" in add_arguments[4]
-    assert add_arguments[5] == planned[0].name
-    assert add_arguments[6] == planned[0].name
-    assert add_arguments[7] == planned[0].group
-    assert add_arguments[8] == "203.0.113.10"
-    assert add_arguments[9] == "Outbound"
+    assert "ConvertFrom-Json ([Console]::In.ReadToEnd())" in add_arguments[4]
+    assert add_arguments[5:] == []
+    assert json.loads(add_kwargs["input"]) == {
+        "name": planned[0].name,
+        "display_name": planned[0].name,
+        "group": planned[0].group,
+        "remote_addresses": ["203.0.113.10"],
+        "direction": "Outbound",
+    }
     assert "shell" not in add_kwargs
     assert adapter.verify_rules(planned)
+
+
+def test_windows_adapter_sends_mixed_multi_address_rule_as_json_array() -> None:
+    runner = WindowsFirewallRunner()
+    adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
+    planned = adapter.plan(
+        "SES-001",
+        ["104.18.32.47", "172.64.155.209", "2a06:98c1:3101::6812:202f"],
+        [],
+    )
+    remote = ",".join(rule.remote_address for rule in planned)
+    grouped = (
+        FirewallRule(
+            name="EECP-037F6D701104-DOMAIN-49A3D787EBF0",
+            group="EECP-037F6D701104",
+            remote_address=remote,
+            address_type="DOMAIN",
+        ),
+    )
+
+    adapter.reconcile(grouped, ())
+
+    add_arguments, add_kwargs = next(
+        item for item in runner.calls if "New-NetFirewallRule" in item[0][4]
+    )
+    payload = json.loads(add_kwargs["input"])
+    assert add_arguments[5:] == []
+    assert payload["remote_addresses"] == [
+        "104.18.32.47",
+        "172.64.155.209",
+        "2a06:98c1:3101::6812:202f",
+    ]
+    assert adapter.verify_rules(grouped)
+
+
+def test_windows_adapter_surfaces_bounded_firewall_creation_error() -> None:
+    def runner(arguments, **_kwargs):
+        script = arguments[4]
+        if "New-NetFirewallRule" in script:
+            return subprocess.CompletedProcess(
+                arguments,
+                1,
+                "",
+                "New-NetFirewallRule: The address is invalid.\n" + "x" * 600,
+            )
+        return subprocess.CompletedProcess(arguments, 3, "", "")
+
+    adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
+    planned = adapter.plan("SES-001", ["203.0.113.10"], [])
+
+    with pytest.raises(OSError) as caught:
+        adapter.reconcile(planned, ())
+
+    message = str(caught.value)
+    assert "The address is invalid" in message
+    prefix = f"cannot create Windows Firewall rule {planned[0].name}: "
+    assert len(message.removeprefix(prefix)) == 500
 
 
 @pytest.mark.parametrize(

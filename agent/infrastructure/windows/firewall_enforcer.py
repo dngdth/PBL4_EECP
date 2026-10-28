@@ -113,14 +113,30 @@ class WindowsFirewallEnforcer:
                 continue
             self._remove_rule(rule.name)
             script = (
-                "& { param([string]$Name,[string]$DisplayName,[string]$Group,"
-                "[string]$RemoteAddress,[string]$Direction) "
-                "New-NetFirewallRule -Name $Name -DisplayName $DisplayName "
-                "-Group $Group -Direction $Direction -Action Block -Profile Any "
+                "$ErrorActionPreference='Stop';"
+                "$request=ConvertFrom-Json ([Console]::In.ReadToEnd());"
+                "$remoteAddresses=@($request.remote_addresses);"
+                "if($remoteAddresses.Count -eq 0){throw 'RemoteAddress is required'};"
+                "New-NetFirewallRule -Name $request.name "
+                "-DisplayName $request.display_name "
+                "-Group $request.group -Direction $request.direction "
+                "-Action Block -Profile Any "
                 "-Enabled True -Protocol Any -LocalAddress Any "
-                "-RemoteAddress ($RemoteAddress -split ',') "
-                "-ErrorAction Stop|Out-Null }"
+                "-RemoteAddress $remoteAddresses -ErrorAction Stop|Out-Null"
             )
+            payload = {
+                "name": rule.name,
+                "display_name": rule.name,
+                "group": rule.group,
+                "remote_addresses": [
+                    value.strip() for value in rule.remote_address.split(",") if value.strip()
+                ],
+                "direction": (
+                    "Inbound"
+                    if rule.direction.casefold() in {"in", "inbound"}
+                    else "Outbound"
+                ),
+            }
             result = self._run(
                 [
                     "powershell.exe",
@@ -128,15 +144,13 @@ class WindowsFirewallEnforcer:
                     "-NonInteractive",
                     "-Command",
                     script,
-                    rule.name,
-                    rule.name,
-                    rule.group,
-                    rule.remote_address,
-                    "Inbound" if rule.direction.casefold() in {"in", "inbound"} else "Outbound",
-                ]
+                ],
+                input_text=json.dumps(payload),
             )
             if result.returncode != 0:
-                raise OSError(f"cannot create Windows Firewall rule {rule.name}")
+                detail = _command_error(result)
+                suffix = f": {detail}" if detail else ""
+                raise OSError(f"cannot create Windows Firewall rule {rule.name}{suffix}")
             LOGGER.info(
                 "firewall operation=add rule=%s remote=%s result=succeeded",
                 rule.name,
@@ -278,9 +292,22 @@ class WindowsFirewallEnforcer:
         if result.returncode != 0:
             raise OSError(f"cannot remove Windows Firewall rule {name}")
 
-    def _run(self, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self,
+        arguments: list[str],
+        *,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         try:
-            return self._runner(arguments, capture_output=True, text=True, check=False, timeout=5.0)
+            kwargs: dict[str, object] = {
+                "capture_output": True,
+                "text": True,
+                "check": False,
+                "timeout": 5.0,
+            }
+            if input_text is not None:
+                kwargs["input"] = input_text
+            return self._runner(arguments, **kwargs)
         except subprocess.TimeoutExpired as exc:
             raise OSError("Windows Firewall command timed out") from exc
 
@@ -314,6 +341,12 @@ def resolve_gateway_addresses(
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12].upper()
+
+
+def _command_error(result: subprocess.CompletedProcess[str]) -> str:
+    """Return bounded single-line diagnostic text without echoing command input."""
+
+    return " ".join((result.stderr or "").split())[:500]
 
 
 def _is_owned_rule_name(name: str) -> bool:

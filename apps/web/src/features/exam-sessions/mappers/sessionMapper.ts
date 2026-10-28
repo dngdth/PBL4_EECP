@@ -126,11 +126,32 @@ function mapPolicy(rawPolicy: any): PolicyConfig | undefined {
  * Extracts and synthesizes timeline activity logs from violations and lifecycle timestamps.
  */
 function mapActivityLog(raw: any): ActivityItem[] {
-  if (Array.isArray(raw.activity_log) && raw.activity_log.length > 0) {
-    return raw.activity_log;
-  }
+  const logs: ActivityItem[] = Array.isArray(raw.activity_log)
+    ? [...raw.activity_log]
+    : [];
 
-  const logs: ActivityItem[] = [];
+  if (Array.isArray(raw.security_events)) {
+    raw.security_events.forEach((event: any) => {
+      const actor = event.username ? ` — ${event.username}` : '';
+      const process = event.process_name
+        ? ` — ${event.process_name}${event.pid ? ` (PID ${event.pid})` : ''}`
+        : '';
+      const result = event.enforcement_result || event.recovery_status || event.action;
+      logs.push({
+        id: event.event_id,
+        timestamp: event.occurred_at || '',
+        level:
+          event.severity === 'CRITICAL'
+            ? 'ERROR'
+            : event.severity === 'WARNING'
+              ? 'WARNING'
+              : 'INFO',
+        message: `${event.agent_id}${actor}${process} — ${event.category} — ${result}`,
+        source: event.source || 'AGENT_SERVICE',
+        details: { payload: event.payload },
+      });
+    });
+  }
 
   // 1. Violations from Backend PolicyViolationView
   if (Array.isArray(raw.violations)) {
@@ -179,7 +200,7 @@ function mapActivityLog(raw: any): ActivityItem[] {
     });
   }
 
-  return logs;
+  return logs.sort((left, right) => right.timestamp.localeCompare(left.timestamp));
 }
 
 /**
@@ -217,6 +238,7 @@ export function normalizeSession(raw: any): ExamSession {
     agent_count: raw.agent_count ?? (Array.isArray(raw.agents) ? raw.agents.length : workstations.length),
     policy: mapPolicy(raw.policy),
     activity_log: mapActivityLog(raw),
+    security_events: Array.isArray(raw.security_events) ? raw.security_events : [],
     created_at: raw.created_at || '',
     updated_at: raw.updated_at || '',
   };

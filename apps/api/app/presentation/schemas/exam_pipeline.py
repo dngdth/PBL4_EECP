@@ -5,12 +5,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from contracts.v2.policy import PolicyRules
 from app.domain.value_objects.enums import (
     AgentStatus,
     SessionState,
     Severity,
 )
+from contracts.v2.policy import PolicyRules
 
 
 class ApiModel(BaseModel):
@@ -97,11 +97,41 @@ class TelemetryRequest(ApiModel):
     destination: str | None = None
     correlation_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+    event_id: str | None = Field(default=None, min_length=1, max_length=255)
+    occurred_at: datetime | None = None
 
 
 class TelemetryAcceptedView(ApiModel):
     event_id: str
     incident_id: str | None
+
+
+class SecurityEventView(ApiModel):
+    event_id: str
+    session_id: str
+    agent_id: str
+    event_type: str
+    severity: Severity
+    category: str
+    action: str
+    destination: str | None
+    correlation_id: str | None
+    occurred_at: datetime
+    source: str | None = None
+    process_name: str | None = None
+    pid: int | None = None
+    username: str | None = None
+    target: str | None = None
+    enforcement_result: str | None = None
+    recovery_status: str | None = None
+    payload: dict[str, Any]
+
+
+class SecurityEventPage(ApiModel):
+    items: list[SecurityEventView]
+    total: int
+    offset: int
+    limit: int
 
 
 class SessionView(ApiModel):

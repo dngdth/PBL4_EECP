@@ -17,8 +17,12 @@ from agent.config import (
     POLICY_VERIFICATION_KEY,
     REQUIRE_AUTHORIZED_COMMANDS,
     REQUIRE_SIGNED_POLICY,
+    SECURITY_EVENT_JOURNAL_MAX_ROWS,
+    SECURITY_EVENT_JOURNAL_PATH,
+    SECURITY_EVENT_RETENTION_DAYS,
     SERVICE_MAINTENANCE_INTERVAL_SECONDS,
     load_agent_id,
+    load_local_security_event_token,
 )
 from agent.infrastructure.policy_enforcement import WindowsPolicyEnforcer
 from agent.infrastructure.windows.firewall_enforcer import (
@@ -27,10 +31,21 @@ from agent.infrastructure.windows.firewall_enforcer import (
 )
 from agent.ipc.named_pipe_server import NamedPipeServer
 from agent.ipc.protocol import ServiceProtocolHandler
+from agent.ipc.security_events import SecurityEventIpcHandler
 from agent.service.runtime import AgentServiceRuntime
+from agent.service.security_event_journal import (
+    SecurityEventJournal,
+    protect_service_data_directory,
+)
 
 
 def build_service_runtime() -> AgentServiceRuntime:
+    protect_service_data_directory(SECURITY_EVENT_JOURNAL_PATH.parent)
+    security_journal = SecurityEventJournal(
+        SECURITY_EVENT_JOURNAL_PATH,
+        max_rows=SECURITY_EVENT_JOURNAL_MAX_ROWS,
+        retention_days=SECURITY_EVENT_RETENTION_DAYS,
+    )
     windows_factory = WindowsPolicyEnforcer
     if POLICY_MODE == "enforce":
         protected_endpoints = resolve_gateway_addresses(GATEWAY_URL)
@@ -51,12 +66,27 @@ def build_service_runtime() -> AgentServiceRuntime:
         require_authorized_commands=REQUIRE_AUTHORIZED_COMMANDS,
         command_target_id=load_agent_id() if REQUIRE_AUTHORIZED_COMMANDS else "",
         replay_path=COMMAND_REPLAY_PATH,
+        security_journal=security_journal,
+    )
+
+
+def build_protocol_handler(runtime: AgentServiceRuntime) -> ServiceProtocolHandler:
+    local_handler = None
+    local_event_token = load_local_security_event_token()
+    if runtime.security_journal is not None and local_event_token:
+        local_handler = SecurityEventIpcHandler(
+            runtime.security_journal, local_event_token, load_agent_id()
+        ).try_handle
+    return ServiceProtocolHandler(
+        runtime.execution_service.handle,
+        AGENT_VERSION,
+        local_handler=local_handler,
     )
 
 
 def run_service_forever() -> None:
     runtime = build_service_runtime()
-    handler = ServiceProtocolHandler(runtime.execution_service.handle, AGENT_VERSION)
+    handler = build_protocol_handler(runtime)
     runtime.start(handler)
     print(
         f"component=agent-service status=ready transport=named-pipe "
@@ -81,7 +111,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument(
         "--scm",
-        choices=("install", "remove", "start", "stop", "debug"),
+        choices=("install", "remove", "start", "stop", "restart", "debug"),
         help="manage the optional pywin32 Windows Service wrapper",
     )
     args = parser.parse_args(argv)

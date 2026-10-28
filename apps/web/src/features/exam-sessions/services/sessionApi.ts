@@ -10,8 +10,14 @@ import { normalizeSession } from '../mappers/sessionMapper';
 export { normalizeSession };
 
 export async function getSession(sessionId: string): Promise<ExamSession> {
-  const raw = await apiClient<any>(`/sessions/${sessionId}`);
-  return normalizeSession(raw);
+  const [raw, securityPage] = await Promise.all([
+    apiClient<any>(`/sessions/${sessionId}`),
+    apiClient<any>(`/sessions/${sessionId}/security-events?limit=100&offset=0`),
+  ]);
+  return normalizeSession({
+    ...raw,
+    security_events: Array.isArray(securityPage?.items) ? securityPage.items : [],
+  });
 }
 
 export async function listSessions(): Promise<{ total: number; sessions: ExamSession[] }> {

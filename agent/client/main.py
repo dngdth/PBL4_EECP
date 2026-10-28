@@ -11,6 +11,7 @@ from agent.client.infrastructure.named_pipe_executor import NamedPipePrivilegedE
 from agent.client.runtime import AgentClientRuntime
 from agent.client.sensors.dns_audit_sensor import DnsAuditSensor
 from agent.client.sensors.process_sensor import ProcessSensor
+from agent.client.sensors.security_event_sensor import SecurityEventSensor
 from agent.client.sensors.service_health_sensor import ServiceHealthSensor
 from agent.client.sensors.suite import SensorSuite
 from agent.config import (
@@ -32,6 +33,7 @@ from agent.config import (
     SERVICE_HEALTH_INTERVAL_SECONDS,
     load_agent_gateway_token,
     load_agent_id,
+    load_local_security_event_token,
 )
 from agent.infrastructure.control_server import AgentClient
 from agent.infrastructure.system_identity import collect_identity
@@ -44,6 +46,7 @@ def build_client_runtime(
     agent_id: str,
     privileged_executor: PrivilegedExecutionPort,
     control_client=None,
+    security_event_transport=None,
 ) -> AgentClientRuntime:
     identity_endpoint = SERVER_URL if control_client is not None else GATEWAY_URL
     identity = collect_identity(agent_id, AGENT_VERSION, identity_endpoint)
@@ -102,8 +105,9 @@ def build_client_runtime(
         ),
         interval_seconds=SERVICE_HEALTH_INTERVAL_SECONDS,
     )
-    polling_sensors = [process_sensor, health_sensor]
+    polling_sensors = [health_sensor]
     if POLICY_MODE == "audit":
+        polling_sensors.append(process_sensor)
         polling_sensors.insert(
             0,
             DnsAuditSensor(
@@ -122,6 +126,27 @@ def build_client_runtime(
                 )
             ),
         )
+    elif security_event_transport is not None and (
+        local_event_token := load_local_security_event_token()
+    ):
+        polling_sensors.insert(
+            0,
+            SecurityEventSensor(
+                security_event_transport,
+                local_event_token,
+                identity.agent_id,
+                lambda session_id, event_type, payload, **event_identity: backend.report_event(
+                    session_id,
+                    identity.agent_id,
+                    event_type,
+                    payload,
+                    **event_identity,
+                ),
+            ),
+        )
+    else:
+        # Compatibility fallback when the protected Service journal channel is not configured.
+        polling_sensors.insert(0, process_sensor)
     sensors = SensorSuite(
         tuple(polling_sensors),
         health_sensor=health_sensor,
@@ -192,6 +217,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             agent_id,
             NamedPipePrivilegedExecutor(transport, AGENT_VERSION),
             control_client,
+            transport,
         )
     except (RuntimeError, ValueError) as exc:
         raise SystemExit(f"Configuration error: {exc}") from None

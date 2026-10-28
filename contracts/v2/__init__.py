@@ -15,6 +15,8 @@ from contracts.v2.errors import ERROR_DESCRIPTIONS, ErrorCode
 from contracts.v2.event import Event, EventType
 from contracts.v2.gateway import (
     AgentHello,
+    AgentSessionState,
+    AgentSessionStateStatus,
     DeliveryFailure,
     EventReceipt,
     EventReceiptStatus,
@@ -46,6 +48,8 @@ __all__ = [
     "Ack",
     "AckStatus",
     "AgentHello",
+    "AgentSessionState",
+    "AgentSessionStateStatus",
     "ApplicationRules",
     "ApplyPolicyPayload",
     "Command",

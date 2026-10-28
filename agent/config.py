@@ -29,7 +29,8 @@ SERVICE_HEALTH_INTERVAL_SECONDS = float(
 REQUEST_TIMEOUT_SECONDS = 5
 IPC_PIPE_NAME = os.getenv("EECP_PIPE_NAME", r"\\.\pipe\eecp-agent-v2")
 IPC_CONNECT_TIMEOUT_SECONDS = 2.0
-IPC_REQUEST_TIMEOUT_SECONDS = 10.0
+# APPLY_POLICY includes bounded DNS discovery plus OS rule reconciliation.
+IPC_REQUEST_TIMEOUT_SECONDS = 30.0
 IPC_MAX_MESSAGE_BYTES = 1024 * 1024
 IPC_REPLAY_CACHE_SIZE = 1024
 SERVICE_MAINTENANCE_INTERVAL_SECONDS = 5.0
@@ -62,6 +63,34 @@ EVENT_SPOOL_PATH = Path(
         str(POLICY_STATE_PATH.with_name("agent-events.db")),
     )
 )
+SERVICE_DATA_ROOT = Path(
+    os.getenv(
+        "EECP_SERVICE_DATA_ROOT",
+        str(Path(os.getenv("PROGRAMDATA", r"C:\ProgramData")) / "EECP"),
+    )
+)
+SECURITY_EVENT_JOURNAL_PATH = Path(
+    os.getenv(
+        "EECP_SECURITY_EVENT_JOURNAL_PATH",
+        str(SERVICE_DATA_ROOT / "security-events.db"),
+    )
+)
+LOCAL_SECURITY_EVENT_TOKEN_PATH = Path(
+    os.getenv(
+        "EECP_LOCAL_SECURITY_EVENT_TOKEN_PATH",
+        str(
+            Path(os.getenv("PROGRAMDATA", r"C:\ProgramData"))
+            / "EECP-Client"
+            / "local-event.token"
+        ),
+    )
+)
+SECURITY_EVENT_JOURNAL_MAX_ROWS = int(
+    os.getenv("EECP_SECURITY_EVENT_JOURNAL_MAX_ROWS", "10000")
+)
+SECURITY_EVENT_RETENTION_DAYS = int(
+    os.getenv("EECP_SECURITY_EVENT_RETENTION_DAYS", "14")
+)
 
 
 def load_agent_gateway_token() -> str:
@@ -69,3 +98,15 @@ def load_agent_gateway_token() -> str:
     if not token:
         raise RuntimeError("EECP_AGENT_GATEWAY_TOKEN is required for Gateway transport")
     return token
+
+
+def load_local_security_event_token() -> str:
+    token = os.getenv("EECP_LOCAL_SECURITY_EVENT_TOKEN", "").strip()
+    if not token:
+        try:
+            token = LOCAL_SECURITY_EVENT_TOKEN_PATH.read_text(
+                encoding="utf-8-sig"
+            ).strip()
+        except OSError:
+            return ""
+    return token if len(token) >= 16 else ""

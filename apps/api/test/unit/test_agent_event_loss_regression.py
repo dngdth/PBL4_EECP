@@ -16,9 +16,12 @@ from apps.gateway.app.routing import GatewayRouter
 from contracts.v2 import (
     Ack,
     AckStatus,
+    AgentSessionState,
+    AgentSessionStateStatus,
     ApplyPolicyPayload,
     Command,
     CommandType,
+    ErrorCode,
     Event,
     EventReceipt,
     EventReceiptStatus,
@@ -523,3 +526,98 @@ def test_event_spooled_on_queue_full_retransmitted_on_same_connection_without_re
     # Event hoàn tất và được giải phóng khỏi spool, không bị mất
     assert spool.count() == 0
     assert spooled_id not in client._enqueued_event_ids
+
+
+def test_backend_session_state_restores_and_clears_policy_after_client_restart(
+    tmp_path: Path,
+) -> None:
+    client = _make_client(AgentEventSpool(tmp_path / "state-sync.db"))
+    client._identity = WorkstationIdentity("PC01", "HOST-1", "192.168.1.10", "1.1.0")
+    active = AgentSessionState(
+        protocol_version=2,
+        agent_id="PC01",
+        status=AgentSessionStateStatus.ACTIVE,
+        session_id="SES-001",
+        policy_hash="a" * 64,
+        policy={
+            "format": "eecp-policy/v1",
+            "policy_hash": "a" * 64,
+            "version": 1,
+            "profile": "STRICT",
+            "rules": {},
+        },
+    )
+    active_envelope = GatewayEnvelope(
+        protocol_version=2,
+        message_type=GatewayMessageType.AGENT_SESSION_STATE,
+        message_id="state-active",
+        correlation_id="state-PC01",
+        source_id="backend",
+        target_id="PC01",
+        payload=active.model_dump(mode="json", exclude_none=True),
+    )
+
+    client._receive(active_envelope.to_json())
+    assert client.active_policy("PC01") == ("SES-001", active.policy)
+
+    inactive = AgentSessionState(
+        protocol_version=2,
+        agent_id="PC01",
+        status=AgentSessionStateStatus.INACTIVE,
+        reason="Session finished",
+    )
+    client._receive(
+        active_envelope.model_copy(
+            update={
+                "message_id": "state-inactive",
+                "payload": inactive.model_dump(mode="json", exclude_none=True),
+            }
+        ).to_json()
+    )
+    assert client.active_policy("PC01") is None
+
+
+@pytest.mark.parametrize(
+    ("status", "error_code", "permanent"),
+    [
+        (EventReceiptStatus.REJECTED, ErrorCode.SESSION_MISMATCH, True),
+        (EventReceiptStatus.REJECTED, ErrorCode.INTERNAL_ERROR, False),
+    ],
+)
+def test_rejected_receipt_preserves_event_with_quarantine_or_backoff(
+    tmp_path: Path,
+    status: EventReceiptStatus,
+    error_code: ErrorCode,
+    permanent: bool,
+) -> None:
+    spool = AgentEventSpool(tmp_path / f"reject-{error_code.value}.db")
+    client = _make_client(spool)
+    client._identity = WorkstationIdentity("PC01", "HOST-1", "192.168.1.10", "1.1.0")
+    client.report_event(
+        "SES-001", "PC01", EventType.ENFORCEMENT_ACTION, {"action": "BLOCKED"}
+    )
+    event_id = spool.pending()[0].message_id
+    receipt = EventReceipt(
+        protocol_version=2,
+        event_id=event_id,
+        status=status,
+        received_at=NOW,
+        error_code=error_code,
+        error_message="rejected for test",
+    )
+    envelope = GatewayEnvelope(
+        protocol_version=2,
+        message_type=GatewayMessageType.EVENT_RECEIPT,
+        message_id=f"receipt_{event_id}",
+        correlation_id=event_id,
+        source_id="GW-1",
+        target_id="PC01",
+        payload=receipt.model_dump(mode="json", exclude_none=True),
+    )
+
+    client._receive(envelope.to_json())
+
+    assert spool.has(event_id)
+    assert spool.quarantined_count() == (1 if permanent else 0)
+    assert spool.count() == (0 if permanent else 1)
+    assert spool.pending() == []

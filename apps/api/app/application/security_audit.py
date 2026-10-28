@@ -41,23 +41,24 @@ class SecurityAuditService:
             previous = self._recent.get(key)
             if previous is not None and now - previous < self._throttle:
                 return False
+            details = {
+                "actor_type": actor_type,
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "decision": "DENY",
+                "reason_code": reason_code,
+            }
+            if correlation_id:
+                details["correlation_id"] = correlation_id[:128]
+            with self._uow_factory() as uow:
+                uow.audits.append(
+                    session_id,
+                    actor=actor[:128] or "anonymous",
+                    action=action,
+                    target=resource_id[:128] or resource_type,
+                    details=details,
+                )
+                uow.commit()
+            # Do not throttle a retry unless the audit transaction committed.
             self._recent[key] = now
-        details = {
-            "actor_type": actor_type,
-            "resource_type": resource_type,
-            "resource_id": resource_id,
-            "decision": "DENY",
-            "reason_code": reason_code,
-        }
-        if correlation_id:
-            details["correlation_id"] = correlation_id[:128]
-        with self._uow_factory() as uow:
-            uow.audits.append(
-                session_id,
-                actor=actor[:128] or "anonymous",
-                action=action,
-                target=resource_id[:128] or resource_type,
-                details=details,
-            )
-            uow.commit()
         return True

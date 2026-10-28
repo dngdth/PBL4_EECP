@@ -19,12 +19,15 @@ from contracts.v2 import (
     Ack,
     AckStatus,
     AgentHello,
+    AgentSessionState,
+    AgentSessionStateStatus,
     ApplyPolicyPayload,
     Command,
     CommandType,
     ErrorCode,
     Event,
     EventReceipt,
+    EventReceiptStatus,
     EventType,
     GatewayEnvelope,
     GatewayMessageType,
@@ -93,6 +96,7 @@ class GatewayControlClient:
         self._commands: queue.Queue[Command] = queue.Queue()
         self._command_index: dict[str, Command] = {}
         self._active_policy: tuple[str, dict[str, Any]] | None = None
+        self._backend_session_status = AgentSessionStateStatus.INACTIVE
         self._state_lock = threading.Lock()
         self._event_sequence = event_spool.max_sequence() if event_spool is not None else 0
         self._service_health = ServiceHealth.HEALTHY
@@ -225,22 +229,31 @@ class GatewayControlClient:
         agent_id: str,
         event_type: EventType,
         payload: dict[str, Any],
+        *,
+        event_id: str | None = None,
+        occurred_at: datetime | None = None,
+        correlation_id: str | None = None,
     ) -> None:
         self._require_identity(agent_id)
+        event_id = event_id or f"evt_{uuid.uuid4().hex}"
+        if event_id in self._enqueued_event_ids or (
+            self._event_spool is not None and self._event_spool.has(event_id)
+        ):
+            self._enqueue_pending_spool()
+            return
         with self._state_lock:
             self._event_sequence += 1
             sequence = self._event_sequence
-        event_id = f"evt_{uuid.uuid4().hex}"
         event = Event(
             protocol_version=2,
             event_id=event_id,
             session_id=session_id,
             agent_id=agent_id,
             event_type=event_type,
-            occurred_at=datetime.now(UTC),
+            occurred_at=occurred_at or datetime.now(UTC),
             sequence=sequence,
             payload=payload,
-            correlation_id=f"event_{session_id}",
+            correlation_id=correlation_id or f"event_{session_id}",
         )
         envelope = GatewayEnvelope(
             protocol_version=2,
@@ -368,15 +381,62 @@ class GatewayControlClient:
 
     def _receive(self, raw: str | bytes) -> None:
         envelope = GatewayEnvelope.model_validate_json(raw)
+        if envelope.message_type == GatewayMessageType.AGENT_SESSION_STATE:
+            state = AgentSessionState.model_validate(envelope.payload)
+            if (
+                self._identity is None
+                or envelope.source_id != "backend"
+                or envelope.target_id != self._identity.agent_id
+                or state.agent_id != self._identity.agent_id
+            ):
+                raise ValueError("Backend Agent session state identity mismatch")
+            with self._state_lock:
+                self._backend_session_status = state.status
+                self._active_policy = (
+                    (state.session_id, dict(state.policy))
+                    if state.status == AgentSessionStateStatus.ACTIVE
+                    and state.session_id is not None
+                    and state.policy is not None
+                    else None
+                )
+            self._log(
+                "event=AGENT_SESSION_STATE_SYNCED "
+                f"agent_id={state.agent_id} status={state.status.value} "
+                f"session_id={state.session_id or 'none'}"
+            )
+            return
         if envelope.message_type == GatewayMessageType.EVENT_RECEIPT:
             receipt = EventReceipt.model_validate(envelope.payload)
+            if (
+                self._identity is None
+                or envelope.target_id != self._identity.agent_id
+                or envelope.source_id == self._identity.agent_id
+            ):
+                raise ValueError("Event receipt identity mismatch")
             if self._event_spool is not None:
-                self._event_spool.complete(receipt.event_id)
+                if receipt.status in {
+                    EventReceiptStatus.ACCEPTED,
+                    EventReceiptStatus.ALREADY_PROCESSED,
+                }:
+                    self._event_spool.complete(receipt.event_id)
+                else:
+                    error_code = receipt.error_code or ErrorCode.INTERNAL_ERROR
+                    permanent = error_code not in {
+                        ErrorCode.INTERNAL_ERROR,
+                        ErrorCode.EXECUTION_FAILED,
+                    }
+                    self._event_spool.reject(
+                        receipt.event_id,
+                        permanent=permanent,
+                        error_code=error_code.value,
+                        error_message=receipt.error_message,
+                    )
             self._enqueued_event_ids.discard(receipt.event_id)
             self._log(
-                "event=EVENT_ACKNOWLEDGED "
+                "event=EVENT_RECEIPT_PROCESSED "
                 f"event_id={receipt.event_id} "
-                f"status={receipt.status.value}"
+                f"status={receipt.status.value} "
+                f"source={envelope.source_id}"
             )
             return
         if envelope.message_type != GatewayMessageType.COMMAND:

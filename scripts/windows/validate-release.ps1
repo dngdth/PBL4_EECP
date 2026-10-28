@@ -6,7 +6,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $serviceName = "EECPAgentService"
-$testRule = "EECP-TEST-PHASE9-VALIDATION"
+$testRule = "EECP-000000000000-IP-000000000000"
+$testRuleGroup = "EECP-000000000000"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $testAddress = "203.0.113.254"
 $ruleCreated = $false
@@ -61,11 +62,21 @@ try {
     if ($null -eq $pipe) { throw "EECP Named Pipe was not exposed by the running Service" }
 
     Write-Host "[4/7] Isolated Windows Firewall create/query/delete check"
-    & netsh advfirewall firewall add rule name=$testRule dir=out action=block remoteip=$testAddress profile=any
-    if ($LASTEXITCODE -ne 0) { throw "Failed to create isolated EECP test rule" }
+    New-NetFirewallRule -Name $testRule -DisplayName $testRule -Group $testRuleGroup `
+        -Direction Outbound -Action Block -RemoteAddress $testAddress `
+        -Profile Any -Enabled True -ErrorAction Stop | Out-Null
     $ruleCreated = $true
-    $shown = & netsh advfirewall firewall show rule name=$testRule
-    if ($LASTEXITCODE -ne 0 -or ($shown -join "`n") -notmatch [regex]::Escape($testAddress)) {
+    $shown = Get-NetFirewallRule -Name $testRule -ErrorAction Stop
+    $address = $shown | Get-NetFirewallAddressFilter
+    if (
+        $shown.Name -ne $testRule -or
+        $shown.DisplayName -ne $testRule -or
+        $shown.Group -ne $testRuleGroup -or
+        $shown.Enabled -ne "True" -or
+        $shown.Direction -ne "Outbound" -or
+        $shown.Action -ne "Block" -or
+        $testAddress -notin @($address.RemoteAddress)
+    ) {
         throw "EECP test Firewall rule could not be verified"
     }
 
@@ -89,8 +100,11 @@ try {
 }
 finally {
     if ($ruleCreated) {
-        & netsh advfirewall firewall delete rule name=$testRule | Out-Null
-        if ($LASTEXITCODE -ne 0) {
+        try {
+            Get-NetFirewallRule -Name $testRule -ErrorAction Stop |
+                Remove-NetFirewallRule -ErrorAction Stop
+        }
+        catch {
             Write-Warning "Could not remove exact test rule '$testRule'; remove it manually."
         }
     }

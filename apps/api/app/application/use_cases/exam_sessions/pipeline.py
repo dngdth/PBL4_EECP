@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import json
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 from app.application.dtos.exam_pipeline import (
     CreateSessionInput,
@@ -24,13 +26,32 @@ from app.domain.value_objects.primitives import new_id
 
 
 class ExamPipelineService:
+    LATE_SECURITY_EVENT_GRACE = timedelta(hours=24)
+    LATE_SECURITY_EVENT_TYPES = frozenset(
+        {
+            "USER_SESSION_CHANGED",
+            "FORBIDDEN_PROCESS_DETECTED",
+            "ENFORCEMENT_ACTION",
+            "ENFORCEMENT_TAMPER",
+            "SERVICE_HEALTH",
+            "DEVICE_EVENT",
+            "POLICY_INTEGRITY",
+        }
+    )
+    PRIVILEGED_EVENT_SOURCES = frozenset(
+        {"privileged-service", "windows-service-session-notification"}
+    )
+
     def __init__(
         self,
         uow_factory: UnitOfWorkFactory,
         incident_policy: IncidentPolicy | None = None,
+        *,
+        clock=lambda: datetime.now(UTC),
     ):
         self._uow_factory = uow_factory
         self._incident_policy = incident_policy or IncidentPolicy()
+        self._clock = clock
 
     def create_session(self, data: CreateSessionInput) -> ExamSession:
         session = ExamSession.create(
@@ -153,9 +174,44 @@ class ExamPipelineService:
         event, incident_id, _duplicate = self.ingest_protocol_event(data)
         return event, incident_id
 
+    def list_security_events(
+        self,
+        session_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        agent_id: str | None = None,
+        event_type: str | None = None,
+        severity: str | None = None,
+        occurred_from: datetime | None = None,
+        occurred_to: datetime | None = None,
+    ) -> tuple[list[TelemetryEvent], int]:
+        with self._uow_factory() as uow:
+            uow.sessions.get(session_id)
+            events = uow.telemetry.list_for_session(session_id)
+        filtered = [
+            event
+            for event in events
+            if (agent_id is None or event.workstation_id == agent_id)
+            and (event_type is None or event.event_type == event_type)
+            and (severity is None or event.severity.value == severity)
+            and (occurred_from is None or event.occurred_at >= occurred_from)
+            and (occurred_to is None or event.occurred_at <= occurred_to)
+        ]
+        filtered.sort(key=lambda event: (event.occurred_at, event.id), reverse=True)
+        return filtered[offset : offset + limit], len(filtered)
+
     def ingest_protocol_event(
         self, data: TelemetryInput
     ) -> tuple[TelemetryEvent, str | None, bool]:
+        encoded_payload = json.dumps(data.payload, separators=(",", ":")).encode()
+        if len(encoded_payload) > 64 * 1024:
+            raise PolicyValidationError("telemetry payload exceeds 64 KiB")
+        if data.occurred_at is not None:
+            if data.occurred_at.tzinfo is None:
+                raise PolicyValidationError("telemetry timestamp must be timezone-aware")
+            if data.occurred_at > self._clock() + timedelta(minutes=5):
+                raise PolicyValidationError("telemetry timestamp is too far in the future")
         event = TelemetryEvent(
             id=data.event_id or new_id("evt"),
             session_id=data.session_id,
@@ -167,18 +223,39 @@ class ExamPipelineService:
             destination=data.destination,
             correlation_id=data.correlation_id,
             payload=data.payload,
-            occurred_at=data.occurred_at or datetime.now(UTC),
+            occurred_at=data.occurred_at or self._clock(),
         )
         with self._uow_factory() as uow:
             if data.event_id:
                 existing = uow.telemetry.find(data.event_id)
                 if existing is not None:
+                    if not _same_event_content(
+                        existing, event, check_occurred_at=data.occurred_at is not None
+                    ):
+                        raise PolicyValidationError(
+                            "event_id was already used for different telemetry content"
+                        )
                     return existing, None, True
             session = uow.sessions.get(data.session_id)
-            if session.state != SessionState.RUNNING:
-                raise InvalidStateTransitionError("telemetry is accepted only for RUNNING sessions")
             if data.workstation_id not in session.workstations:
                 raise PolicyValidationError("telemetry workstation does not belong to session")
+            if session.state != SessionState.RUNNING:
+                self._validate_late_security_event(session, event)
+                event = replace(event, payload={**event.payload, "late_arrival": True})
+                uow.telemetry.add(event)
+                uow.audits.append(
+                    session.id,
+                    actor=event.workstation_id,
+                    action="LATE_SECURITY_EVENT_ACCEPTED",
+                    target=event.id,
+                    details={
+                        "event_type": event.event_type,
+                        "occurred_at": event.occurred_at.isoformat(),
+                        "received_at": self._clock().isoformat(),
+                    },
+                )
+                uow.commit()
+                return event, None, False
             uow.telemetry.add(event)
             session_events = uow.telemetry.list_for_session(session.id)
             current_incidents = uow.incidents.list_for_session(session.id)
@@ -199,6 +276,34 @@ class ExamPipelineService:
                 )
             uow.commit()
             return event, incident.id if incident else None, False
+
+    def _validate_late_security_event(
+        self, session: ExamSession, event: TelemetryEvent
+    ) -> None:
+        if session.state not in {
+            SessionState.FINISHED,
+            SessionState.RESTORING,
+            SessionState.NORMAL,
+        }:
+            raise InvalidStateTransitionError(
+                "telemetry is accepted only for RUNNING sessions"
+            )
+        if event.event_type not in self.LATE_SECURITY_EVENT_TYPES:
+            raise InvalidStateTransitionError(
+                "event type is not eligible for late security ingestion"
+            )
+        if event.payload.get("source") not in self.PRIVILEGED_EVENT_SOURCES:
+            raise PolicyValidationError(
+                "late security event lacks privileged Service provenance"
+            )
+        if not event.id or session.started_at is None or session.finished_at is None:
+            raise PolicyValidationError("late security event lacks required timing evidence")
+        if not session.started_at <= event.occurred_at <= session.finished_at:
+            raise PolicyValidationError(
+                "late security event did not occur during the RUNNING interval"
+            )
+        if self._clock() > session.finished_at + self.LATE_SECURITY_EVENT_GRACE:
+            raise PolicyValidationError("late security event exceeded the delivery grace period")
 
     def finish_session(self, session_id: str, actor: str) -> ExamSession:
         with self._uow_factory() as uow:
@@ -260,3 +365,26 @@ class ExamPipelineService:
                 "audit_event_count": len(audits),
                 "audit_chain_valid": uow.audits.verify_chain(session_id),
             }
+
+
+def _same_event_content(
+    existing: TelemetryEvent,
+    incoming: TelemetryEvent,
+    check_occurred_at: bool = True,
+) -> bool:
+    existing_payload = dict(existing.payload)
+    existing_payload.pop("late_arrival", None)
+    incoming_payload = dict(incoming.payload)
+    incoming_payload.pop("late_arrival", None)
+    return (
+        existing.session_id == incoming.session_id
+        and existing.workstation_id == incoming.workstation_id
+        and existing.event_type == incoming.event_type
+        and existing.severity == incoming.severity
+        and existing.category == incoming.category
+        and existing.action == incoming.action
+        and existing.destination == incoming.destination
+        and existing.correlation_id == incoming.correlation_id
+        and (not check_occurred_at or existing.occurred_at == incoming.occurred_at)
+        and existing_payload == incoming_payload
+    )

@@ -12,6 +12,7 @@ from app.application.dtos.gateways import RegisterGatewayInput
 from app.application.dtos.policies import AcknowledgeCommandInput
 from app.application.dtos.session_management import CreateExamSessionInput
 from app.application.security import Permission, Principal, Role
+from app.application.security_audit import SecurityAuditService
 from app.config import Settings
 from app.main import create_app
 from app.presentation.api.deps import authorize
@@ -44,6 +45,42 @@ def _session(app) -> str:
     return app.state.container.create_exam_session(
         CreateExamSessionInput("Security audit", "LAB-A", ["AGT-AUDIT"])
     ).session.id
+
+
+def test_failed_security_audit_commit_is_not_throttled_as_success() -> None:
+    attempts = 0
+
+    class FailingUnitOfWork:
+        def __init__(self) -> None:
+            self.audits = SimpleNamespace(append=lambda *_args, **_kwargs: None)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def commit(self) -> None:
+            nonlocal attempts
+            attempts += 1
+            raise RuntimeError("audit persistence unavailable")
+
+    audit = SecurityAuditService(FailingUnitOfWork, throttle_seconds=30)
+    arguments = {
+        "action": "AUTHORIZATION_DENIED",
+        "actor": "examiner",
+        "actor_type": "EXAMINER",
+        "resource_type": "SESSION",
+        "resource_id": "SES-MISSING",
+        "reason_code": "OUTSIDE_SCOPE",
+    }
+
+    with pytest.raises(RuntimeError, match="persistence unavailable"):
+        audit.record(**arguments)
+    with pytest.raises(RuntimeError, match="persistence unavailable"):
+        audit.record(**arguments)
+
+    assert attempts == 2
 
 
 def test_invalid_examiner_login_is_audited_without_password_or_token(

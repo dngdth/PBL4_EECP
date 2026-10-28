@@ -5,8 +5,12 @@ import logging
 import os
 import re
 import subprocess
+import threading
+import time
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +19,16 @@ from agent.domain.policy import (
     PolicySpecification,
     parse_policy_payload,
 )
+from agent.infrastructure.windows.domain_resolver import (
+    DomainResolver,
+    WindowsDomainResolver,
+    traffic_address,
+)
 from agent.infrastructure.windows.firewall_enforcer import (
     FirewallEnforcer,
     FirewallRule,
     WindowsFirewallEnforcer,
+    domain_traffic_rules,
 )
 from contracts.v2.policy import validate_hostname
 
@@ -27,6 +37,29 @@ POLICY_MARKER_END = "# END EECP MANAGED POLICY"
 USBSTOR_KEY = r"HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR"
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessIdentity:
+    name: str
+    pid: int
+    creation_time: str
+    username: str | None = None
+
+
+class ProcessIdentityStatus(StrEnum):
+    EXISTS = "EXISTS"
+    NOT_FOUND = "NOT_FOUND"
+    QUERY_FAILED = "QUERY_FAILED"
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessEnforcementResult:
+    process: ProcessIdentity
+    detected: bool
+    termination_attempted: bool
+    outcome: str
+    error: str | None = None
 
 
 class AuditPolicyEnforcer:
@@ -57,42 +90,86 @@ class WindowsPolicyEnforcer:
         hosts_path: Path | None = None,
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
         firewall: FirewallEnforcer | None = None,
+        event_sink: Callable[..., None] | None = None,
+        process_provider: Callable[[], tuple[ProcessIdentity, ...]] | None = None,
+        process_identity_checker: (
+            Callable[[ProcessIdentity], ProcessIdentityStatus | bool] | None
+        ) = None,
+        process_owner_provider: Callable[[int], str | None] | None = None,
+        domain_resolver: DomainResolver | None = None,
+        domain_refresh_seconds: float = 60.0,
+        clock: Callable[[], float] = time.monotonic,
     ):
+        if domain_refresh_seconds <= 0:
+            raise ValueError("domain_refresh_seconds must be positive")
         self._state_path = state_path
         self._hosts_path = hosts_path or (
-            Path(os.getenv("SYSTEMROOT", r"C:\Windows"))
-            / "System32"
-            / "drivers"
-            / "etc"
-            / "hosts"
+            Path(os.getenv("SYSTEMROOT", r"C:\Windows")) / "System32" / "drivers" / "etc" / "hosts"
         )
         self._runner = runner
         self._firewall = firewall or WindowsFirewallEnforcer(runner=runner)
+        self._event_sink = event_sink
+        self._process_provider = process_provider or self._windows_processes
+        self._process_identity_checker = process_identity_checker or (
+            self._windows_process_identity_exists
+            if process_provider is None
+            else lambda process: any(
+                candidate.pid == process.pid
+                and candidate.creation_time == process.creation_time
+                for candidate in self._process_provider()
+            )
+        )
+        self._process_owner_provider = process_owner_provider or (
+            self._windows_process_owner if process_provider is None else lambda _pid: None
+        )
+        self._operation_lock = threading.RLock()
+        self._seen_processes: set[tuple[int, str]] = set()
+        self._process_outcomes: dict[tuple[int, str], str] = {}
+        self._degraded_error: str | None = None
+        self._domain_resolver = domain_resolver or WindowsDomainResolver(runner=runner)
+        self._domain_refresh_seconds = domain_refresh_seconds
+        self._clock = clock
+        self._next_domain_refresh = 0.0
+
+    def set_event_sink(self, sink: Callable[..., None]) -> None:
+        self._event_sink = sink
+
+    @property
+    def health_error(self) -> str | None:
+        return self._degraded_error
 
     def apply(self, payload: dict[str, Any]) -> str:
+        with self._operation_lock:
+            return self._apply_locked(payload)
+
+    def _apply_locked(self, payload: dict[str, Any]) -> str:
+        self._degraded_error = None
         specification = parse_policy_payload(payload)
         current = self._load_state()
-        desired_rules = self._firewall.plan(
-            specification.session_id,
-            specification.blocked_ips,
-            specification.blocked_cidrs,
-        )
+        if (
+            current
+            and current.get("mode") == "enforce"
+            and current.get("policy_hash") == specification.policy_hash
+            and current.get("session_id") == specification.session_id
+            and "managed_firewall_rules" in current
+            and "domain_addresses" in current
+        ):
+            self.maintain()
+            return specification.policy_hash
+        state = _state_from_specification(specification, mode="enforce")
+        # Discover real/cached destinations before hosts redirects names and
+        # flushdns destroys cache entries belonging to already-open connections.
+        state["domain_addresses"] = self._discover_domain_addresses(state, current)
+        desired_rules = self._rules_from_state(state)
+        state["managed_firewall_rules"] = [rule.name for rule in desired_rules]
         LOGGER.info(
             "policy operation=apply session_id=%s policy_hash=%s firewall_rules=%d",
             specification.session_id,
             specification.policy_hash,
             len(desired_rules),
         )
-        if (
-            current
-            and current.get("mode") == "enforce"
-            and current.get("policy_hash") == specification.policy_hash
-            and "managed_firewall_rules" in current
-        ):
-            self.maintain()
-            return specification.policy_hash
-        state = _state_from_specification(specification, mode="enforce")
-        state["managed_firewall_rules"] = [rule.name for rule in desired_rules]
+        self._seen_processes.clear()
+        self._process_outcomes.clear()
         previous_usb_deny = bool(
             current and current.get("mode") == "enforce" and current.get("usb_deny")
         )
@@ -109,15 +186,22 @@ class WindowsPolicyEnforcer:
         previous_rules = self._rules_from_state(current)
         current_names = self._managed_rule_names(current)
         try:
-            self._write_blocked_domains(state["blocked_domains"])
+            # Block packets before modifying name resolution. Inbound + outbound
+            # rules cover existing responses as well as subsequent requests.
             self._firewall.reconcile(desired_rules, current_names)
+            self._write_blocked_domains(state["blocked_domains"])
             if specification.usb_deny and not previous_usb_deny:
                 self._set_usb_start(4)
             elif previous_usb_deny and not specification.usb_deny:
                 previous = current.get("usb_previous") if current else None
                 self._set_usb_start(previous if isinstance(previous, int) else 3)
-            self._terminate_denied(list(specification.denied_applications))
+            self._terminate_denied(
+                list(specification.denied_applications),
+                session_id=specification.session_id,
+            )
+            self._store_process_observations(state)
             _write_state(self._state_path, state)
+            self._next_domain_refresh = self._clock() + self._domain_refresh_seconds
             LOGGER.info(
                 "policy operation=apply session_id=%s policy_hash=%s result=succeeded",
                 specification.session_id,
@@ -143,6 +227,11 @@ class WindowsPolicyEnforcer:
         return specification.policy_hash
 
     def restore(self) -> None:
+        with self._operation_lock:
+            self._restore_locked()
+
+    def _restore_locked(self) -> None:
+        self._degraded_error = None
         state = self._load_state()
         if state and state.get("mode") == "audit":
             self._state_path.unlink(missing_ok=True)
@@ -153,17 +242,78 @@ class WindowsPolicyEnforcer:
             self._set_usb_start(previous if isinstance(previous, int) else 3)
         self._firewall.remove_rules(self._managed_rule_names(state))
         self._state_path.unlink(missing_ok=True)
+        self._seen_processes.clear()
+        self._process_outcomes.clear()
+        self._next_domain_refresh = 0.0
 
     def maintain(self) -> None:
+        with self._operation_lock:
+            self._maintain_locked()
+
+    def _maintain_locked(self) -> None:
+        self._degraded_error = None
         state = self._load_state()
         if state:
             if state.get("mode") != "enforce":
                 return
+            session_id = str(state.get("session_id", ""))
+            self._load_process_observations(state)
             rules = self._rules_from_state(state)
-            self._firewall.reconcile(rules, self._managed_rule_names(state))
+            if not self._firewall.verify_rules(rules):
+                self._record(
+                    session_id,
+                    "ENFORCEMENT_TAMPER",
+                    "FIREWALL_INTEGRITY",
+                    "CONFIG_CHANGED",
+                    "WARNING",
+                    target="windows-firewall",
+                )
+                try:
+                    self._firewall.reconcile(rules, self._managed_rule_names(state))
+                    recovered = self._firewall.verify_rules(rules)
+                except (OSError, ValueError) as exc:
+                    recovered = False
+                    error = str(exc)[:500]
+                else:
+                    error = None
+                self._record(
+                    session_id,
+                    "ENFORCEMENT_TAMPER",
+                    "FIREWALL_INTEGRITY",
+                    "RECOVERED" if recovered else "RECOVERY_FAILED",
+                    "WARNING" if recovered else "CRITICAL",
+                    target="windows-firewall",
+                    recovery_status="RECOVERY_SUCCEEDED" if recovered else "RECOVERY_FAILED",
+                    error=error,
+                )
+                if not recovered:
+                    self._degraded_error = error or "Firewall recovery verification failed"
+            expected_domains = _state_string_list(state, "blocked_domains")
+            if not self._hosts_match(expected_domains):
+                self._recover_hosts(session_id, expected_domains)
+            if bool(state.get("usb_deny")) and self._read_usb_start() != 4:
+                self._recover_usb(session_id)
             denied = state.get("denied_applications", [])
             if isinstance(denied, list):
-                self._terminate_denied(denied)
+                self._terminate_denied(denied, session_id=session_id)
+                self._store_process_observations(state)
+                _write_state(self._state_path, state)
+            if state.get("blocked_domains") and self._clock() >= self._next_domain_refresh:
+                # Rate-limit retries too. Existing rules remain installed on DNS
+                # failure; the Service reports maintenance_error instead of
+                # silently declaring full coverage.
+                self._next_domain_refresh = self._clock() + self._domain_refresh_seconds
+                refreshed = dict(state)
+                refreshed["domain_addresses"] = self._discover_domain_addresses(state, state)
+                desired = self._rules_from_state(refreshed)
+                refreshed["managed_firewall_rules"] = [rule.name for rule in desired]
+                try:
+                    self._firewall.reconcile(desired, self._managed_rule_names(state))
+                    _write_state(self._state_path, refreshed)
+                except (OSError, ValueError):
+                    with suppress(OSError, ValueError):
+                        self._firewall.reconcile(rules, tuple(rule.name for rule in desired))
+                    raise
 
     def _load_state(self) -> dict[str, Any] | None:
         try:
@@ -199,11 +349,47 @@ class WindowsPolicyEnforcer:
     def _rules_from_state(self, state: dict[str, Any] | None) -> tuple[FirewallRule, ...]:
         if not state or state.get("mode") != "enforce":
             return ()
-        return self._firewall.plan(
+        explicit = self._firewall.plan(
             str(state.get("session_id", "")),
             _state_string_list(state, "blocked_ips"),
             _state_string_list(state, "blocked_cidrs"),
         )
+        discovered = _domain_addresses(state)
+        domain_rules = self._firewall.plan(
+            str(state.get("session_id", "")),
+            sorted({address for values in discovered.values() for address in values}),
+            (),
+        )
+        return (*explicit, *domain_traffic_rules(domain_rules))
+
+    def _discover_domain_addresses(
+        self, state: dict[str, Any], previous: dict[str, Any] | None
+    ) -> dict[str, list[str]]:
+        domains = _state_string_list(state, "blocked_domains")
+        if not domains:
+            return {}
+        retained = _domain_addresses(previous) if previous else {}
+        # Keep addresses until this policy is removed, including DNS answers no
+        # longer advertised but still used by persistent browser connections.
+        previous_is_enforced = previous and previous.get("mode") == "enforce"
+        resolved = self._domain_resolver.resolve(domains)
+        discovered: dict[str, list[str]] = {}
+        for domain in domains:
+            known = {
+                address
+                for old_domain, values in retained.items()
+                if previous_is_enforced
+                and (old_domain == domain or old_domain.endswith(f".{domain}"))
+                for address in values
+            }
+            for value in resolved.get(domain, ()):
+                address = traffic_address(value)
+                if address is not None:
+                    known.add(address)
+            if not known:
+                raise OSError(f"cannot enforce domain traffic policy: no real IP for {domain}")
+            discovered[domain] = sorted(known)
+        return discovered
 
     def _write_blocked_domains(self, domains: list[str]) -> None:
         for domain in domains:
@@ -232,9 +418,7 @@ class WindowsPolicyEnforcer:
             check=False,
         )
         if result.returncode != 0:
-            raise OSError(
-                "cannot read USB storage baseline; run the Agent as Administrator"
-            )
+            raise OSError("cannot read USB storage baseline; run the Agent as Administrator")
         match = re.search(r"REG_DWORD\s+0x([0-9a-f]+)", result.stdout, re.IGNORECASE)
         if match is None:
             raise OSError("cannot parse the current USB storage baseline")
@@ -259,27 +443,361 @@ class WindowsPolicyEnforcer:
             check=False,
         )
         if result.returncode != 0:
-            raise OSError(
-                "cannot update USB storage policy; run the Agent as Administrator"
-            )
+            raise OSError("cannot update USB storage policy; run the Agent as Administrator")
 
-    def _terminate_denied(self, applications: list[str]) -> None:
-        for application in applications:
+    def _terminate_denied(
+        self, applications: list[str], *, session_id: str | None = None
+    ) -> tuple[ProcessEnforcementResult, ...]:
+        denied = {application.casefold() for application in applications}
+        running = self._process_provider()
+        active_identities = {(item.pid, item.creation_time) for item in running}
+        self._seen_processes.intersection_update(active_identities)
+        self._process_outcomes = {
+            identity: outcome
+            for identity, outcome in self._process_outcomes.items()
+            if identity in active_identities
+        }
+        results: list[ProcessEnforcementResult] = []
+        if session_id is None:
+            state = self._load_state()
+            session_id = str(state.get("session_id", "")) if state else ""
+        for process in running:
+            identity = (process.pid, process.creation_time)
+            if process.name.casefold() not in denied:
+                continue
+            if process.username is None:
+                process = ProcessIdentity(
+                    name=process.name,
+                    pid=process.pid,
+                    creation_time=process.creation_time,
+                    username=self._process_owner_provider(process.pid),
+                )
+            is_new = identity not in self._seen_processes
+            if is_new:
+                self._seen_processes.add(identity)
+                self._record(
+                    session_id,
+                    "FORBIDDEN_PROCESS_DETECTED",
+                    "FORBIDDEN_PROCESS",
+                    "DETECTED",
+                    "WARNING",
+                    process_name=process.name,
+                    pid=process.pid,
+                    username=process.username,
+                    process_creation_time=process.creation_time,
+                )
+            before = self._identity_status(process)
+            if before == ProcessIdentityStatus.QUERY_FAILED:
+                enforcement = ProcessEnforcementResult(
+                    process=process,
+                    detected=True,
+                    termination_attempted=False,
+                    outcome="QUERY_FAILED",
+                    error="process identity query failed before termination",
+                )
+                results.append(enforcement)
+                if self._process_outcomes.get(identity) != "QUERY_FAILED":
+                    self._record(
+                        session_id,
+                        "ENFORCEMENT_ACTION",
+                        "FORBIDDEN_PROCESS",
+                        "QUERY_FAILED",
+                        "CRITICAL",
+                        process_name=process.name,
+                        pid=process.pid,
+                        username=process.username,
+                        process_creation_time=process.creation_time,
+                        enforcement_result="QUERY_FAILED",
+                        error=enforcement.error,
+                    )
+                self._process_outcomes[identity] = "QUERY_FAILED"
+                self._degraded_error = enforcement.error
+                continue
+            if before == ProcessIdentityStatus.NOT_FOUND:
+                enforcement = ProcessEnforcementResult(
+                    process=process,
+                    detected=True,
+                    termination_attempted=False,
+                    outcome="ALREADY_EXITED",
+                )
+                results.append(enforcement)
+                if self._process_outcomes.get(identity) != "ALREADY_EXITED":
+                    self._record(
+                        session_id,
+                        "ENFORCEMENT_ACTION",
+                        "FORBIDDEN_PROCESS",
+                        "ALREADY_EXITED",
+                        "WARNING",
+                        process_name=process.name,
+                        pid=process.pid,
+                        username=process.username,
+                        process_creation_time=process.creation_time,
+                        enforcement_result="ALREADY_EXITED",
+                    )
+                self._process_outcomes[identity] = "ALREADY_EXITED"
+                continue
             result = self._runner(
-                ["taskkill", "/F", "/IM", application],
+                ["taskkill", "/F", "/PID", str(process.pid)],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            output = f"{result.stdout}\n{result.stderr}".lower()
-            process_absent = "not found" in output or "no running instance" in output
-            if result.returncode != 0 and not process_absent:
-                raise OSError(f"cannot terminate denied application: {application}")
+            after = self._identity_status(process)
+            if after == ProcessIdentityStatus.NOT_FOUND:
+                outcome = "TERMINATED" if result.returncode == 0 else "ALREADY_EXITED"
+                error = None
+            elif after == ProcessIdentityStatus.QUERY_FAILED:
+                outcome = "QUERY_FAILED"
+                error = "process identity query failed after termination"
+            else:
+                outcome = "FAILED"
+                error = "process remained active"
+            enforcement = ProcessEnforcementResult(
+                process=process,
+                detected=True,
+                termination_attempted=True,
+                outcome=outcome,
+                error=error,
+            )
+            results.append(enforcement)
+            if self._process_outcomes.get(identity) != outcome:
+                self._record(
+                    session_id,
+                    "ENFORCEMENT_ACTION",
+                    "FORBIDDEN_PROCESS",
+                    "BLOCKED" if outcome == "TERMINATED" else outcome,
+                    "CRITICAL" if outcome in {"FAILED", "QUERY_FAILED"} else "WARNING",
+                    process_name=process.name,
+                    pid=process.pid,
+                    username=process.username,
+                    process_creation_time=process.creation_time,
+                    enforcement_result=outcome,
+                )
+            self._process_outcomes[identity] = outcome
+            if outcome in {"FAILED", "QUERY_FAILED"}:
+                self._degraded_error = error or (
+                    f"denied process remained active: {process.name} pid={process.pid}"
+                )
+        return tuple(results)
+
+    def _identity_status(self, process: ProcessIdentity) -> ProcessIdentityStatus:
+        """Normalize legacy injected boolean checkers while production uses tri-state."""
+        result = self._process_identity_checker(process)
+        if isinstance(result, ProcessIdentityStatus):
+            return result
+        return ProcessIdentityStatus.EXISTS if result else ProcessIdentityStatus.NOT_FOUND
+
+    def _load_process_observations(self, state: dict[str, Any]) -> None:
+        values = state.get("observed_processes", [])
+        if not isinstance(values, list):
+            return
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            pid = value.get("pid")
+            creation_time = value.get("creation_time")
+            outcome = value.get("outcome")
+            if isinstance(pid, int) and isinstance(creation_time, str):
+                identity = (pid, creation_time)
+                self._seen_processes.add(identity)
+                if isinstance(outcome, str):
+                    self._process_outcomes[identity] = outcome
+
+    def _store_process_observations(self, state: dict[str, Any]) -> None:
+        state["observed_processes"] = [
+            {
+                "pid": pid,
+                "creation_time": creation_time,
+                "outcome": self._process_outcomes.get((pid, creation_time)),
+            }
+            for pid, creation_time in sorted(self._seen_processes)
+        ]
+
+    def _windows_processes(self) -> tuple[ProcessIdentity, ...]:
+        script = (
+            "@(Get-CimInstance Win32_Process | ForEach-Object { "
+            "[PSCustomObject]@{Name=$_.Name;Pid=$_.ProcessId;"
+            "CreationTime=$_.CreationDate} }) | ConvertTo-Json -Compress"
+        )
+        result = self._runner(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise OSError("cannot enumerate Windows processes")
+        try:
+            raw = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            raise OSError("Windows process inventory returned invalid data") from exc
+        values = raw if isinstance(raw, list) else [raw]
+        return tuple(
+            ProcessIdentity(
+                name=str(item["Name"]).lower(),
+                pid=int(item["Pid"]),
+                creation_time=str(item["CreationTime"]),
+                username=None,
+            )
+            for item in values
+            if isinstance(item, dict)
+            and item.get("Name")
+            and item.get("Pid") is not None
+            and item.get("CreationTime")
+        )
+
+    def _windows_process_identity_exists(
+        self, process: ProcessIdentity
+    ) -> ProcessIdentityStatus:
+        script = (
+            "& { param([int]$ProcessId) "
+            "$process=Get-CimInstance Win32_Process -Filter "
+            "(\"ProcessId = $ProcessId\") -ErrorAction SilentlyContinue;"
+            "if($null -eq $process){exit 3};"
+            "[PSCustomObject]@{Pid=$process.ProcessId;CreationTime=$process.CreationDate}|"
+            "ConvertTo-Json -Compress }"
+        )
+        result = self._runner(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+                str(process.pid),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 3:
+            return ProcessIdentityStatus.NOT_FOUND
+        if result.returncode != 0:
+            return ProcessIdentityStatus.QUERY_FAILED
+        try:
+            value = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError):
+            return ProcessIdentityStatus.QUERY_FAILED
+        matches = bool(
+            isinstance(value, dict)
+            and value.get("Pid") == process.pid
+            and str(value.get("CreationTime")) == process.creation_time
+        )
+        return ProcessIdentityStatus.EXISTS if matches else ProcessIdentityStatus.NOT_FOUND
+
+    def _windows_process_owner(self, process_id: int) -> str | None:
+        script = (
+            "& { param([int]$ProcessId) "
+            "$process=Get-CimInstance Win32_Process -Filter "
+            "(\"ProcessId = $ProcessId\") -ErrorAction SilentlyContinue;"
+            "if($null -eq $process){exit 3};"
+            "$owner=Invoke-CimMethod -InputObject $process -MethodName GetOwner;"
+            "if($owner.ReturnValue -eq 0){$owner.Domain+'\\'+$owner.User} }"
+        )
+        result = self._runner(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+                str(process_id),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        owner = result.stdout.strip() if result.returncode == 0 else ""
+        return owner or None
+
+    def _hosts_match(self, expected_domains: tuple[str, ...]) -> bool:
+        content = self._read_hosts()
+        expected = {
+            line
+            for domain in expected_domains
+            for line in (f"127.0.0.1 {domain}", f"127.0.0.1 www.{domain}")
+        }
+        match = re.search(
+            rf"{re.escape(POLICY_MARKER_START)}\s*(.*?)\s*{re.escape(POLICY_MARKER_END)}",
+            content,
+            re.DOTALL,
+        )
+        if match is None:
+            return not expected
+        actual = {line.strip() for line in match.group(1).splitlines() if line.strip()}
+        return actual == expected
+
+    def _recover_hosts(self, session_id: str, domains: tuple[str, ...]) -> None:
+        self._record(
+            session_id, "ENFORCEMENT_TAMPER", "HOSTS_INTEGRITY", "CONFIG_CHANGED",
+            "WARNING", target=str(self._hosts_path)
+        )
+        try:
+            self._write_blocked_domains(list(domains))
+            recovered = self._hosts_match(domains)
+        except OSError as exc:
+            recovered, error = False, str(exc)[:500]
+        else:
+            error = None
+        self._record(
+            session_id, "ENFORCEMENT_TAMPER", "HOSTS_INTEGRITY",
+            "RECOVERED" if recovered else "RECOVERY_FAILED",
+            "WARNING" if recovered else "CRITICAL", target=str(self._hosts_path),
+            recovery_status="RECOVERY_SUCCEEDED" if recovered else "RECOVERY_FAILED",
+            error=error,
+        )
+        if not recovered:
+            self._degraded_error = error or "hosts recovery verification failed"
+
+    def _recover_usb(self, session_id: str) -> None:
+        self._record(
+            session_id, "ENFORCEMENT_TAMPER", "USB_INTEGRITY", "CONFIG_CHANGED",
+            "WARNING", target=USBSTOR_KEY
+        )
+        try:
+            self._set_usb_start(4)
+            recovered = self._read_usb_start() == 4
+        except OSError as exc:
+            recovered, error = False, str(exc)[:500]
+        else:
+            error = None
+        self._record(
+            session_id, "ENFORCEMENT_TAMPER", "USB_INTEGRITY",
+            "RECOVERED" if recovered else "RECOVERY_FAILED",
+            "WARNING" if recovered else "CRITICAL", target=USBSTOR_KEY,
+            recovery_status="RECOVERY_SUCCEEDED" if recovered else "RECOVERY_FAILED",
+            error=error,
+        )
+        if not recovered:
+            self._degraded_error = error or "USB recovery verification failed"
+
+    def _record(
+        self,
+        session_id: str,
+        event_type: str,
+        category: str,
+        action: str,
+        severity: str,
+        **details: Any,
+    ) -> None:
+        if self._event_sink is None or not session_id:
+            return
+        try:
+            self._event_sink(
+                session_id=session_id,
+                event_type=event_type,
+                category=category,
+                action=action,
+                severity=severity,
+                source="privileged-service",
+                details={key: value for key, value in details.items() if value is not None},
+            )
+        except Exception as exc:
+            self._degraded_error = "security event journal unavailable"
+            LOGGER.error("security event journal write failed: %s", str(exc)[:500])
 
 
-def _state_from_specification(
-    specification: PolicySpecification, mode: str
-) -> dict[str, Any]:
+def _state_from_specification(specification: PolicySpecification, mode: str) -> dict[str, Any]:
     domains = sorted(
         {
             domain
@@ -325,3 +843,23 @@ def _state_string_list(state: dict[str, Any], key: str) -> tuple[str, ...]:
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
         raise OSError(f"EECP policy state field {key} is invalid")
     return tuple(values)
+
+
+def _domain_addresses(state: dict[str, Any]) -> dict[str, list[str]]:
+    values = state.get("domain_addresses", {})
+    if not isinstance(values, dict):
+        raise OSError("EECP domain address state is invalid")
+    result: dict[str, list[str]] = {}
+    for domain, addresses in values.items():
+        validate_hostname(domain, field="persisted traffic domain")
+        if not isinstance(addresses, list) or not all(
+            isinstance(value, str) for value in addresses
+        ):
+            raise OSError("EECP domain address state is invalid")
+        result[domain] = []
+        for value in addresses:
+            address = traffic_address(value)
+            if address is None:
+                raise OSError("EECP domain address state contains a sinkhole address")
+            result[domain].append(address)
+    return result

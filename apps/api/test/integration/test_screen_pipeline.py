@@ -15,12 +15,14 @@ from app.presentation.api.routers.gateways import _handle_gateway_message
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from agent.client.screen.capture import CapturedFrame
+from agent.client.screen.manager import EvidenceManager
 from agent.client.screen.transport import ScreenUploader
 from apps.api.test.integration.test_local_gateway_agent_ws import FakeUplink, _settings
 from apps.api.test.integration.test_security_events_api import _running_session
 from apps.gateway.app.main import create_app as create_gateway
 from apps.gateway.app.screen import ScreenForwarder, ScreenSpool
-from contracts.v2 import GatewayEnvelope, GatewayMessageType
+from contracts.v2 import Event, EventType, GatewayEnvelope, GatewayMessageType
 from contracts.v2.screen import ScreenFrame, ScreenRequest, ScreenResponse
 
 
@@ -90,6 +92,136 @@ def ingest(client, value, data=None, token="gateway-token", gateway="GW1"):
             "Content-Type": value.content_type,
         },
     )
+
+
+def test_pre_event_representative_is_bounded_and_does_not_enable_bulk_context_upload(
+    tmp_path, monkeypatch
+):
+    _app, backend, _session_id, value = setup_backend(tmp_path, monkeypatch)
+    historical = value.model_copy(update={
+        "kind": "event_context", "frame_id": "before-event",
+        "captured_at": value.event_occurred_at - timedelta(seconds=1),
+        "event_received_at": value.event_occurred_at + timedelta(seconds=2),
+    })
+    response = ingest(backend, historical)
+    assert response.status_code == 200, response.text
+    assert ingest(backend, historical).json()["server_stored"]
+    extra = historical.model_copy(update={"frame_id": "extra-before"})
+    assert ingest(backend, extra).status_code == 409
+    assert ingest(backend, value).status_code == 200  # Separate post-detection trigger.
+    assert ingest(backend, value.model_copy(update={"kind": "context"})).status_code == 403
+    for offset in (-31, 1):
+        invalid = historical.model_copy(update={
+            "captured_at": historical.event_occurred_at + timedelta(seconds=offset),
+        })
+        assert ingest(backend, invalid).status_code == 422
+
+
+def test_merged_evidence_lists_every_linked_event_without_replacing_primary(
+    tmp_path, monkeypatch
+):
+    _app, backend, session_id, value = setup_backend(tmp_path, monkeypatch)
+    assert ingest(backend, value).status_code == 200
+    response = backend.post(f"/api/v1/sessions/{session_id}/telemetry", json={
+        "workstation_id": "PC01", "event_type": "POLICY_VIOLATION",
+        "severity": "WARNING", "category": "PROHIBITED_WEBSITE", "action": "OBSERVED",
+        "event_id": "evt2", "occurred_at": value.event_occurred_at.isoformat(),
+        "payload": {"evidence_id": "evidence1"},
+    })
+    assert response.status_code == 202, response.text
+    values = backend.get(f"/api/v1/sessions/{session_id}/screen/evidence").json()
+    assert values[0]["event_id"] == "evt1"
+    assert set(values[0]["event_ids"]) == {"evt1", "evt2"}
+    assert len(values[0]["frames"]) == 1
+
+
+def test_gateway_reloads_old_manifests_without_optional_timing_field(tmp_path):
+    value = frame("ses1")
+    spool = ScreenSpool(tmp_path)
+    spool.put(value, image_bytes())
+    manifest = tmp_path / f"{spool.key(value)}.json"
+    old = json.loads(manifest.read_text())
+    old["frame"].pop("event_received_at", None)
+    manifest.write_text(json.dumps(old))
+    restarted = ScreenSpool(tmp_path)
+    receipt = restarted.put(value, image_bytes())
+    assert receipt["gateway_received"] and not receipt["server_stored"]
+
+
+def test_storage_atomically_limits_concurrent_automatic_representatives(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    app, _backend, _session_id, value = setup_backend(tmp_path, monkeypatch)
+
+    def store(index):
+        candidate = value.model_copy(update={"frame_id": f"concurrent-{index}"})
+        try:
+            return app.state.screen_store.store_frame(candidate, image_bytes())["server_stored"]
+        except ValueError as exc:
+            assert "representative" in str(exc)
+            return False
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(store, range(4)))
+    assert results.count(True) == 1
+    assert len(app.state.screen_store.frames(value.evidence_id)) == 1
+
+
+def test_session_finish_during_wan_outage_drains_existing_images_after_recovery(
+    tmp_path, monkeypatch
+):
+    _app, backend, session_id, value = setup_backend(tmp_path, monkeypatch)
+    spool = ScreenSpool(tmp_path / "gateway")
+    online = [False]
+    captures = []
+    now = value.event_occurred_at
+
+    def capture(high):
+        captures.append(high)
+        return CapturedFrame(f"captured-{len(captures)}", now, image_bytes(), 320, 180)
+
+    def upload(metadata, data):
+        receipt = spool.put(metadata, data)
+        if online[0] and not receipt["server_stored"]:
+            response = ingest(backend, metadata, data)
+            assert response.status_code == 200, response.text
+            spool.complete(spool.key(metadata), response.json())
+        return spool.put(metadata, data)["server_stored"]
+
+    manager = EvidenceManager("PC01", lambda _: None, upload, capture=capture, clock=lambda: now)
+    manager.activate(session_id, {})
+    manager.ring.add(CapturedFrame("before", now - timedelta(seconds=1), image_bytes(), 320, 180))
+    evidence_id = manager.on_event(Event(
+        protocol_version=2, event_id="evt-drain", session_id=session_id, agent_id="PC01",
+        event_type=EventType.POLICY_VIOLATION, occurred_at=now,
+        payload={"destination": "chatgpt.com", "severity": "WARNING"},
+    ))
+    response = backend.post(f"/api/v1/sessions/{session_id}/telemetry", json={
+        "workstation_id": "PC01", "event_type": "POLICY_VIOLATION",
+        "severity": "WARNING", "category": "PROHIBITED_WEBSITE", "action": "OBSERVED",
+        "event_id": "evt-drain", "occurred_at": now.isoformat(),
+        "payload": {"evidence_id": evidence_id},
+    })
+    assert response.status_code == 202, response.text
+    manager.capture_once()
+    assert manager.upload_once()
+    assert spool.health()["pending_frames"] == 1
+    response = backend.patch(f"/api/v1/sessions/{session_id}/status", json={"status": "FINISHED"})
+    assert response.status_code == 200, response.text
+    manager.deactivate()
+    capture_count = len(captures)
+    manager.capture_once()
+    assert len(captures) == capture_count
+    online[0] = True
+    for job in manager._jobs.values():
+        job.next_attempt = 0
+    while manager.upload_once():
+        pass
+    assert not manager._jobs and manager.evidence_bytes == 0
+    values = backend.get(f"/api/v1/sessions/{session_id}/screen/evidence").json()
+    stored = next(item for item in values if item["id"] == evidence_id)
+    assert not stored["replay_available"]
+    assert {item["kind"] for item in stored["frames"]} == {"event_context", "trigger"}
 
 
 def test_violation_gateway_durable_ack_server_storage_and_view_after_client_exit(

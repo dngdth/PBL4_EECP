@@ -90,7 +90,7 @@ class ScreenSpool:
             manifest = self.root / f"{key}.json"
             if key in self._entries:
                 old = self._entries[key]
-                if old["frame"] != frame.model_dump(mode="json"):
+                if ScreenFrame.model_validate(old["frame"]) != frame:
                     raise ValueError("screenshot identity was reused with different metadata")
                 if old["state"] == "pending":
                     image_path = self.root / f"{key}.bin"

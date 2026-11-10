@@ -174,6 +174,15 @@ class ScreenStore:
         except (OSError, Image.DecompressionBombError, SyntaxError) as exc:
             raise ValueError("invalid encoded screenshot") from exc
         with self.lock, self.connection() as connection:
+            # Enforce the automatic-image limit inside the storage lock as well as
+            # at the HTTP boundary: concurrent ingests can pass the route check.
+            if frame.request_id is None and frame.kind in {"trigger", "event_context"}:
+                for row in connection.execute(
+                    "SELECT metadata FROM screen_frames WHERE evidence_id=?", (frame.evidence_id,)
+                ).fetchall():
+                    existing = ScreenFrame.model_validate_json(row["metadata"])
+                    if existing.kind == frame.kind and existing.frame_id != frame.frame_id:
+                        raise ValueError("representative screenshot is already stored")
             key = self.frame_key(frame.evidence_id, frame.frame_id)
             old = connection.execute("SELECT * FROM screen_frames WHERE id=?", (key,)).fetchone()
             if old is not None:

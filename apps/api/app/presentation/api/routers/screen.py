@@ -59,6 +59,19 @@ def list_evidence(session_id: str, request: Request, agent_id: str | None = None
     session = session_for(request, session_id, agent_id)
     audit(request, session_id, "SCREEN_EVIDENCE_LISTED", agent_id or session_id)
     values = request.app.state.screen_store.list_evidence(session_id, agent_id)
+    by_id = {value["id"]: value for value in values}
+    for value in values:
+        value["event_ids"] = [value["event_id"]] if value.get("event_id") else []
+    with request.app.state.container.database.unit_of_work() as uow:
+        for event in uow.telemetry.list_for_session(session_id):
+            evidence_id = event.payload.get("evidence_id")
+            value = by_id.get(evidence_id) if isinstance(evidence_id, str) else None
+            if (
+                value is not None
+                and value["agent_id"] == event.workstation_id
+                and event.id not in value["event_ids"]
+            ):
+                value["event_ids"].append(event.id)
     if session.state.value != "RUNNING":
         for value in values:
             value["replay_available"] = False
@@ -262,12 +275,13 @@ async def ingest_frame(gateway_id: str, request: Request) -> dict:
             control.end_at and frame.captured_at > control.end_at
         ):
             raise HTTPException(403, "screenshot is outside requested replay window")
-    elif frame.kind != "trigger" or frame.event_id is None:
+    elif frame.kind not in {"trigger", "event_context"} or frame.event_id is None:
         raise HTTPException(403, "context images require an examiner replay request")
     else:
         existing = store.frames(frame.evidence_id)
         if any(
-            value["kind"] == "trigger" and value["frame_id"] != frame.frame_id for value in existing
+            value["kind"] == frame.kind and value["frame_id"] != frame.frame_id
+            for value in existing
         ):
             raise HTTPException(409, "representative screenshot is already stored")
     if frame.event_id:

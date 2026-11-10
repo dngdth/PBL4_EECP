@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiClient } from '@/src/shared/api/client';
+import { frameTimeOffset, frameTimingLabel } from './screen-evidence-time';
 
 interface Frame {
   frame_id: string;
   evidence_id: string;
   captured_at: string;
   event_occurred_at?: string;
-  kind: 'context' | 'trigger' | 'snapshot';
+  event_received_at?: string;
+  kind: 'context' | 'event_context' | 'trigger' | 'snapshot';
   width: number;
   height: number;
   url: string;
@@ -16,6 +18,7 @@ interface Evidence {
   id: string;
   agent_id: string;
   event_id?: string;
+  event_ids?: string[];
   status: string;
   reason?: string;
   replay_available: boolean;
@@ -64,11 +67,14 @@ function EvidenceImage({ frame }: { frame: Frame }) {
   return <div className="space-y-2">
     <p className="text-xs text-text-muted">
       Chụp lúc {new Date(frame.captured_at).toLocaleString('vi-VN')} · {frame.width} × {frame.height}
-      {' · '}{frame.kind === 'trigger' ? 'Ảnh khi phát hiện sự kiện' :
-        frame.kind === 'snapshot' ? 'Ảnh chụp theo yêu cầu' : 'Ảnh ngữ cảnh'}
+      {' · '}{frameTimingLabel(frame)}
       {frame.event_occurred_at && <> · Sự kiện lúc {
         new Date(frame.event_occurred_at).toLocaleString('vi-VN')
       }</>}
+      {frame.event_received_at && <> · Agent nhận lúc {
+        new Date(frame.event_received_at).toLocaleString('vi-VN')
+      }</>}
+      {frameTimeOffset(frame) && <> · {frameTimeOffset(frame)}</>}
     </p>
     {error && <p role="alert" className="text-error text-xs">{error}</p>}
     {url ? <a href={url} target="_blank" rel="noreferrer" aria-label="Mở ảnh kích thước đầy đủ">
@@ -187,6 +193,12 @@ export function ScreenEvidencePanel({
       </label>
       {selected?.reason && <p className="text-xs text-warning-dark">{selected.reason}</p>}
       {selected && <p className="text-xs text-text-muted font-mono break-all">{selected.id}</p>}
+      {selected?.event_ids && selected.event_ids.length > 1 && <details className="text-xs">
+        <summary>Cùng bộ ảnh: {selected.event_ids.length} sự kiện riêng biệt</summary>
+        <ul className="font-mono break-all">
+          {selected.event_ids.map(id => <li key={id}>{id}</li>)}
+        </ul>
+      </details>}
       {frame ? <>
         <EvidenceImage frame={frame} />
         {selected.frames.length > 1 && <label className="block text-xs">

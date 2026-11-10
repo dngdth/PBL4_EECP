@@ -6,8 +6,12 @@ Capture and HTTP upload use separate worker threads, independent of heartbeat.
 
 Screen-capable Clients advertise that capability in Presence. Backend returns
 `SCREEN_SESSION_STATE` on heartbeat using its RUNNING-session/policy-ACK truth.
-Stopping a session clears Client screen RAM within the next online state sync;
-it does not stop privileged enforcement or restore OS settings. During a network
+Stopping a session stops new capture and clears the ring/unrequested context within
+the next online state sync. Already queued images and their authorized manifests
+remain in bounded RAM until Backend ACK or their original retention deadline; they
+continue uploading independently of capture, including after another session starts.
+They retain their original Agent/session/event identity. This does not stop
+privileged enforcement or restore OS settings. During a network
 outage the last authorized capture session continues until state can synchronize.
 Older Clients do not advertise the capability and do not receive the new message.
 
@@ -18,14 +22,25 @@ Older Clients do not advertise the capability and do not receive the new message
    frames / 30 seconds / 8 MiB of compressed context in RAM.
 2. A relevant sensor event allocates an `evidence_id`. Its event payload includes
    that ID before entering the existing durable event spool. Similar events for the
-   same target merge for 10 seconds. The primary event ID is retained in the evidence.
-3. Pin the available 30 seconds before the event, capture a new JPEG at maximum
-   dimension 2560 / quality 85 and gather 15 seconds after detection. Pre-event
-   context stays at its original low resolution; it cannot be reconstructed at
-   higher resolution. Delayed Service/DNS events may have no historical images.
-4. Upload the representative image immediately over HTTP(S) to `/screen/frames` on
-   the Gateway. Do not stream the entire ring. Context/replay uploads require a
-   Backend-authorized `SCREEN_REQUEST` delivered over the existing WSS control plane.
+   same target merge within 10 seconds of the original event occurrence time, not
+   batch arrival time. Process events require matching PID and process creation
+   time to merge; events without that identity stay separate. A group contains at
+   most 64 event IDs. The primary event ID remains stable, and the evidence listing
+   exposes every linked event ID from persisted telemetry.
+3. Pin available context from 30 seconds before through 15 seconds after the event.
+   Queue the closest available frame at/before the event as `event_context`, limited
+   to the preceding 30 seconds. Also capture a JPEG at maximum dimension 2560 /
+   quality 85 as `trigger` while the event's 15-second post window remains open.
+   `captured_at`, `event_occurred_at` and `event_received_at` distinguish historical
+   context, event time and delayed Agent receipt. A late event/worker does not take
+   a current trigger after that window. Missing history is reported explicitly;
+   low-resolution history cannot be reconstructed at higher resolution.
+4. Upload at most one `event_context` and one `trigger` image automatically over
+   HTTP(S) to `/screen/frames` on the Gateway. Backend validates the historical
+   window/event identity and enforces each representative limit under its storage
+   lock, including concurrent ingests. Do not stream the entire ring. Full context/
+   replay uploads require a Backend-authorized `SCREEN_REQUEST` delivered over the
+   existing WSS control plane.
 5. Gateway verifies the Agent credential against its claimed identity and validates
    size/hash. It atomically persists image + manifest before `gateway_received` ACK.
    Its independent forwarder retries the Backend HTTP(S) ingest route during WAN loss.
@@ -36,11 +51,12 @@ Older Clients do not advertise the capability and do not receive the new message
 7. Gateway persists that receipt and deletes its temporary image. A retry after a
    lost ACK returns the receipt instead of creating another evidence record. Client
    retries until a server receipt or its RAM retention limit. Pinned context remains
-   available for examiner replay until expiry; it is not sent on reconnect.
+   available for examiner replay while the session is active and until expiry;
+   unrequested context is not sent on reconnect or retained after session stop.
 
 The default RAM evidence pool is 32 MiB and 64 evidence sets, retained for 15 minutes.
 Immutable encoded frames are shared by buffers/jobs, so overlapping events do not
-copy image bytes. When possible, context is shortened to make room for a trigger
+copy image bytes. When possible, context is shortened to make room for a representative
 image; incomplete context is reported explicitly. All limits are ceilings, not a
 promise that a complete window survives memory pressure. Upload is one worker on
 Client, up to four independent forwards on Gateway and four ingests on Backend.
@@ -71,6 +87,17 @@ All monitors are captured as one virtual desktop; text may be smaller on a large
 multi-monitor setup. Locked/secure desktops return unavailable, and no desktop is
 switched or bypassed. Compression/native capture and Python runtime overhead sit
 outside the encoded-buffer budgets.
+
+Pending image bytes remain RAM-only on Agent: killing/exiting the Client can lose
+images not yet durably received by Gateway. Session stop is different from process
+exit and now drains pending uploads without extending capture authority. Durable
+event spooling remains independent of image retention. To survive Agent crashes,
+a separate protected, quota/TTL-bounded image spool would be needed; this change
+does not add one. Existing RAM/item/queue ceilings also apply across draining and
+active sessions, so a full queue may reject new evidence instead of growing RAM.
+
+Upgrade Gateway, Backend and Client together for the new `event_context` frame kind.
+Older Gateway manifests without optional `event_received_at` still load/retry.
 
 Compose mounts `screen-evidence` for Backend images and stores the Gateway spool
 inside the existing persistent `gateway-buffer` volume. The same-host TLS proxy
@@ -132,6 +159,14 @@ active state without a protected journal is rejected rather than silently truste
 Keep the verification secret stable; key rotation needs an explicit journal migration.
 
 ## Verification
+
+The 2026-11-10 lifecycle/timing fix passed 593 Python tests (2 skipped), four
+frontend tests, production TypeScript/Vite build, and Ruff on all changed Python
+files. Regression cases include session finish during WAN loss and upload recovery,
+capture cancellation, inactive request rejection, late events, pre-event time
+bounds, process identity-aware merging, linked event IDs, legacy Gateway manifests,
+and concurrent representative-image limits. These are automated adapter tests;
+two-machine Windows desktop/SCM validation and new RAM/CPU benchmarks were not run.
 
 Automated tests cover bounded ring/pinned RAM, event merge, post-context, request
 limits, unavailable capture, session cleanup, separate ACKs, Gateway restart/quota/

@@ -17,14 +17,14 @@ def frame(index=0, size=100):
     return CapturedFrame(f"frame_{index}", NOW + timedelta(seconds=index), b"x" * size, 100, 50)
 
 
-def event(index=0, **payload):
+def event(index=0, *, occurred_at=NOW, event_type=EventType.POLICY_VIOLATION, **payload):
     return Event(
         protocol_version=2,
         event_id=f"event_{index}",
         session_id="ses1",
         agent_id="PC01",
-        occurred_at=NOW,
-        event_type=EventType.POLICY_VIOLATION,
+        occurred_at=occurred_at,
+        event_type=event_type,
         payload={"severity": "WARNING", "destination": "chatgpt.com", **payload},
     )
 
@@ -81,7 +81,7 @@ def test_ring_enforces_time_count_and_bytes_and_rejects_oversized_frame():
     assert ring.size_bytes == 0
 
 
-def test_pin_survives_ring_rotation_and_only_trigger_uploads_automatically():
+def test_pin_survives_ring_rotation_and_only_representatives_upload_automatically():
     sent = []
     manager, now, captures, _ = make_manager(upload=lambda meta, data: sent.append(meta) or True)
     manager.capture_once()
@@ -95,7 +95,8 @@ def test_pin_survives_ring_rotation_and_only_trigger_uploads_automatically():
     assert pinned is not manager.ring.latest()
     assert manager._items[evidence_id].frames[0][0] is pinned
     assert manager.upload_once()
-    assert [value.kind for value in sent] == ["trigger"]
+    assert manager.upload_once()
+    assert [value.kind for value in sent] == ["event_context", "trigger"]
     assert not manager.upload_once()
 
 
@@ -181,12 +182,17 @@ def test_capture_failure_does_not_stop_context_worker_or_create_fake_image():
     assert any(value.status == "unavailable" for value in notices)
 
 
-def test_session_change_clears_old_session_images_and_jobs():
-    manager, _, _, _ = make_manager()
+def test_session_change_preserves_queued_images_without_capturing_old_session():
+    sent = []
+    manager, _, _, _ = make_manager(upload=lambda meta, _: sent.append(meta) or True)
     manager.on_event(event())
     manager.capture_once()
     manager.activate("ses2", {})
-    assert not manager._items and not manager._jobs and manager.ring.latest() is None
+    assert manager.ring.latest() is None
+    assert all(item.capture_stopped for item in manager._items.values())
+    assert manager.upload_once()
+    assert sent[0].session_id == "ses1"
+    assert not manager._items and not manager._jobs
 
 
 def test_contract_rejects_unbounded_and_mismatched_requests():
@@ -244,7 +250,7 @@ def test_screen_request_reaches_capture_worker_and_rejects_forged_source():
         client._receive(envelope.model_copy(update={"source_id": "other"}).to_json())
 
 
-def test_capture_requires_running_session_authority_and_stop_clears_ram():
+def test_capture_authority_stops_capture_but_drains_already_queued_images():
     manager, _, captures, _ = make_manager(require_session_authorization=True)
     manager.capture_once()
     assert not captures
@@ -255,9 +261,182 @@ def test_capture_requires_running_session_authority_and_stop_clears_ram():
     manager.on_event(event())
     manager.capture_once()
     manager.authorize_session(None)
+    capture_count = len(captures)
     manager.activate("ses1", {})  # An old policy ACK cannot restart capture after FINISHED.
     manager.capture_once()
-    assert not manager._items and not manager._jobs and manager.ring.latest() is None
+    assert len(captures) == capture_count
+    assert manager.ring.latest() is None
+    assert manager._jobs
+    while manager.upload_once():
+        pass
+    assert not manager._items and not manager._jobs
+
+
+def test_closest_pre_event_image_is_queued_before_trigger_worker_runs():
+    sent = []
+    manager, now, _, _ = make_manager(upload=lambda meta, _: sent.append(meta) or True)
+    manager.ring.add(frame(-5))
+    manager.ring.add(frame(-1))
+    manager.ring.add(frame(1))  # A later image must not be labelled pre-event.
+    now[0] += timedelta(seconds=3)
+    evidence_id = manager.on_event(event())
+    assert manager.upload_once()
+    assert sent[0].kind == "event_context"
+    assert sent[0].frame_id == "frame_-1"
+    assert sent[0].captured_at == NOW - timedelta(seconds=1)
+    assert sent[0].event_occurred_at == NOW
+    assert sent[0].event_received_at == now[0]
+    assert sent[0].evidence_id == evidence_id
+
+
+def test_delayed_event_uses_history_without_taking_a_current_trigger():
+    sent = []
+    manager, now, captures, _ = make_manager(upload=lambda meta, _: sent.append(meta) or True)
+    manager.ring.add(frame(-2))
+    now[0] += timedelta(seconds=20)
+    evidence_id = manager.on_event(event())
+    manager.capture_once()
+    assert True not in captures
+    assert not manager._items[evidence_id].needs_trigger
+    assert manager.upload_once()
+    assert sent[0].kind == "event_context"
+    assert sent[0].captured_at < sent[0].event_occurred_at
+
+
+def test_event_outside_history_reports_unavailable_instead_of_current_image():
+    manager, now, captures, notices = make_manager()
+    now[0] += timedelta(seconds=120)
+    manager.on_event(event())
+    manager.capture_once()
+    assert True not in captures
+    assert not manager._jobs
+    assert any(value.status == "unavailable" for value in notices)
+
+
+def test_late_event_batch_does_not_merge_distant_occurrence_times():
+    manager, now, _, _ = make_manager()
+    now[0] += timedelta(minutes=3)
+    first = manager.on_event(event())
+    second = manager.on_event(event(1, occurred_at=NOW + timedelta(minutes=2)))
+    assert first != second
+
+
+def test_process_merge_requires_matching_pid_and_creation_time():
+    manager, _, _, _ = make_manager()
+    base = dict(
+        event_type=EventType.FORBIDDEN_PROCESS_DETECTED,
+        process_name="denied.exe", pid=12, process_creation_time="created-1",
+    )
+    first = manager.on_event(event(0, **base))
+    assert manager.on_event(event(1, **base)) == first
+    assert manager._items[first].event_ids == {"event_0", "event_1"}
+    assert manager.on_event(event(2, **{**base, "pid": 13})) != first
+    assert manager.on_event(event(3, **{**base, "process_creation_time": "created-2"})) != first
+    missing = {**base, "pid": None, "process_creation_time": None}
+    assert manager.on_event(event(4, **missing)) != manager.on_event(event(5, **missing))
+
+
+def test_same_event_replay_is_idempotent_after_merge():
+    manager, _, _, _ = make_manager()
+    first = manager.on_event(event())
+    assert manager.on_event(event(1)) == first
+    assert manager.on_event(event(1)) == first
+    assert manager._items[first].event_ids == {"event_0", "event_1"}
+
+
+def test_stop_releases_unrequested_context_but_retries_queued_images():
+    calls = []
+    manager, now, captures, _ = make_manager(upload=lambda meta, _: calls.append(meta) or False)
+    manager.capture_once()
+    manager.on_event(event())
+    manager.capture_once()
+    now[0] += timedelta(seconds=2)
+    manager._next_capture = 0
+    manager.capture_once()
+    manager.deactivate()
+    count = len(captures)
+    assert all(kind != "context" for item in manager._items.values() for _, kind in item.frames)
+    assert manager.upload_once()
+    manager.capture_once()
+    assert len(captures) == count
+    assert manager._jobs
+    now[0] += timedelta(seconds=901)
+    manager.capture_once()
+    assert not manager._jobs and manager.evidence_bytes == 0
+
+
+def test_stop_during_capture_discards_in_flight_image_and_stops_further_grabs():
+    manager, now, captures, _ = make_manager()
+
+    def finish_during_grab(high):
+        captures.append(high)
+        manager.deactivate()
+        return CapturedFrame("late", now[0], b"x", 1, 1)
+
+    manager._capture = finish_during_grab
+    manager.on_event(event())
+    manager.capture_once()
+    assert captures == [True]
+    assert not manager._jobs and not manager._items and manager.ring.latest() is None
+
+
+def test_stopped_snapshot_manifest_is_retried_without_new_capture():
+    manager, _, captures, notices = make_manager(upload=lambda *_: False)
+    manager.request(request())
+    manager.capture_once()
+    manager.deactivate()
+    notices.clear()
+    count = len(captures)
+    manager._last_notice = 0
+    manager.capture_once()
+    assert len(captures) == count
+    assert any(value.request_id == "req1" and value.frames for value in notices)
+    assert manager._jobs
+
+
+def test_new_session_does_not_add_frames_to_draining_old_evidence():
+    manager, now, _, _ = make_manager(upload=lambda *_: False)
+    first = manager.on_event(event())
+    manager.capture_once()
+    manager.activate("ses2", {})
+    old_ids = [value.frame_id for value, _ in manager._items[first].frames]
+    now[0] += timedelta(seconds=1)
+    manager.capture_once()
+    assert [value.frame_id for value, _ in manager._items[first].frames] == old_ids
+    assert all(job.metadata.session_id == "ses1" for job in manager._jobs.values())
+
+
+def test_inactive_requests_are_rejected_immediately_without_restarting_capture():
+    manager, _, captures, notices = make_manager()
+    manager.deactivate()
+    manager.request(request())
+    assert notices[-1].request_id == "req1"
+    assert notices[-1].status == "unavailable"
+    assert manager._requests.empty()
+    manager.capture_once()
+    assert not captures
+
+
+def test_worker_delay_past_event_window_does_not_take_a_trigger():
+    manager, now, captures, notices = make_manager()
+    manager.on_event(event())
+    now[0] += timedelta(seconds=20)
+    manager.capture_once()
+    assert True not in captures
+    assert not manager._jobs
+    assert any(value.status == "unavailable" for value in notices)
+
+
+def test_full_upload_queue_does_not_advertise_unscheduled_replay_frames(monkeypatch):
+    manager, _, _, notices = make_manager()
+    manager.capture_once()
+    evidence_id = manager.on_event(event())
+    manager.capture_once()
+    monkeypatch.setattr(manager, "_schedule", lambda *_: False)
+    manager.request(request(mode="REPLAY", evidence_id=evidence_id))
+    manager.capture_once()
+    response = next(value for value in notices if value.request_id == "req1")
+    assert response.status == "unavailable" and response.frames == []
 
 
 def test_screen_session_control_ignores_stale_enable_after_stop():

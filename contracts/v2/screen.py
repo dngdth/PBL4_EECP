@@ -12,6 +12,7 @@ from contracts.v2.common import OpaqueId, Sha256Hex, UtcDatetime, VersionedContr
 ScreenId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,160}$")]
 MAX_FRAME_BYTES = 2 * 1024 * 1024
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
+MAX_EVENT_CONTEXT_SECONDS = 30
 
 
 class ScreenMode(StrEnum):
@@ -70,10 +71,11 @@ class ScreenFrame(VersionedContract):
     request_id: ScreenId | None = None
     captured_at: UtcDatetime
     event_occurred_at: UtcDatetime | None = None
+    event_received_at: UtcDatetime | None = None
     available_until: UtcDatetime
     policy_hash: Sha256Hex | None = None
     monitor_id: OpaqueId = "virtual-desktop"
-    kind: Literal["context", "trigger", "snapshot"]
+    kind: Literal["context", "event_context", "trigger", "snapshot"]
     width: int = Field(strict=True, ge=1, le=16384)
     height: int = Field(strict=True, ge=1, le=16384)
     content_type: Literal["image/jpeg", "image/webp"] = "image/jpeg"
@@ -86,6 +88,12 @@ class ScreenFrame(VersionedContract):
             raise ValueError("frame retention must follow capture time")
         if self.width * self.height > 40_000_000:
             raise ValueError("frame pixel limit exceeded")
+        if self.kind == "event_context":
+            if self.event_id is None or self.event_occurred_at is None:
+                raise ValueError("event context requires an event identity and occurrence time")
+            age = (self.event_occurred_at - self.captured_at).total_seconds()
+            if not 0 <= age <= MAX_EVENT_CONTEXT_SECONDS:
+                raise ValueError("event context must precede the event by at most 30 seconds")
         return self
 
 

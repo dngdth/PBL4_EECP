@@ -15,6 +15,7 @@ from agent.client.screen.buffer import RingBuffer
 from agent.client.screen.capture import CapturedFrame, ScreenSettings, WindowsScreenCapture
 from contracts.v2 import Event
 from contracts.v2.screen import (
+    MAX_EVENT_CONTEXT_SECONDS,
     ScreenFrame,
     ScreenMode,
     ScreenRequest,
@@ -38,6 +39,8 @@ class Evidence:
     needs_trigger: bool = True
     reason: str | None = None
     stored: set[str] = field(default_factory=set)
+    event_ids: set[str] = field(default_factory=set)
+    capture_stopped: bool = False
 
 
 @dataclass
@@ -52,7 +55,8 @@ class EvidenceManager:
     """Bounded RAM ownership with independent capture and upload workers.
 
     Immutable compressed frame objects are shared by ring/evidence/jobs, not copied.
-    Only trigger frames upload automatically. Context uploads require a scoped request.
+    One pre-event representative and one trigger upload automatically. Full context
+    uploads require a scoped request. Stopped sessions retain only queued frames.
     """
 
     def __init__(
@@ -84,6 +88,7 @@ class EvidenceManager:
         self._log = log
         self._lock = threading.RLock()
         self._session_id: str | None = None
+        self._capture_epoch = 0
         self._require_session_authorization = require_session_authorization
         self._authorized_session_id: str | None = None
         self._policy_hash: str | None = None
@@ -116,6 +121,8 @@ class EvidenceManager:
             thread.join(timeout=12)
         self._threads.clear()
         self.deactivate()
+        with self._lock:
+            self._clear()
 
     def activate(self, session_id: str, policy: dict) -> None:
         with self._lock:
@@ -123,7 +130,8 @@ class EvidenceManager:
                 self.deactivate()
                 return
             if self._session_id != session_id:
-                self._clear()
+                self.deactivate()
+                self._capture_epoch += 1
                 self._next_capture = 0
             self._session_id = session_id
             self._policy_hash = policy.get("policy_hash")
@@ -136,8 +144,41 @@ class EvidenceManager:
 
     def deactivate(self) -> None:
         with self._lock:
+            previous_session = self._session_id
             self._session_id = None
-            self._clear()
+            self._policy_hash = None
+            self._capture_epoch += 1
+            self.ring.clear()
+            now = self._clock()
+            for evidence_id, item in tuple(self._items.items()):
+                if item.session_id != previous_session or item.capture_stopped:
+                    continue
+                item.capture_stopped = True
+                item.needs_trigger = False
+                item.capture_until = min(item.capture_until, now)
+                pending = {key[1] for key in self._jobs if key[0] == evidence_id}
+                item.frames[:] = [pair for pair in item.frames if pair[0].frame_id in pending]
+                if not pending and not item.stored:
+                    item.reason = "session ended before an image could be queued for upload"
+                self._notice(item, self._status(item))
+                if not pending:
+                    self._release(evidence_id)
+            while not self._requests.empty():
+                try:
+                    request = self._requests.get_nowait()
+                except queue.Empty:
+                    break
+                self._respond(request, ScreenStatus.UNAVAILABLE, reason="capture session ended")
+            self.prune(now)
+            self._wake.set()
+
+    def _release(self, evidence_id: str) -> None:
+        self._items.pop(evidence_id, None)
+        self._notice_cache.pop(evidence_id, None)
+        for request_id, response in tuple(self._responses.items()):
+            if response.evidence_id == evidence_id:
+                self._responses.pop(request_id, None)
+                self._response_expiry.pop(request_id, None)
 
     def _clear(self) -> None:
         self.ring.clear()
@@ -177,7 +218,7 @@ class EvidenceManager:
         with self._lock:
             now = self._clock()
             self.prune(now)
-            if event.session_id != self._session_id:
+            if event.agent_id != self.agent_id or event.session_id != self._session_id:
                 return None
             key = (
                 event.event_type,
@@ -188,14 +229,38 @@ class EvidenceManager:
                         "destination",
                         "process_name",
                         "action",
+                        "severity",
+                        "source",
+                        "pid",
+                        "process_creation_time",
+                        "username",
+                        "target",
+                        "device_id",
                     )
                 ),
             )
+            process_event = event.event_type.value in {
+                "FORBIDDEN_PROCESS_DETECTED", "ENFORCEMENT_ACTION"
+            } or bool(event.payload.get("process_name"))
+            can_merge = (
+                bool(event.payload.get("pid") and event.payload.get("process_creation_time"))
+                if process_event else bool(
+                    event.payload.get("destination")
+                    or event.payload.get("target")
+                    or event.payload.get("device_id")
+                )
+            )
             for item in reversed(self._items.values()):
-                if item.event_id == event.event_id or (
-                    item.merge_key == key
-                    and (now - item.created_at).total_seconds() <= self.settings.merge_seconds
+                if item.session_id != event.session_id or item.capture_stopped:
+                    continue
+                if event.event_id in item.event_ids or (
+                    can_merge
+                    and len(item.event_ids) < 64
+                    and item.merge_key == key
+                    and abs((event.occurred_at - item.occurred_at).total_seconds())
+                    <= self.settings.merge_seconds
                 ):
+                    item.event_ids.add(event.event_id)
                     return item.evidence_id
             if len(self._items) >= self.settings.evidence_max_items:
                 self.last_error = "evidence item limit reached"
@@ -207,24 +272,49 @@ class EvidenceManager:
                 event.occurred_at,
                 now,
                 now + timedelta(seconds=self.settings.retention_seconds),
-                now + timedelta(seconds=self.settings.post_seconds),
+                event.occurred_at + timedelta(seconds=self.settings.post_seconds),
                 key,
                 self._policy_hash,
             )
+            item.event_ids.add(event.event_id)
             self._items[item.evidence_id] = item
+            historical = self.ring.between(
+                event.occurred_at - timedelta(
+                    seconds=min(self.settings.pre_seconds, MAX_EVENT_CONTEXT_SECONDS)
+                ),
+                min(now, event.occurred_at),
+            )
+            if historical:
+                representative = historical[-1]
+                if self._append(item, representative, "event_context"):
+                    self._schedule(item, representative, "event_context")
+            else:
+                item.reason = "no pre-event image remains in the capture buffer"
             for frame in self.ring.between(
                 event.occurred_at - timedelta(seconds=self.settings.pre_seconds),
-                min(now, event.occurred_at),
+                min(now, item.capture_until),
             ):
                 self._append(item, frame, "context")
+            if now > item.capture_until:
+                item.needs_trigger = False
+                item.reason = "event arrived after its capture window; no new screenshot taken"
+            self._notice(item, self._status(item))
             self._wake.set()
             return item.evidence_id
 
     def request(self, request: ScreenRequest) -> None:
-        try:
-            self._requests.put_nowait(request)
-        except queue.Full:
-            self._respond(request, ScreenStatus.UNAVAILABLE, reason="capture queue is full")
+        with self._lock:
+            if request.agent_id != self.agent_id:
+                return
+            if request.session_id != self._session_id or request.deadline <= self._clock():
+                self._respond(
+                    request, ScreenStatus.UNAVAILABLE, reason="inactive or expired request"
+                )
+                return
+            try:
+                self._requests.put_nowait(request)
+            except queue.Full:
+                self._respond(request, ScreenStatus.UNAVAILABLE, reason="capture queue is full")
         self._wake.set()
 
     def _append(self, item: Evidence, frame: CapturedFrame, kind: str) -> bool:
@@ -233,7 +323,7 @@ class EvidenceManager:
         already_retained = any(
             f.frame_id == frame.frame_id for e in self._items.values() for f, _ in e.frames
         )
-        if kind in {"trigger", "snapshot"} and not already_retained:
+        if kind in {"event_context", "trigger", "snapshot"} and not already_retained:
             while item.frames and (
                 self.evidence_bytes + len(frame.data) > self.settings.evidence_max_bytes
             ):
@@ -260,6 +350,10 @@ class EvidenceManager:
         return True
 
     def _status(self, item: Evidence) -> ScreenStatus:
+        if item.capture_stopped:
+            if any(key[0] == item.evidence_id for key in self._jobs):
+                return ScreenStatus.UPLOADING
+            return ScreenStatus.UPLOADED if item.stored else ScreenStatus.UNAVAILABLE
         if not item.frames and item.reason and not item.needs_trigger:
             return ScreenStatus.UNAVAILABLE
         if item.needs_trigger or self._clock() < item.capture_until:
@@ -283,6 +377,7 @@ class EvidenceManager:
             request_id=request_id,
             captured_at=frame.captured_at,
             event_occurred_at=item.occurred_at if item.event_id else None,
+            event_received_at=item.created_at if item.event_id else None,
             available_until=item.expires_at,
             policy_hash=item.policy_hash,
             monitor_id=frame.monitor_id,
@@ -295,10 +390,16 @@ class EvidenceManager:
 
     def _schedule(
         self, item: Evidence, frame: CapturedFrame, kind: str, request_id: str | None = None
-    ) -> None:
+    ) -> bool:
         key = (item.evidence_id, frame.frame_id, request_id)
-        if key not in self._jobs and len(self._jobs) < 2048:
+        if key in self._jobs:
+            return True
+        if len(self._jobs) < 2048:
             self._jobs[key] = UploadJob(self._metadata(item, frame, kind, request_id), frame)
+            return True
+        item.reason = "screenshot upload queue is full"
+        self.last_error = item.reason
+        return False
 
     def prune(self, now: datetime | None = None) -> None:
         with self._lock:
@@ -321,34 +422,63 @@ class EvidenceManager:
         """One worker tick, also exposed for deterministic integration tests."""
         with self._lock:
             session_id = self._session_id
+            capture_epoch = self._capture_epoch
             self.prune()
-            pending = [item for item in self._items.values() if item.needs_trigger]
+            pending = [
+                item for item in self._items.values()
+                if item.session_id == session_id and not item.capture_stopped and item.needs_trigger
+            ]
         if session_id is None:
+            self._publish_updates()
             return
         for item in pending:
+            with self._lock:
+                if self._clock() > item.capture_until:
+                    item.needs_trigger = False
+                    item.reason = "event capture window elapsed before trigger capture"
+                    self._notice(item, self._status(item))
+                    continue
+                if self._session_id != session_id or self._capture_epoch != capture_epoch:
+                    break
             try:
                 frame = self._capture(True)
                 with self._lock:
-                    if item.evidence_id not in self._items or self._session_id != session_id:
+                    if (
+                        item.evidence_id not in self._items
+                        or self._session_id != session_id
+                        or self._capture_epoch != capture_epoch
+                    ):
                         continue
                     item.needs_trigger = False
-                    if self._append(item, frame, "trigger"):
+                    if frame.captured_at > item.capture_until:
+                        item.reason = "trigger completed outside the event capture window"
+                    elif self._append(item, frame, "trigger"):
                         self._schedule(item, frame, "trigger")
-                    self._notice(item, ScreenStatus.CAPTURING)
+                    self._notice(item, self._status(item))
             except (OSError, ValueError) as exc:
                 with self._lock:
+                    if self._capture_epoch != capture_epoch or item.capture_stopped:
+                        continue
                     item.needs_trigger = False
                     item.reason = f"trigger capture unavailable: {exc}"[:500]
                     self._notice(item, ScreenStatus.UNAVAILABLE)
-        if time.monotonic() >= self._next_capture:
+        with self._lock:
+            capture_active = (
+                self._session_id == session_id and self._capture_epoch == capture_epoch
+            )
+        if capture_active and time.monotonic() >= self._next_capture:
             self._next_capture = time.monotonic() + self.settings.interval_seconds
             try:
                 frame = self._capture(False)
                 with self._lock:
-                    if self._session_id == session_id:
+                    if self._session_id == session_id and self._capture_epoch == capture_epoch:
                         self.ring.add(frame)
                         for item in self._items.values():
-                            if item.created_at <= frame.captured_at <= item.capture_until:
+                            if (
+                                not item.capture_stopped
+                                and item.session_id == session_id
+                                and item.occurred_at <= frame.captured_at <= item.capture_until
+                            ):
                                 self._append(item, frame, "context")
                         self.last_error = None
             except (OSError, ValueError) as exc:
@@ -359,6 +489,9 @@ class EvidenceManager:
             except queue.Empty:
                 break
             self._handle_request(request)
+        self._publish_updates()
+
+    def _publish_updates(self) -> None:
         if time.monotonic() - self._last_notice >= 5:
             self._last_notice = time.monotonic()
             with self._lock:
@@ -377,6 +510,7 @@ class EvidenceManager:
             if request.agent_id != self.agent_id:
                 return
             item = self._items.get(request.evidence_id or "")
+            capture_epoch = self._capture_epoch
         if request.mode == ScreenMode.SNAPSHOT:
             try:
                 frame = self._capture(True)
@@ -384,7 +518,10 @@ class EvidenceManager:
                 self._respond(request, ScreenStatus.UNAVAILABLE, reason=str(exc)[:500])
                 return
             with self._lock:
-                if self._session_id != request.session_id:
+                if (
+                    self._session_id != request.session_id
+                    or self._capture_epoch != capture_epoch
+                ):
                     return
                 if len(self._items) >= self.settings.evidence_max_items:
                     self._respond(request, ScreenStatus.UNAVAILABLE, reason="evidence item limit")
@@ -405,6 +542,8 @@ class EvidenceManager:
                 self._items[item.evidence_id] = item
                 self._append(item, frame, "snapshot")
         with self._lock:
+            if self._session_id != request.session_id or self._capture_epoch != capture_epoch:
+                return
             if item is None or item.session_id != request.session_id:
                 self._respond(request, ScreenStatus.EXPIRED, reason="evidence no longer in RAM")
                 return
@@ -420,9 +559,10 @@ class EvidenceManager:
                     or size + len(frame.data) > request.max_bytes
                 ):
                     break
+                if not self._schedule(item, frame, kind, request.request_id):
+                    break
                 selected.append(self._metadata(item, frame, kind, request.request_id))
                 size += len(frame.data)
-                self._schedule(item, frame, kind, request.request_id)
             self._respond(
                 request,
                 ScreenStatus.UPLOADING if selected else ScreenStatus.UNAVAILABLE,
@@ -469,7 +609,8 @@ class EvidenceManager:
                 evidence_id=item.evidence_id,
                 event_id=item.event_id,
                 status=status,
-                available_until=item.expires_at,
+                available_until=min(self._clock(), item.expires_at)
+                if item.capture_stopped else item.expires_at,
                 reason=item.reason,
             )
         )
@@ -505,7 +646,14 @@ class EvidenceManager:
                 item = self._items.get(key[0])
                 if item:
                     item.stored.add(job.frame.frame_id)
+                    if item.capture_stopped:
+                        pending_ids = {pending[1] for pending in self._jobs if pending[0] == key[0]}
+                        item.frames[:] = [
+                            pair for pair in item.frames if pair[0].frame_id in pending_ids
+                        ]
                     self._notice(item, self._status(item))
+                    if item.capture_stopped and not item.frames:
+                        self._release(item.evidence_id)
             else:
                 job.attempts += 1
                 job.next_attempt = time.monotonic() + min(30, 2 ** min(job.attempts, 5))

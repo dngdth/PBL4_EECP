@@ -20,11 +20,14 @@ import {
 } from 'lucide-react';
 import { ActivityItem, Workstation } from '@/src/domain';
 import { Modal } from '@/src/shared/ui/modal';
+import { ScreenEvidencePanel } from '@/src/shared/ui/screen-evidence-panel';
 import { Button } from '@/src/shared/ui/button';
 import { formatDateTime, formatRelativeTime } from '@/src/shared/lib/formatters';
 import { cn } from '@/src/shared/lib/cn';
 
 export interface ActivityDetailModalProps {
+  sessionId?: string;
+  allowScreenCapture?: boolean;
   activity: ActivityItem | null;
   isOpen: boolean;
   onClose: () => void;
@@ -36,6 +39,8 @@ export const ActivityDetailModal: React.FC<ActivityDetailModalProps> = ({
   isOpen,
   onClose,
   onInspectWorkstation,
+  sessionId,
+  allowScreenCapture = true,
 }) => {
   const [copiedJson, setCopiedJson] = useState(false);
 
@@ -149,6 +154,10 @@ export const ActivityDetailModal: React.FC<ActivityDetailModalProps> = ({
       maxWidth="lg"
     >
       <div className="space-y-4 font-sans text-xs">
+        {sessionId && isOpen && typeof payloadData === 'object' && payloadData.evidence_id && (
+          <ScreenEvidencePanel sessionId={sessionId} evidenceId={String(payloadData.evidence_id)}
+            allowCapture={allowScreenCapture} />
+        )}
         {/* Top Status & Meta Grid */}
         <div className="p-3.5 bg-surface-subtle rounded-sm border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">

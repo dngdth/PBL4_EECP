@@ -100,8 +100,8 @@ def test_resolver_matches_cached_subdomains_and_filters_sinkholes():
     resolver = WindowsDomainResolver(runner=runner)
     assert resolver.resolve(["chatgpt.com"]) == {"chatgpt.com": ("2001:db8::10", "203.0.113.9")}
     args, kwargs = calls[0]
-    assert json.loads(kwargs["input"]) == ["chatgpt.com"]
-    assert "-NoHostsFile" in args[-1]
+    assert json.loads(kwargs["input"]) == {"domains": ["chatgpt.com"], "known_names": []}
+    assert "NoHostsFile=$true" in args[-1]
     assert "Get-DnsClientCache" in args[-1]
     assert "shell" not in kwargs
     assert kwargs["timeout"] == 8.0

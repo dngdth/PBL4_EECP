@@ -38,6 +38,10 @@ class GatewaySettings:
     backend_queue_max_messages: int = 4096
     backend_ca_file: str | None = None
     agent_handshake_timeout_seconds: float = 10.0
+    screen_spool_path: str = ""
+    screen_spool_max_bytes: int = 512 * 1024 * 1024
+    screen_spool_per_agent_bytes: int = 32 * 1024 * 1024
+    screen_spool_ttl_seconds: int = 86400
 
     @classmethod
     def from_env(cls) -> GatewaySettings:
@@ -45,6 +49,14 @@ class GatewaySettings:
         max_rows = int(os.getenv("EECP_GATEWAY_EVENT_BUFFER_MAX_ROWS", "10000"))
         default_threshold = str(max(1, int(max_rows * 0.8)))
         settings = cls(
+            screen_spool_path=os.getenv("EECP_GATEWAY_SCREEN_SPOOL_PATH", "data/gateway-screen"),
+            screen_spool_max_bytes=int(os.getenv(
+                "EECP_GATEWAY_SCREEN_MAX_BYTES", str(512 * 1024 * 1024)
+            )),
+            screen_spool_per_agent_bytes=int(os.getenv(
+                "EECP_GATEWAY_SCREEN_PER_AGENT_BYTES", str(32 * 1024 * 1024)
+            )),
+            screen_spool_ttl_seconds=int(os.getenv("EECP_GATEWAY_SCREEN_TTL_SECONDS", "86400")),
             gateway_id=_required_env("EECP_GATEWAY_ID"),
             room_id=_required_env("EECP_GATEWAY_ROOM_ID"),
             version=os.getenv("EECP_GATEWAY_VERSION", "1.0.0").strip(),

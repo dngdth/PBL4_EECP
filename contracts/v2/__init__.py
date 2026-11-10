@@ -40,6 +40,14 @@ from contracts.v2.policy import (
     verify_policy_signature,
 )
 from contracts.v2.presence import Presence, PresenceHealth, ServiceHealth
+from contracts.v2.screen import (
+    ScreenFrame,
+    ScreenMode,
+    ScreenRequest,
+    ScreenResponse,
+    ScreenSessionState,
+    ScreenStatus,
+)
 from contracts.v2.service import ServiceRequest, ServiceResult
 
 __all__ = [
@@ -74,6 +82,12 @@ __all__ = [
     "Presence",
     "PresenceHealth",
     "RestoreBaselinePayload",
+    "ScreenFrame",
+    "ScreenMode",
+    "ScreenRequest",
+    "ScreenResponse",
+    "ScreenSessionState",
+    "ScreenStatus",
     "ServiceHealth",
     "ServiceRequest",
     "ServiceResult",

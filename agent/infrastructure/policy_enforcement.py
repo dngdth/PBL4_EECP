@@ -7,7 +7,7 @@ import re
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -126,7 +126,7 @@ class WindowsPolicyEnforcer:
         self._seen_processes: set[tuple[int, str]] = set()
         self._process_outcomes: dict[tuple[int, str], str] = {}
         self._degraded_error: str | None = None
-        self._domain_resolver = domain_resolver or WindowsDomainResolver(runner=runner)
+        self._domain_resolver = domain_resolver or WindowsDomainResolver(runner=runner, clock=clock)
         self._domain_refresh_seconds = domain_refresh_seconds
         self._clock = clock
         self._next_domain_refresh = 0.0
@@ -252,6 +252,16 @@ class WindowsPolicyEnforcer:
 
     def _maintain_locked(self) -> None:
         self._degraded_error = None
+        # The real Service observes even before a policy exists, so expired DNS
+        # entries used by an open tab can still be attributed when Apply arrives.
+        observation_error = None
+        observer = getattr(self._domain_resolver, "observe", None)
+        if observer is not None:
+            try:
+                observer()
+            except (OSError, ValueError) as exc:
+                observation_error = f"DNS cache observation failed: {exc}"
+                LOGGER.warning("domain_observation result=failed error=%s", str(exc)[:500])
         state = self._load_state()
         if state:
             if state.get("mode") != "enforce":
@@ -298,13 +308,26 @@ class WindowsPolicyEnforcer:
                 self._terminate_denied(denied, session_id=session_id)
                 self._store_process_observations(state)
                 _write_state(self._state_path, state)
-            if state.get("blocked_domains") and self._clock() >= self._next_domain_refresh:
+            domains = _state_string_list(state, "blocked_domains")
+            full_refresh = bool(domains) and self._clock() >= self._next_domain_refresh
+            cached = None
+            cache_reader = getattr(self._domain_resolver, "cached_addresses", None)
+            if domains and not full_refresh and cache_reader is not None:
+                cached = cache_reader(domains)
+            known = _domain_addresses(state)
+            newly_observed = cached is not None and any(
+                set(values) - set(known.get(domain, ())) for domain, values in cached.items()
+            )
+            if full_refresh or newly_observed:
                 # Rate-limit retries too. Existing rules remain installed on DNS
                 # failure; the Service reports maintenance_error instead of
                 # silently declaring full coverage.
-                self._next_domain_refresh = self._clock() + self._domain_refresh_seconds
+                if full_refresh:
+                    self._next_domain_refresh = self._clock() + self._domain_refresh_seconds
                 refreshed = dict(state)
-                refreshed["domain_addresses"] = self._discover_domain_addresses(state, state)
+                refreshed["domain_addresses"] = self._discover_domain_addresses(
+                    refreshed, state, resolved=None if full_refresh else cached,
+                )
                 desired = self._rules_from_state(refreshed)
                 refreshed["managed_firewall_rules"] = [rule.name for rule in desired]
                 try:
@@ -314,6 +337,8 @@ class WindowsPolicyEnforcer:
                     with suppress(OSError, ValueError):
                         self._firewall.reconcile(rules, tuple(rule.name for rule in desired))
                     raise
+        if observation_error:
+            self._degraded_error = self._degraded_error or observation_error
 
     def _load_state(self) -> dict[str, Any] | None:
         try:
@@ -363,7 +388,8 @@ class WindowsPolicyEnforcer:
         return (*explicit, *domain_traffic_rules(domain_rules))
 
     def _discover_domain_addresses(
-        self, state: dict[str, Any], previous: dict[str, Any] | None
+        self, state: dict[str, Any], previous: dict[str, Any] | None,
+        *, resolved: Mapping[str, Iterable[str]] | None = None,
     ) -> dict[str, list[str]]:
         domains = _state_string_list(state, "blocked_domains")
         if not domains:
@@ -372,8 +398,12 @@ class WindowsPolicyEnforcer:
         # Keep addresses until this policy is removed, including DNS answers no
         # longer advertised but still used by persistent browser connections.
         previous_is_enforced = previous and previous.get("mode") == "enforce"
-        resolved = self._domain_resolver.resolve(domains)
+        if resolved is None:
+            resolved = self._domain_resolver.resolve(domains)
+        resolved = {domain: tuple(values) for domain, values in resolved.items()}
         discovered: dict[str, list[str]] = {}
+        diagnostics = {}
+        evidence = getattr(self._domain_resolver, "last_evidence", {})
         for domain in domains:
             known = {
                 address
@@ -389,6 +419,20 @@ class WindowsPolicyEnforcer:
             if not known:
                 raise OSError(f"cannot enforce domain traffic policy: no real IP for {domain}")
             discovered[domain] = sorted(known)
+            retained_addresses = sorted(known - set(resolved.get(domain, ())))
+            diagnostics[domain] = {
+                "observations": evidence.get(domain, []),
+                "retained_addresses": retained_addresses,
+            }
+            LOGGER.info(
+                "domain_discovery domain=%s addresses=%s retained=%s coverage=best-effort",
+                domain, ",".join(discovered[domain]), ",".join(retained_addresses),
+            )
+        state["domain_resolution"] = diagnostics
+        state["network_enforcement"] = {
+            "method": "destination-ip", "coverage": "best-effort",
+            "packet_enforcement": "not-verified",
+        }
         return discovered
 
     def _write_blocked_domains(self, domains: list[str]) -> None:

@@ -16,6 +16,7 @@ from agent.infrastructure.policy_enforcement import (
     AuditPolicyEnforcer,
     WindowsPolicyEnforcer,
 )
+from agent.infrastructure.protected_policy import ProtectedPolicyEnforcer
 from agent.service.application.execution_service import ExecutionService
 from agent.service.security_event_journal import (
     SecurityEventJournal,
@@ -85,6 +86,7 @@ class AgentServiceRuntime:
         command_target_id: str = "",
         replay_path: Path | None = None,
         security_journal: SecurityEventJournal | None = None,
+        state_guard_path: Path | None = None,
     ) -> AgentServiceRuntime:
         if policy_mode == "audit":
             enforcer = audit_factory(state_path)
@@ -92,6 +94,10 @@ class AgentServiceRuntime:
             enforcer = windows_factory(state_path)
         else:
             raise ValueError("EECP_POLICY_MODE must be 'enforce' or 'audit'")
+        if state_guard_path is not None:
+            enforcer = ProtectedPolicyEnforcer(
+                enforcer, state_path, state_guard_path, policy_verification_key
+            )
         if security_journal is not None and hasattr(enforcer, "set_event_sink"):
             enforcer.set_event_sink(
                 lambda **values: security_journal.append(

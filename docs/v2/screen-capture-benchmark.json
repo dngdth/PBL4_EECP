@@ -1,0 +1,28 @@
+{
+  "observed_date": "2026-11-06",
+  "platform": "Windows",
+  "scope": "One local 1920x1080 desktop; capture and compression only, no saved/uploaded images",
+  "frames_captured": 15,
+  "interval_seconds": 2.0,
+  "low_max_width": 960,
+  "low_mean_bytes": 45552.73333333333,
+  "ring_retained_bytes": 683291,
+  "low_mean_capture_seconds": 0.06466198666700317,
+  "low_max_capture_seconds": 0.12488879999727942,
+  "high_capture_seconds": 0.04163449999759905,
+  "high_bytes": 311856,
+  "high_dimensions": [1920, 1080],
+  "wall_seconds": 28.10823050000181,
+  "cpu_seconds": 0.703125,
+  "cpu_percent_of_one_core": 2.5014915115341565,
+  "memory_before": {
+    "working_set_bytes": 20418560,
+    "process_peak_working_set_bytes": 20418560
+  },
+  "memory_after": {
+    "working_set_bytes": 34443264,
+    "process_peak_working_set_bytes": 56541184
+  },
+  "screenshots_saved": 0,
+  "screenshots_uploaded": 0
+}

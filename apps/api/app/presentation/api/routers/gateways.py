@@ -160,6 +160,7 @@ async def gateway_uplink(websocket: WebSocket, gateway_id: str) -> None:
                     container,
                     websocket.app.state.presence,
                     getattr(websocket.app.state, "realtime_hub", None),
+                    getattr(websocket.app.state, "screen_store", None),
                 )
                 if response is not None:
                     await websocket.send_text(response.to_json())
@@ -187,7 +188,23 @@ async def _handle_gateway_message(
     container,
     presence_store=None,
     realtime_hub=None,
+    screen_store=None,
 ) -> GatewayEnvelope | None:
+    if envelope.message_type == GatewayMessageType.SCREEN_RESPONSE:
+        from contracts.v2.screen import ScreenResponse
+
+        response = ScreenResponse.model_validate(envelope.payload)
+        binding = container.resolve_gateway_for_agent(response.agent_id)
+        if (screen_store is None or binding is None or binding.gateway_id != gateway_id
+                or envelope.source_id != response.agent_id
+                or envelope.correlation_id != response.request_id):
+            raise ValueError("screenshot response Gateway/Agent identity mismatch")
+        with container.database.unit_of_work() as uow:
+            session = uow.sessions.get(response.session_id)
+            if response.agent_id not in session.workstations:
+                raise ValueError("screenshot response is outside Agent session")
+        await asyncio.to_thread(screen_store.save_response, response)
+        return None
     if envelope.message_type == GatewayMessageType.GATEWAY_HEALTH:
         health = GatewayHealth.model_validate(envelope.payload)
         if health.gateway_id != gateway_id or envelope.source_id != gateway_id:
@@ -280,6 +297,21 @@ async def _handle_gateway_message(
             )
         if realtime_hub is not None:
             await realtime_hub.publish_change(method="PATCH", path="/api/v1/agents")
+        if presence.screen_capture_supported:
+            from contracts.v2.screen import ScreenSessionState
+
+            session_state = _agent_session_state(container, presence.agent_id)
+            screen_state = ScreenSessionState(
+                protocol_version=2, agent_id=presence.agent_id,
+                session_id=session_state.session_id, observed_at=datetime.now(UTC),
+            )
+            return GatewayEnvelope(
+                protocol_version=2, message_type=GatewayMessageType.SCREEN_SESSION_STATE,
+                message_id=f"screen-session_{presence.agent_id}",
+                correlation_id=f"screen-session_{presence.agent_id}",
+                source_id="backend", target_id=presence.agent_id,
+                payload=screen_state.model_dump(mode="json", exclude_none=True),
+            )
         return
 
     if envelope.message_type == GatewayMessageType.ACK:

@@ -24,6 +24,7 @@ import { ActivityFeed, ActivityDetailModal } from '@/src/features/recent-activit
 import { AlertPanel } from '@/src/features/alerts';
 import { useRealtimeRefresh } from '@/src/shared/api/realtime';
 import { Spinner } from '@/src/shared/ui/spinner';
+import { ScreenEvidencePanel } from '@/src/shared/ui/screen-evidence-panel';
 import { Button } from '@/src/shared/ui/button';
 
 export const SessionDetailPage: React.FC = () => {
@@ -325,13 +326,19 @@ export const SessionDetailPage: React.FC = () => {
           onClose={() => setInspectingWorkstation(null)}
           workstation={inspectingWorkstation}
           sessionId={session.id}
+          allowScreenCapture={session.status === 'RUNNING'}
           onWorkstationUpdated={handleSessionUpdated}
           onViewCommandQueue={(wsId) => setCommandQueueTarget({ id: wsId, type: 'WORKSTATION' })}
         />
       )}
 
       {/* Activity Event Detail Pop-up Modal */}
+      <ScreenEvidencePanel sessionId={session.id}
+        agentIds={session.workstations.map(workstation => workstation.id)}
+        allowCapture={session.status === 'RUNNING'} />
       <ActivityDetailModal
+        sessionId={session.id}
+        allowScreenCapture={session.status === 'RUNNING'}
         activity={selectedActivity}
         isOpen={Boolean(selectedActivity)}
         onClose={() => setSelectedActivity(null)}

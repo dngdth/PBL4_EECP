@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Monitor, CheckCircle2, AlertTriangle, XCircle, RefreshCw, Clock, Network, Cpu, ShieldCheck, Terminal } from 'lucide-react';
 import { Modal } from '@/src/shared/ui/modal';
+import { ScreenEvidencePanel } from '@/src/shared/ui/screen-evidence-panel';
 import { Button } from '@/src/shared/ui/button';
 import { WorkstationStatusBadge, PreflightStatusBadge } from './WorkstationStatusBadge';
 import { retryWorkstationPreflight } from '../services/workstationApi';
@@ -13,6 +14,7 @@ export interface WorkstationInspectModalProps {
   onClose: () => void;
   workstation: Workstation | null;
   sessionId?: string;
+  allowScreenCapture?: boolean;
   onWorkstationUpdated?: (updatedSession: ExamSession) => void;
   onViewCommandQueue?: (workstationId: string) => void;
 }
@@ -22,6 +24,7 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
   onClose,
   workstation,
   sessionId,
+  allowScreenCapture = true,
   onWorkstationUpdated,
   onViewCommandQueue,
 }) => {
@@ -56,6 +59,8 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
       maxWidth="md"
     >
       <div className="space-y-4">
+        {sessionId && <ScreenEvidencePanel sessionId={sessionId} agentId={workstation.id}
+          allowCapture={allowScreenCapture} />}
         {feedback && (
           <div className="p-3 bg-success-soft border border-success/20 rounded-sm text-xs text-success-dark flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0" />

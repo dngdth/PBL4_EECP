@@ -551,3 +551,41 @@ def test_ensure_process_dpi_aware_safe_execution(monkeypatch):
     assert capture.ensure_process_dpi_aware() is True
 
 
+def test_evidence_manager_identifies_locked_desktop_reason():
+    from contracts.v2.screen import ScreenMode, ScreenStatus
+
+    responses = []
+
+    def fail_capture(_high):
+        raise OSError("secure/locked desktop cannot be captured")
+
+    manager = EvidenceManager(
+        "PC01",
+        responses.append,
+        lambda *_: True,
+        capture=fail_capture,
+        clock=lambda: NOW,
+    )
+    manager.activate("ses1", {})
+
+    # 1. Periodic capture
+    manager.capture_once()
+    assert "desktop locked or secure" in manager.last_error
+
+    # 2. Trigger capture
+    ev_id = manager.on_event(event(1))
+    manager.capture_once()
+    assert (
+        "desktop locked or secure" in manager._items[ev_id].reason
+    )
+
+    # 3. Snapshot request
+    snap_req = request(mode=ScreenMode.SNAPSHOT)
+    manager.request(snap_req)
+    manager.capture_once()
+    snap_resp = next(r for r in responses if r.request_id == snap_req.request_id)
+    assert snap_resp.status == ScreenStatus.UNAVAILABLE
+    assert "desktop locked or secure" in snap_resp.reason
+
+
+

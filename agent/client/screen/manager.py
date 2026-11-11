@@ -51,6 +51,14 @@ class UploadJob:
     next_attempt: float = 0.0
 
 
+def _format_capture_error(exc: Exception) -> str:
+    text = str(exc)
+    text_lower = text.lower()
+    if "locked" in text_lower or "secure" in text_lower:
+        return f"desktop locked or secure (Win+L / UAC): {text}"[:500]
+    return text[:500]
+
+
 class EvidenceManager:
     """Bounded RAM ownership with independent capture and upload workers.
 
@@ -460,7 +468,7 @@ class EvidenceManager:
                     if self._capture_epoch != capture_epoch or item.capture_stopped:
                         continue
                     item.needs_trigger = False
-                    item.reason = f"trigger capture unavailable: {exc}"[:500]
+                    item.reason = f"trigger capture unavailable: {_format_capture_error(exc)}"
                     self._notice(item, ScreenStatus.UNAVAILABLE)
         with self._lock:
             capture_active = (
@@ -482,7 +490,7 @@ class EvidenceManager:
                                 self._append(item, frame, "context")
                         self.last_error = None
             except (OSError, ValueError) as exc:
-                self.last_error = str(exc)[:500]
+                self.last_error = _format_capture_error(exc)
         for _ in range(4):
             try:
                 request = self._requests.get_nowait()
@@ -515,7 +523,7 @@ class EvidenceManager:
             try:
                 frame = self._capture(True)
             except (OSError, ValueError) as exc:
-                self._respond(request, ScreenStatus.UNAVAILABLE, reason=str(exc)[:500])
+                self._respond(request, ScreenStatus.UNAVAILABLE, reason=_format_capture_error(exc))
                 return
             with self._lock:
                 if (

@@ -76,8 +76,14 @@ export const WorkstationsPage: React.FC = () => {
     });
   }, [agents]);
 
-  const onlineCount = useMemo(() => agents.filter((a) => a.status === 'ONLINE').length, [agents]);
-  const offlineCount = useMemo(() => agents.filter((a) => a.status !== 'ONLINE').length, [agents]);
+  const onlineCount = useMemo(
+    () => workstations.filter((w) => w.status === 'ONLINE').length,
+    [workstations]
+  );
+  const offlineCount = useMemo(
+    () => workstations.filter((w) => w.status !== 'ONLINE').length,
+    [workstations]
+  );
 
   return (
     <div className="w-full max-w-[1600px] mx-auto p-4 sm:p-6 lg:p-8 space-y-6 flex-1 min-w-0">

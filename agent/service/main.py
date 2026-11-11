@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from collections.abc import Sequence
 from functools import partial
@@ -59,7 +60,12 @@ def build_service_runtime() -> AgentServiceRuntime:
         windows_factory = partial(
             WindowsPolicyEnforcer,
             firewall=WindowsFirewallEnforcer(protected_endpoints),
-            domain_resolver=WindowsDomainResolver(observe_cache=True),
+            domain_resolver=WindowsDomainResolver(
+                observe_cache=True,
+                observe_interval_seconds=max(
+                    0.0, float(os.getenv("EECP_DNS_OBSERVE_INTERVAL_SECONDS", "15"))
+                ),
+            ),
         )
     return AgentServiceRuntime.build(
         policy_mode=POLICY_MODE,

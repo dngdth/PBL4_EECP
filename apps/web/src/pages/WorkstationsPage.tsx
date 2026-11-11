@@ -86,39 +86,40 @@ export const WorkstationsPage: React.FC = () => {
   );
 
   return (
-    <div className="w-full max-w-[1600px] mx-auto p-4 sm:p-6 lg:p-8 space-y-6 flex-1 min-w-0">
-      {/* 1. Header & Summary Banner */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-4">
-        <div>
-          <div className="flex items-center gap-2 text-xs font-mono text-text-muted uppercase tracking-wider">
-            <span>Hạ tầng phòng máy</span>
-            <span>/</span>
-            <span className="text-primary font-bold">Máy trạm Agent</span>
+    <div className="flex flex-col min-h-full w-full overflow-x-hidden">
+      {/* 1. Standardized Global Page Header */}
+      <header className="bg-surface border-b border-border shadow-2xs shrink-0">
+        <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-3.5 sm:py-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
+            <div>
+              <h1 className="text-lg sm:text-xl font-bold font-sans tracking-tight text-text flex items-center gap-2.5">
+                <Monitor className="w-5 h-5 text-primary" />
+                <span>Giám sát Máy trạm & Agent</span>
+              </h1>
+              <p className="text-xs text-text-muted mt-0.5 font-sans">
+                Quản lý và giám sát trạng thái nhịp tim thời gian thực của các máy trạm trong phòng máy.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2.5 shrink-0">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => fetchAgentData(false)}
+                isLoading={isRefreshing}
+                leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+              >
+                Làm mới
+              </Button>
+            </div>
           </div>
-          <h1 className="text-xl sm:text-2xl font-sans font-bold text-text mt-1 flex items-center gap-2.5">
-            <Monitor className="w-6 h-6 text-primary" />
-            Giám sát Máy trạm & Agent
-          </h1>
-          <p className="text-xs sm:text-sm text-text-muted mt-0.5">
-            Quản lý và giám sát trạng thái nhịp tim thời gian thực của các máy trạm trong phòng máy.
-          </p>
         </div>
+      </header>
 
-        <div className="flex items-center gap-2 self-start sm:self-auto">
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => fetchAgentData(false)}
-            isLoading={isRefreshing}
-            leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
-          >
-            Làm mới
-          </Button>
-        </div>
-      </div>
-
-      {/* 2. Metric Cards */}
+      {/* 2. Main Content Area */}
+      <div className="w-full max-w-[1600px] mx-auto p-4 sm:p-6 lg:p-8 space-y-6 flex-1 min-w-0">
+        {/* Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-surface border border-border rounded-sm p-4 shadow-2xs flex items-center justify-between">
           <div>
@@ -222,6 +223,7 @@ export const WorkstationsPage: React.FC = () => {
           targetType="WORKSTATION"
         />
       )}
+      </div>
     </div>
   );
 };

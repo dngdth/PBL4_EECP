@@ -79,7 +79,7 @@ class ScreenStore:
             response = json.loads(value["response"]) if value["response"] else None
             value["response"] = response
             if response and response.get("evidence_id"):
-                value["frames"] = self.frames(response["evidence_id"])
+                value["frames"] = self._frames_with_conn(connection, response["evidence_id"])
                 expected = {frame["frame_id"] for frame in response.get("frames", [])}
                 stored = {frame["frame_id"] for frame in value["frames"]}
                 if expected and expected <= stored:
@@ -245,11 +245,13 @@ class ScreenStore:
             row = connection.execute(
                 "SELECT * FROM screen_evidence WHERE id=?", (evidence_id,)
             ).fetchone()
-            return self._evidence_value(row) if row is not None else None
+            if row is None:
+                return None
+            return self._evidence_value(row, frames=self._frames_with_conn(connection, evidence_id))
 
-    def _evidence_value(self, row) -> dict:
+    def _evidence_value(self, row, *, frames: list[dict] | None = None) -> dict:
         value = dict(row)
-        value["frames"] = self.frames(value["id"])
+        value["frames"] = frames if frames is not None else self.frames(value["id"])
         value["replay_available"] = (
             bool(value["available_until"])
             and (datetime.fromisoformat(value["available_until"]) > datetime.now(UTC))
@@ -269,26 +271,54 @@ class ScreenStore:
                 + " ORDER BY created_at DESC LIMIT 200",
                 (session_id, agent_id) if agent_id else (session_id,),
             ).fetchall()
-            return [self._evidence_value(row) for row in rows]
+            evidence_ids = [row["id"] for row in rows]
+            frames_map = self._frames_by_evidence_with_conn(connection, evidence_ids)
+            return [
+                self._evidence_value(row, frames=frames_map.get(row["id"], []))
+                for row in rows
+            ]
+
+    @staticmethod
+    def _format_frame_row(row) -> dict:
+        value = json.loads(row["metadata"])
+        value["stored_at"] = row["stored_at"]
+        value["expires_at"] = row["expires_at"]
+        value["url"] = f"/api/v1/screen/evidence/{row['evidence_id']}/frames/{row['frame_id']}"
+        return value
+
+    def _frames_with_conn(self, connection, evidence_id: str) -> list[dict]:
+        rows = connection.execute(
+            "SELECT * FROM screen_frames WHERE evidence_id=? AND expires_at>? "
+            "ORDER BY stored_at",
+            (evidence_id, datetime.now(UTC).isoformat()),
+        ).fetchall()
+        values = [self._format_frame_row(row) for row in rows]
+        return sorted(values, key=lambda value: value["captured_at"])
+
+    def _frames_by_evidence_with_conn(
+        self, connection, evidence_ids: list[str]
+    ) -> dict[str, list[dict]]:
+        if not evidence_ids:
+            return {}
+        placeholders = ",".join("?" for _ in evidence_ids)
+        rows = connection.execute(
+            f"SELECT * FROM screen_frames WHERE evidence_id IN ({placeholders}) "
+            "AND expires_at>? ORDER BY stored_at",
+            (*evidence_ids, datetime.now(UTC).isoformat()),
+        ).fetchall()
+        grouped: dict[str, list[dict]] = {eid: [] for eid in evidence_ids}
+        for row in rows:
+            grouped.setdefault(row["evidence_id"], []).append(self._format_frame_row(row))
+        for items in grouped.values():
+            items.sort(key=lambda value: value["captured_at"])
+        return grouped
 
     def frames(self, evidence_id: str) -> list[dict]:
         with self.connection() as connection:
-            rows = connection.execute(
-                "SELECT * FROM screen_frames WHERE evidence_id=? AND expires_at>? "
-                "ORDER BY stored_at",
-                (evidence_id, datetime.now(UTC).isoformat()),
-            ).fetchall()
-            values = []
-            for row in rows:
-                value = json.loads(row["metadata"])
-                value["stored_at"] = row["stored_at"]
-                value["expires_at"] = row["expires_at"]
-                value["url"] = f"/api/v1/screen/evidence/{evidence_id}/frames/{row['frame_id']}"
-                values.append(value)
-            return sorted(values, key=lambda value: value["captured_at"])
+            return self._frames_with_conn(connection, evidence_id)
 
     def read_frame(self, evidence_id: str, frame_id: str) -> tuple[ScreenFrame, bytes] | None:
-        with self.lock, self.connection() as connection:
+        with self.connection() as connection:
             row = connection.execute(
                 "SELECT * FROM screen_frames WHERE id=? AND expires_at>?",
                 (self.frame_key(evidence_id, frame_id), datetime.now(UTC).isoformat()),
@@ -296,13 +326,14 @@ class ScreenStore:
             if row is None:
                 return None
             frame = ScreenFrame.model_validate_json(row["metadata"])
-            try:
-                data = (self.root / row["storage_key"]).read_bytes()
-            except FileNotFoundError:
-                return None
-            if hashlib.sha256(data).hexdigest() != frame.sha256:
-                raise OSError("stored screenshot integrity failure")
-            return frame, data
+            storage_key = row["storage_key"]
+        try:
+            data = (self.root / storage_key).read_bytes()
+        except FileNotFoundError:
+            return None
+        if hashlib.sha256(data).hexdigest() != frame.sha256:
+            raise OSError("stored screenshot integrity failure")
+        return frame, data
 
     def expire(self) -> None:
         with self.lock, self.connection() as connection:

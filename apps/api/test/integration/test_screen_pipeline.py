@@ -659,3 +659,113 @@ def test_thirty_agent_evidence_uploads_do_not_block_heartbeat(tmp_path, monkeypa
         assert all(response.status_code == 200 for response in results)
         values = app.state.screen_store.list_evidence(session_id)
         assert {value["agent_id"] for value in values} == set(agents)
+
+
+def test_screen_store_avoids_nested_connections_n_plus_one_and_read_lock(tmp_path, monkeypatch):
+    app, client, session_id, first = setup_backend(tmp_path, monkeypatch)
+    assert ingest(client, first).status_code == 200
+    second = frame(
+        session_id,
+        frame_id="frame2",
+        evidence_id="evidence2",
+        event_id="evt2",
+    )
+    assert (
+        client.post(
+            f"/api/v1/sessions/{session_id}/telemetry",
+            json={
+                "workstation_id": "PC01",
+                "event_type": "POLICY_VIOLATION",
+                "severity": "WARNING",
+                "category": "PROHIBITED_WEBSITE",
+                "action": "OBSERVED",
+                "event_id": "evt2",
+                "occurred_at": second.event_occurred_at.isoformat(),
+                "payload": {"evidence_id": "evidence2", "source": "windows-dns-cache"},
+            },
+        ).status_code
+        == 202
+    )
+    assert ingest(client, second).status_code == 200
+
+    now = datetime.now(UTC)
+    control = ScreenRequest(
+        protocol_version=2,
+        request_id="req-single-conn",
+        agent_id="PC01",
+        session_id=session_id,
+        mode="REPLAY",
+        evidence_id=first.evidence_id,
+        issued_at=now,
+        deadline=now + timedelta(seconds=60),
+    )
+    store = app.state.screen_store
+    store.save_request(control)
+    store.save_response(
+        ScreenResponse(
+            protocol_version=2,
+            request_id=control.request_id,
+            agent_id="PC01",
+            session_id=session_id,
+            evidence_id=first.evidence_id,
+            event_id=first.event_id,
+            status="uploading",
+            frames=[first],
+            available_until=first.available_until,
+        )
+    )
+
+    real_db = store.database
+    active = 0
+    queries: list[str] = []
+
+    class SingleConnWrapper:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, params=()):
+            queries.append(sql)
+            return self._inner.execute(sql, params)
+
+        def commit(self):
+            return self._inner.commit()
+
+        def close(self):
+            nonlocal active
+            active -= 1
+            return self._inner.close()
+
+    def checked_connect():
+        nonlocal active
+        if active >= 1:
+            raise RuntimeError("nested database connection detected")
+        active += 1
+        return SingleConnWrapper(real_db.connect())
+
+    class SinglePoolDatabase:
+        def connect(self):
+            return checked_connect()
+
+    store.database = SinglePoolDatabase()
+    try:
+        items = store.list_evidence(session_id)
+        assert len(items) == 2
+        assert all(item["frames"] for item in items)
+        assert sum("FROM screen_frames" in q for q in queries) == 1
+        assert store.evidence(first.evidence_id) is not None
+        assert store.get_request(control.request_id)["status"] == "available"
+    finally:
+        store.database = real_db
+
+    # read_frame should not require acquiring store.lock on disk reads
+    with store.lock:
+        import threading
+
+        result: list = []
+        t = threading.Thread(
+            target=lambda: result.append(store.read_frame(first.evidence_id, first.frame_id))
+        )
+        t.start()
+        t.join(timeout=2)
+        assert not t.is_alive()
+        assert result and result[0] is not None

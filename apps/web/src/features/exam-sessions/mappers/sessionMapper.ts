@@ -71,8 +71,8 @@ function mapLegacyWorkstations(workstationsDict: Record<string, any>): Workstati
     return {
       id: wsId,
       ip: 'unknown',
-      status: readiness === 'READY' ? 'READY' : readiness === 'WARNING' ? 'WARNING' : 'FAILED',
-      preflight_status: checks.length ? (passedAll ? 'PASSED' : 'FAILED') : 'PENDING',
+      status: readiness === 'READY' ? 'READY' : readiness === 'WARNING' ? 'WARNING' : readiness === 'PENDING' ? 'PENDING' : 'FAILED',
+      preflight_status: checks.length ? (passedAll ? 'PASSED' : 'FAILED') : (readiness === 'READY' ? 'PASSED' : readiness === 'WARNING' ? 'WARNING' : readiness === 'FAILED' ? 'FAILED' : 'PENDING'),
       last_heartbeat: '',
       agent_version: 'unknown',
       active_policy_hash: null,

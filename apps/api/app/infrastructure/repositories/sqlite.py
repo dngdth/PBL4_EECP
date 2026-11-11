@@ -621,24 +621,34 @@ class SqliteIncidentRepository:
             ),
         )
 
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> Incident:
+        return Incident(
+            id=row["id"],
+            session_id=row["session_id"],
+            workstation_id=row["workstation_id"],
+            category=row["category"],
+            severity=Severity(row["severity"]),
+            status=IncidentStatus(row["status"]),
+            evidence=json.loads(row["evidence"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
     def list_for_session(self, session_id: str) -> list[Incident]:
         rows = self._connection.execute(
             "SELECT * FROM incidents WHERE session_id = ? ORDER BY created_at, id",
             (session_id,),
         ).fetchall()
-        return [
-            Incident(
-                id=row["id"],
-                session_id=row["session_id"],
-                workstation_id=row["workstation_id"],
-                category=row["category"],
-                severity=Severity(row["severity"]),
-                status=IncidentStatus(row["status"]),
-                evidence=json.loads(row["evidence"]),
-                created_at=datetime.fromisoformat(row["created_at"]),
-            )
-            for row in rows
-        ]
+        return [self._from_row(row) for row in rows]
+
+    def latest_by_workstation(self) -> dict[str, Incident]:
+        rows = self._connection.execute(
+            "SELECT * FROM incidents ORDER BY created_at ASC, id ASC"
+        ).fetchall()
+        latest: dict[str, Incident] = {}
+        for row in rows:
+            latest[row["workstation_id"]] = self._from_row(row)
+        return latest
 
 
 class SqliteAuditRepository:

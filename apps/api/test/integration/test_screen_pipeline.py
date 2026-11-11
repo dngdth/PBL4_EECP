@@ -814,3 +814,22 @@ def test_list_evidence_throttles_audits_skips_full_telemetry_scan_and_publishes_
             if entry.action == "SCREEN_EVIDENCE_LISTED"
         ]
     assert len(list_audits) == 1
+
+
+def test_ingest_concurrency_env_and_clock_skew_rejection(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("EECP_SCREEN_INGEST_CONCURRENCY", "12")
+    app, client, session_id, value = setup_backend(tmp_path, monkeypatch)
+    assert app.state.screen_ingest_slots._value == 12
+
+    future = value.model_copy(
+        update={
+            "captured_at": datetime.now(UTC) + timedelta(seconds=15),
+            "available_until": datetime.now(UTC) + timedelta(minutes=20),
+            "kind": "trigger",
+        }
+    )
+    with caplog.at_level("WARNING"):
+        resp = ingest(client, future)
+    assert resp.status_code == 409
+    assert "NTP time sync" in resp.text
+    assert any("CLOCK_SKEW_REJECTED" in rec.message for rec in caplog.records)

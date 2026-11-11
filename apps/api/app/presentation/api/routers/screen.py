@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 import threading
 import time
@@ -22,6 +23,7 @@ from contracts.v2.screen import (
 )
 
 router = APIRouter(tags=["screen evidence"])
+LOGGER = logging.getLogger(__name__)
 
 
 class ScreenRequestInput(BaseModel):
@@ -264,9 +266,21 @@ async def ingest_frame(gateway_id: str, request: Request) -> dict:
         raise HTTPException(403, "Gateway is not bound to the screenshot Agent")
     session = session_for(request, frame.session_id, frame.agent_id)
     now = datetime.now(UTC)
+    if frame.captured_at > now + timedelta(seconds=5):
+        skew_seconds = (frame.captured_at - now).total_seconds()
+        LOGGER.warning(
+            "event=CLOCK_SKEW_REJECTED agent_id=%s session_id=%s skew_seconds=%.2f",
+            frame.agent_id,
+            frame.session_id,
+            skew_seconds,
+        )
+        raise HTTPException(
+            409,
+            f"screenshot capture time is ahead of server clock by {skew_seconds:.1f}s "
+            "(check NTP time sync)",
+        )
     if (
         frame.captured_at < session.created_at - timedelta(seconds=5)
-        or (frame.captured_at > now + timedelta(seconds=5))
         or (session.finished_at and frame.captured_at > session.finished_at + timedelta(seconds=15))
     ):
         raise HTTPException(409, "screenshot capture time is outside the session")

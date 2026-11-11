@@ -537,3 +537,17 @@ def test_evidence_manager_logs_tls_failure_reason():
         for line in logs
     )
 
+
+def test_ensure_process_dpi_aware_safe_execution(monkeypatch):
+    import sys
+
+    from agent.client.screen import capture
+
+    monkeypatch.setattr(capture, "_DPI_AWARE_INITIALIZED", False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert capture.ensure_process_dpi_aware() is False
+
+    monkeypatch.setattr(capture, "_DPI_AWARE_INITIALIZED", True)
+    assert capture.ensure_process_dpi_aware() is True
+
+

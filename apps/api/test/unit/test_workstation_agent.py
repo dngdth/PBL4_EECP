@@ -24,6 +24,9 @@ class Response:
 
 def test_agent_id_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("EECP_AGENT_ID", raising=False)
+    monkeypatch.delenv("COMPUTERNAME", raising=False)
+    monkeypatch.delenv("HOSTNAME", raising=False)
+    monkeypatch.setattr("socket.gethostname", lambda: "")
 
     with pytest.raises(RuntimeError, match="EECP_AGENT_ID"):
         agent_config.load_agent_id()
@@ -31,9 +34,28 @@ def test_agent_id_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_agent_id_cannot_be_blank(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EECP_AGENT_ID", "   ")
+    monkeypatch.delenv("COMPUTERNAME", raising=False)
+    monkeypatch.delenv("HOSTNAME", raising=False)
+    monkeypatch.setattr("socket.gethostname", lambda: "")
 
     with pytest.raises(RuntimeError, match="EECP_AGENT_ID"):
         agent_config.load_agent_id()
+
+
+def test_agent_id_falls_back_to_computername(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EECP_AGENT_ID", raising=False)
+    monkeypatch.setenv("COMPUTERNAME", "LAB-PC05")
+
+    assert agent_config.load_agent_id() == "LAB-PC05"
+
+
+def test_agent_id_prefers_explicit_env_over_computername(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EECP_AGENT_ID", "CUSTOM-01")
+    monkeypatch.setenv("COMPUTERNAME", "LAB-PC05")
+
+    assert agent_config.load_agent_id() == "CUSTOM-01"
 
 
 def test_agent_id_is_trimmed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -46,6 +68,9 @@ def test_main_stops_before_registration_when_agent_id_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("EECP_AGENT_ID", raising=False)
+    monkeypatch.delenv("COMPUTERNAME", raising=False)
+    monkeypatch.delenv("HOSTNAME", raising=False)
+    monkeypatch.setattr("socket.gethostname", lambda: "")
     monkeypatch.setattr(
         agent_main.AgentServiceRuntime,
         "build",

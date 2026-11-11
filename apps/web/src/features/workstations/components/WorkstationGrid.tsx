@@ -39,15 +39,15 @@ export const WorkstationGrid: React.FC<WorkstationGridProps> = ({
   // Status Counts
   const totalCount = workstations.length;
   const readyCount = useMemo(
-    () => workstations.filter((ws) => ws.status === 'READY').length,
+    () => workstations.filter((ws) => ws.status === 'READY' || ws.status === 'ONLINE').length,
     [workstations]
   );
   const warningCount = useMemo(
-    () => workstations.filter((ws) => ws.status === 'WARNING').length,
+    () => workstations.filter((ws) => ws.status === 'WARNING' || ws.status === 'DEGRADED').length,
     [workstations]
   );
   const failedCount = useMemo(
-    () => workstations.filter((ws) => ws.status === 'FAILED').length,
+    () => workstations.filter((ws) => ws.status === 'FAILED' || ws.status === 'OFFLINE').length,
     [workstations]
   );
 
@@ -60,9 +60,9 @@ export const WorkstationGrid: React.FC<WorkstationGridProps> = ({
 
       if (!matchSearch) return false;
 
-      if (statusFilter === 'READY') return ws.status === 'READY';
-      if (statusFilter === 'WARNING') return ws.status === 'WARNING';
-      if (statusFilter === 'FAILED') return ws.status === 'FAILED';
+      if (statusFilter === 'READY') return ws.status === 'READY' || ws.status === 'ONLINE';
+      if (statusFilter === 'WARNING') return ws.status === 'WARNING' || ws.status === 'DEGRADED';
+      if (statusFilter === 'FAILED') return ws.status === 'FAILED' || ws.status === 'OFFLINE';
       return true;
     });
   }, [workstations, search, statusFilter]);

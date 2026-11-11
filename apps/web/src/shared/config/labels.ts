@@ -17,10 +17,10 @@ export const WORKSTATION_STATUS_LABELS: Record<WorkstationStatus, string> = {
   WARNING: 'Cảnh báo',
   FAILED: 'Lỗi',
   PENDING: 'Đang chờ',
-  ONLINE: 'Online',
-  DEGRADED: 'Degraded',
-  OFFLINE: 'Offline',
-  UNKNOWN: 'Unknown',
+  ONLINE: 'Trực tuyến',
+  DEGRADED: 'Giảm cấp',
+  OFFLINE: 'Ngoại tuyến',
+  UNKNOWN: 'Không rõ',
 };
 
 export const PREFLIGHT_STATUS_LABELS: Record<PreflightStatus, string> = {

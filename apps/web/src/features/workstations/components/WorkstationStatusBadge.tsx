@@ -35,6 +35,21 @@ export const WorkstationStatusBadge: React.FC<WorkstationStatusBadgeProps> = ({
       badgeClass: 'bg-surface-subtle text-text-muted border-border',
       dotClass: 'bg-text-subtle',
     },
+    ONLINE: {
+      label: WORKSTATION_STATUS_LABELS.ONLINE,
+      badgeClass: 'bg-success-soft text-success-dark border-success/30',
+      dotClass: 'bg-success',
+    },
+    DEGRADED: {
+      label: WORKSTATION_STATUS_LABELS.DEGRADED,
+      badgeClass: 'bg-warning-soft text-warning-dark border-warning/30',
+      dotClass: 'bg-warning',
+    },
+    OFFLINE: {
+      label: WORKSTATION_STATUS_LABELS.OFFLINE,
+      badgeClass: 'bg-error-soft text-error-dark border-error/30',
+      dotClass: 'bg-error',
+    },
   }[status] || {
     label: status,
     badgeClass: 'bg-surface-subtle text-text-muted border-border',

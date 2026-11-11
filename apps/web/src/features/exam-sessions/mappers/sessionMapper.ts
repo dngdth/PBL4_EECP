@@ -10,7 +10,7 @@ import {
  * Maps an AssignedAgentView from Backend management API into a Workstation entity for UI.
  */
 function mapAgentToWorkstation(agent: any, sessionWorkstation?: any): Workstation {
-  const isOnline = agent.status === 'ONLINE';
+  const isOnline = agent.presence_health ? agent.presence_health === 'ONLINE' : agent.status === 'ONLINE';
   const isFailed = agent.policy_status === 'FAILED';
 
   const status: Workstation['status'] = isFailed ? 'FAILED' : isOnline ? 'READY' : 'PENDING';

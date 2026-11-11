@@ -278,6 +278,32 @@ class ScreenStore:
                 for row in rows
             ]
 
+    def linked_telemetry_events(
+        self, session_id: str, agent_id: str | None = None
+    ) -> list[tuple[str, str, str]]:
+        """Return (event_id, workstation_id, evidence_id) for events carrying evidence_id."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT id, workstation_id, payload FROM telemetry_events WHERE session_id=?"
+                + (" AND workstation_id=?" if agent_id else "")
+                + " AND payload LIKE ? ORDER BY occurred_at, id",
+                (
+                    (session_id, agent_id, '%"evidence_id"%')
+                    if agent_id
+                    else (session_id, '%"evidence_id"%')
+                ),
+            ).fetchall()
+        linked: list[tuple[str, str, str]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except ValueError:
+                continue
+            evidence_id = payload.get("evidence_id") if isinstance(payload, dict) else None
+            if isinstance(evidence_id, str) and evidence_id:
+                linked.append((row["id"], row["workstation_id"], evidence_id))
+        return linked
+
     @staticmethod
     def _format_frame_row(row) -> dict:
         value = json.loads(row["metadata"])

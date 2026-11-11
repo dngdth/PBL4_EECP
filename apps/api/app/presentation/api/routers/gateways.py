@@ -204,6 +204,14 @@ async def _handle_gateway_message(
             if response.agent_id not in session.workstations:
                 raise ValueError("screenshot response is outside Agent session")
         await asyncio.to_thread(screen_store.save_response, response)
+        if realtime_hub is not None:
+            await realtime_hub.publish_change(
+                method="PATCH",
+                path=f"/api/v1/sessions/{response.session_id}/screen",
+                session_id=response.session_id,
+                resource="sessions",
+                resource_id=response.session_id,
+            )
         return None
     if envelope.message_type == GatewayMessageType.GATEWAY_HEALTH:
         health = GatewayHealth.model_validate(envelope.payload)

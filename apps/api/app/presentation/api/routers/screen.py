@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import threading
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -53,25 +55,54 @@ def audit(request: Request, session_id: str, action: str, target: str) -> None:
         uow.commit()
 
 
+def _audit_list_throttled(
+    request: Request, session_id: str, target: str, *, interval_seconds: float = 60.0
+) -> None:
+    principal = getattr(request.state, "principal", None)
+    actor = principal.subject if principal else "development"
+    lock = getattr(request.app.state, "_screen_list_audit_lock", None)
+    if lock is None:
+        lock = threading.Lock()
+        request.app.state._screen_list_audit_lock = lock
+    recent: dict[tuple[str, str, str], float] = getattr(
+        request.app.state, "_screen_list_audit_recent", {}
+    )
+    if not hasattr(request.app.state, "_screen_list_audit_recent"):
+        request.app.state._screen_list_audit_recent = recent
+    now = time.monotonic()
+    key = (actor, session_id, target)
+    with lock:
+        previous = recent.get(key)
+        if previous is not None and now - previous < interval_seconds:
+            return
+        if len(recent) >= 1024:
+            cutoff = now - interval_seconds
+            for stale_key in [k for k, seen in recent.items() if seen <= cutoff]:
+                del recent[stale_key]
+        recent[key] = now
+    audit(request, session_id, "SCREEN_EVIDENCE_LISTED", target)
+
+
 @router.get("/api/v1/sessions/{session_id}/screen/evidence")
 def list_evidence(session_id: str, request: Request, agent_id: str | None = None) -> list:
     authorize(request, Permission.VIEW_INCIDENT, session_id=session_id)
     session = session_for(request, session_id, agent_id)
-    audit(request, session_id, "SCREEN_EVIDENCE_LISTED", agent_id or session_id)
+    _audit_list_throttled(request, session_id, agent_id or session_id)
     values = request.app.state.screen_store.list_evidence(session_id, agent_id)
-    by_id = {value["id"]: value for value in values}
-    for value in values:
-        value["event_ids"] = [value["event_id"]] if value.get("event_id") else []
-    with request.app.state.container.database.unit_of_work() as uow:
-        for event in uow.telemetry.list_for_session(session_id):
-            evidence_id = event.payload.get("evidence_id")
-            value = by_id.get(evidence_id) if isinstance(evidence_id, str) else None
+    if values:
+        by_id = {value["id"]: value for value in values}
+        for value in values:
+            value["event_ids"] = [value["event_id"]] if value.get("event_id") else []
+        for event_id, workstation_id, evidence_id in (
+            request.app.state.screen_store.linked_telemetry_events(session_id, agent_id)
+        ):
+            value = by_id.get(evidence_id)
             if (
                 value is not None
-                and value["agent_id"] == event.workstation_id
-                and event.id not in value["event_ids"]
+                and value["agent_id"] == workstation_id
+                and event_id not in value["event_ids"]
             ):
-                value["event_ids"].append(event.id)
+                value["event_ids"].append(event_id)
     if session.state.value != "RUNNING":
         for value in values:
             value["replay_available"] = False
@@ -310,8 +341,18 @@ async def ingest_frame(gateway_id: str, request: Request) -> dict:
         except TimeoutError as exc:
             raise HTTPException(408, "screenshot upload timed out") from exc
         try:
-            return await asyncio.to_thread(store.store_frame, frame, bytes(data))
+            receipt = await asyncio.to_thread(store.store_frame, frame, bytes(data))
         except ValueError as exc:
             raise HTTPException(409, "screenshot integrity/storage validation failed") from exc
         except OSError as exc:
             raise HTTPException(507, "screenshot storage unavailable or full") from exc
+        realtime_hub = getattr(request.app.state, "realtime_hub", None)
+        if realtime_hub is not None:
+            await realtime_hub.publish_change(
+                method="POST",
+                path=f"/api/v1/sessions/{frame.session_id}/screen",
+                session_id=frame.session_id,
+                resource="sessions",
+                resource_id=frame.session_id,
+            )
+        return receipt

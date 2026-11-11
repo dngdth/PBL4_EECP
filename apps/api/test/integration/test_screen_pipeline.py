@@ -769,3 +769,48 @@ def test_screen_store_avoids_nested_connections_n_plus_one_and_read_lock(tmp_pat
         t.join(timeout=2)
         assert not t.is_alive()
         assert result and result[0] is not None
+
+
+def test_list_evidence_throttles_audits_skips_full_telemetry_scan_and_publishes_realtime(
+    tmp_path, monkeypatch
+):
+    app, client, session_id, value = setup_backend(tmp_path, monkeypatch)
+    published = []
+
+    async def fake_publish(**kwargs):
+        published.append(kwargs)
+
+    monkeypatch.setattr(app.state.realtime_hub, "publish_change", fake_publish)
+    assert ingest(client, value).status_code == 200
+    assert any(
+        item["resource"] == "sessions" and item["resource_id"] == session_id
+        for item in published
+    )
+    assert (
+        client.post(
+            f"/api/v1/sessions/{session_id}/telemetry",
+            json={
+                "workstation_id": "PC01",
+                "event_type": "POLICY_VIOLATION",
+                "severity": "WARNING",
+                "category": "PROHIBITED_WEBSITE",
+                "action": "OBSERVED",
+                "event_id": "evt_extra",
+                "occurred_at": value.event_occurred_at.isoformat(),
+                "payload": {"evidence_id": value.evidence_id},
+            },
+        ).status_code
+        == 202
+    )
+    for _ in range(5):
+        resp = client.get(f"/api/v1/sessions/{session_id}/screen/evidence")
+        assert resp.status_code == 200
+        assert set(resp.json()[0]["event_ids"]) == {"evt1", "evt_extra"}
+
+    with app.state.container.database.unit_of_work() as uow:
+        list_audits = [
+            entry
+            for entry in uow.audits.list_for_session(session_id)
+            if entry.action == "SCREEN_EVIDENCE_LISTED"
+        ]
+    assert len(list_audits) == 1

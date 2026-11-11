@@ -635,6 +635,8 @@ class EvidenceManager:
         except (OSError, ValueError, TimeoutError) as exc:
             server_stored = False
             self.last_error = str(exc)[:500]
+            if job.attempts % 5 == 0:
+                self._log(f"event=SCREEN_UPLOAD_FAILED reason={self.last_error}")
         with self._lock:
             if self._jobs.get(key) is not job:
                 return True

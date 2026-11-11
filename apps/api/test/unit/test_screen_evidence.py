@@ -465,3 +465,75 @@ def test_screen_session_control_ignores_stale_enable_after_stop():
     client._receive(message(NOW + timedelta(seconds=1), None))
     client._receive(message(NOW, "ses1"))
     assert states == ["ses1", None]
+
+
+def test_screen_uploader_validates_ca_only_for_wss_and_surfaces_tls_errors(monkeypatch):
+    import hashlib
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    from agent.client.screen.transport import ScreenUploader
+    from contracts.v2.screen import ScreenFrame
+
+    plaintext = ScreenUploader("ws://gateway/ws/agents", "tok", ca_file="/nonexistent/ca.crt")
+    assert plaintext.context is None
+
+    with pytest.raises(FileNotFoundError, match="Gateway CA certificate not found"):
+        ScreenUploader("wss://gateway:8443/ws/agents", "tok", ca_file="/nonexistent/ca.crt")
+
+    data = b"webp"
+    metadata = ScreenFrame(
+        protocol_version=2,
+        frame_id="frame_1",
+        evidence_id="ev1",
+        event_id="event_1",
+        agent_id="PC01",
+        session_id="ses1",
+        kind="trigger",
+        captured_at=NOW,
+        available_until=NOW + timedelta(seconds=60),
+        content_type="image/webp",
+        width=100,
+        height=50,
+        size_bytes=len(data),
+        sha256=hashlib.sha256(data).hexdigest(),
+    )
+    uploader = ScreenUploader("ws://gateway/ws/agents", "tok")
+
+    def raise_tls(*_args, **_kwargs):
+        raise urllib.error.URLError(ssl.SSLError("CERTIFICATE_VERIFY_FAILED"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", raise_tls)
+    with pytest.raises(OSError, match="TLS verification failed"):
+        uploader(metadata, data)
+
+    def raise_http(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            uploader.url, 409, "NTP time sync mismatch", hdrs=None, fp=None
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", raise_http)
+    with pytest.raises(OSError, match=r"rejected \(409\): NTP time sync mismatch"):
+        uploader(metadata, data)
+
+
+def test_evidence_manager_logs_tls_failure_reason():
+    logs = []
+
+    def fail_upload(*_args):
+        raise OSError("screenshot upload TLS verification failed: CERTIFICATE_VERIFY_FAILED")
+
+    manager, _, _, _ = make_manager(upload=fail_upload, log=logs.append)
+    manager.capture_once()
+    manager.on_event(event(1))
+
+    assert manager.upload_once() is True
+    assert manager.last_error == (
+        "screenshot upload TLS verification failed: CERTIFICATE_VERIFY_FAILED"
+    )
+    assert any(
+        "event=SCREEN_UPLOAD_FAILED" in line and "TLS verification failed" in line
+        for line in logs
+    )
+

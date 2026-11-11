@@ -2,13 +2,17 @@ param(
     [ValidateSet("Install", "Remove", "Start", "Stop", "Restart", "Status")]
     [string]$Action = "Status",
     [string]$PythonExe = "python",
-    [string]$EnvironmentFile = ""
+    [string]$EnvironmentFile = "",
+    [string]$CaCertPath = "",
+    [switch]$ImportCaToRootStore
 )
 
 $ErrorActionPreference = "Stop"
 $serviceName = "EECPAgentService"
 $serviceDataDirectory = Join-Path $env:ProgramData "EECP"
 $installedEnvironmentFile = Join-Path $serviceDataDirectory "service.env"
+$certsDirectory = Join-Path $serviceDataDirectory "certs"
+$installedCaFile = Join-Path $certsDirectory "ca.crt"
 
 switch ($Action) {
     "Install" {
@@ -22,6 +26,19 @@ switch ($Action) {
                 "*S-1-5-18:(OI)(CI)F" `
                 "*S-1-5-32-544:(OI)(CI)F"
             if ($LASTEXITCODE -ne 0) { throw "Could not protect Service configuration" }
+        }
+        if ($CaCertPath) {
+            $caSource = (Resolve-Path -LiteralPath $CaCertPath).Path
+            New-Item -ItemType Directory -Force -Path $certsDirectory | Out-Null
+            Copy-Item -LiteralPath $caSource -Destination $installedCaFile -Force
+            & icacls.exe $certsDirectory /inheritance:r /grant:r `
+                "*S-1-5-18:(OI)(CI)F" `
+                "*S-1-5-32-544:(OI)(CI)F" `
+                "*S-1-5-32-545:(OI)(CI)RX"
+            if ($LASTEXITCODE -ne 0) { throw "Could not protect CA certificate directory" }
+            if ($ImportCaToRootStore) {
+                Import-Certificate -FilePath $installedCaFile -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
+            }
         }
         & $PythonExe -m agent.service.main --scm install
         if ($LASTEXITCODE -ne 0) { throw "Service installation failed" }

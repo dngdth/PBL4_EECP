@@ -126,19 +126,26 @@ class WindowsScreenCapture:
         except ImportError as exc:
             raise OSError("screen capture requires Pillow; run uv sync --all-packages") from exc
         captured_at = datetime.now(UTC)
-        with ImageGrab.grab(all_screens=True) as original:
-            # Bound compression work for extreme virtual desktops.
-            if original.width * original.height > 80_000_000:
-                raise OSError("virtual desktop exceeds capture pixel budget")
-            with original.convert("RGB") as image:
-                width = self.high_width if high_quality else self.low_width
-                image.thumbnail((width, width), Image.Resampling.LANCZOS)
-                output = io.BytesIO()
-                image.save(output, format="JPEG", quality=85 if high_quality else 40)
-                data = output.getvalue()
-                if len(data) > 2 * 1024 * 1024:
-                    raise OSError("compressed screenshot exceeds 2 MiB")
-                return CapturedFrame(uuid.uuid4().hex, captured_at, data, image.width, image.height)
+        try:
+            with ImageGrab.grab(all_screens=True) as original:
+                # Bound compression work for extreme virtual desktops.
+                if original.width * original.height > 80_000_000:
+                    raise OSError("virtual desktop exceeds capture pixel budget")
+                with original.convert("RGB") as image:
+                    width = self.high_width if high_quality else self.low_width
+                    image.thumbnail((width, width), Image.Resampling.LANCZOS)
+                    output = io.BytesIO()
+                    image.save(output, format="JPEG", quality=85 if high_quality else 40)
+                    data = output.getvalue()
+                    if len(data) > 2 * 1024 * 1024:
+                        raise OSError("compressed screenshot exceeds 2 MiB")
+                    return CapturedFrame(
+                        uuid.uuid4().hex, captured_at, data, image.width, image.height
+                    )
+        except OSError:
+            raise
+        except Exception as exc:
+            raise OSError(f"screen capture grab failed: {exc}") from exc
 
 
 @dataclass(frozen=True, slots=True)

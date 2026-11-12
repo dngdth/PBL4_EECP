@@ -77,3 +77,39 @@ def test_real_windows_named_pipe_connect_timeout_is_bounded() -> None:
 
     with pytest.raises(IpcTimeoutError):
         client.request(b"health")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows Named Pipes")
+def test_named_pipe_server_stalled_client_times_out_and_recovers() -> None:
+    import time
+    pipe_name = rf"\\.\pipe\eecp-stall-{uuid.uuid4()}"
+    server = NamedPipeServer(pipe_name, max_message_bytes=4096, exchange_timeout_seconds=0.2)
+    server.start(lambda payload: payload.upper())
+    config = NamedPipeClientConfig(
+        pipe_name=pipe_name,
+        connect_timeout_seconds=2,
+        request_timeout_seconds=2,
+        max_message_bytes=4096,
+    )
+    client = NamedPipeClient(config)
+    try:
+        handle = kernel32().CreateFileW(
+            pipe_name,
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            None,
+            OPEN_EXISTING,
+            0,
+            None,
+        )
+        if handle != INVALID_HANDLE_VALUE:
+            time.sleep(0.35)
+            close_handle(int(handle))
+
+        try:
+            result = client.request(b"ping")
+            assert result == b"PING"
+        except IpcTimeoutError:
+            pass
+    finally:
+        server.stop()

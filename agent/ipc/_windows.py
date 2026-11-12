@@ -115,6 +115,13 @@ def free_security_descriptor(descriptor: int) -> None:
         kernel32().LocalFree(descriptor)
 
 
+def cancel_handle_io(handle: int | None) -> None:
+    if handle is None or handle == INVALID_HANDLE_VALUE:
+        return
+    api = kernel32()
+    api.CancelIoEx(wintypes.HANDLE(handle), None)
+
+
 def close_handle(handle: int | None) -> None:
     if handle is None or handle == INVALID_HANDLE_VALUE:
         return

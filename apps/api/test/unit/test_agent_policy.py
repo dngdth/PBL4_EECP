@@ -370,7 +370,10 @@ def test_switching_from_audit_to_enforce_does_not_restore_unmodified_usb(
         _payload()
     )
 
-    usb_writes = [call for call in calls if call[:2] == ["reg", "add"]]
+    usb_writes = [
+        call for call in calls
+        if call[:2] == ["reg", "add"] and any("USBSTOR" in str(arg) for arg in call)
+    ]
     assert len(usb_writes) == 1
     assert "4" in usb_writes[0]
 

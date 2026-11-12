@@ -13,6 +13,7 @@ from agent.config import (
     GATEWAY_URL,
     IPC_MAX_MESSAGE_BYTES,
     IPC_PIPE_NAME,
+    IPC_REQUEST_TIMEOUT_SECONDS,
     POLICY_MODE,
     POLICY_STATE_PATH,
     POLICY_VERIFICATION_KEY,
@@ -71,7 +72,12 @@ def build_service_runtime() -> AgentServiceRuntime:
         policy_mode=POLICY_MODE,
         state_path=POLICY_STATE_PATH,
         service_version=AGENT_VERSION,
-        server=NamedPipeServer(IPC_PIPE_NAME, IPC_MAX_MESSAGE_BYTES),
+        server=NamedPipeServer(
+            IPC_PIPE_NAME,
+            IPC_MAX_MESSAGE_BYTES,
+            # Keep the response pipe open for the Client's full apply budget.
+            exchange_timeout_seconds=IPC_REQUEST_TIMEOUT_SECONDS + 5.0,
+        ),
         maintenance_interval_seconds=SERVICE_MAINTENANCE_INTERVAL_SECONDS,
         windows_factory=windows_factory,
         policy_verification_key=POLICY_VERIFICATION_KEY,

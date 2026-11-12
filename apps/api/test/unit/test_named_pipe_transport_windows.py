@@ -1,5 +1,6 @@
 import ctypes
 import os
+import time
 import uuid
 
 import pytest
@@ -18,6 +19,45 @@ from agent.ipc.named_pipe_client import (
     NamedPipeClientConfig,
 )
 from agent.ipc.named_pipe_server import NamedPipeServer
+from agent.service import main as service_main
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows Named Pipes")
+def test_service_pipe_waits_for_handler_longer_than_five_seconds(tmp_path, monkeypatch):
+    pipe_name = rf"\\.\pipe\eecp-slow-apply-{uuid.uuid4()}"
+    settings = {
+        "POLICY_MODE": "audit",
+        "REQUIRE_SIGNED_POLICY": False,
+        "REQUIRE_AUTHORIZED_COMMANDS": False,
+        "IPC_PIPE_NAME": pipe_name,
+        "POLICY_STATE_PATH": tmp_path / "policy-state.json",
+        "COMMAND_REPLAY_PATH": tmp_path / "command-replay.json",
+        "SECURITY_EVENT_JOURNAL_PATH": tmp_path / "security-events.db",
+    }
+    for name, value in settings.items():
+        monkeypatch.setattr(service_main, name, value)
+    monkeypatch.setattr(service_main, "protect_service_data_directory", lambda path: None)
+    runtime = service_main.build_service_runtime()
+
+    def handle(payload):
+        if payload == b"apply":
+            time.sleep(6)
+        return payload.upper()
+
+    runtime.start(handle)
+    client = NamedPipeClient(
+        NamedPipeClientConfig(
+            pipe_name=pipe_name,
+            connect_timeout_seconds=2,
+            request_timeout_seconds=30,
+            max_message_bytes=4096,
+        )
+    )
+    try:
+        assert client.request(b"apply") == b"APPLY"
+        assert client.request(b"health") == b"HEALTH"
+    finally:
+        runtime.stop()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows Named Pipes")
@@ -81,7 +121,6 @@ def test_real_windows_named_pipe_connect_timeout_is_bounded() -> None:
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows Named Pipes")
 def test_named_pipe_server_stalled_client_times_out_and_recovers() -> None:
-    import time
     pipe_name = rf"\\.\pipe\eecp-stall-{uuid.uuid4()}"
     server = NamedPipeServer(pipe_name, max_message_bytes=4096, exchange_timeout_seconds=0.2)
     server.start(lambda payload: payload.upper())

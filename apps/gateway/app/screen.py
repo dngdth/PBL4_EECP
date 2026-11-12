@@ -109,7 +109,7 @@ class ScreenSpool:
                 if value["frame"]["agent_id"] == frame.agent_id
             )
             if (
-                len(records) >= self.max_items
+                len(pending) >= self.max_items
                 or total + len(data) > self.max_bytes
                 or (agent_total + len(data) > self.per_agent_bytes)
             ):
@@ -145,6 +145,7 @@ class ScreenSpool:
             ):
                 raise ValueError("Backend did not acknowledge durable screenshot storage")
             value["state"] = "stored"
+            value["stored_at"] = time.time()
             atomic_write(manifest, json.dumps(value).encode())
             self._entries[key] = value
             (self.root / f"{key}.bin").unlink(missing_ok=True)
@@ -166,6 +167,10 @@ class ScreenSpool:
             now = time.time()
             for key, value in self.records():
                 manifest = self.root / f"{key}.json"
+                if value.get("state") == "stored" and now >= value.get("stored_at", 0) + 300:
+                    manifest.unlink(missing_ok=True)
+                    self._entries.pop(key, None)
+                    continue
                 if now >= value["expires_at"]:
                     if value["state"] == "pending":
                         value["state"] = "expired"
@@ -179,7 +184,7 @@ class ScreenSpool:
                     (self.root / f"{key}.bin").unlink(missing_ok=True)
                 if now >= value["expires_at"] + self.ttl_seconds:
                     manifest.unlink(missing_ok=True)
-                    del self._entries[key]
+                    self._entries.pop(key, None)
             # Crash leftovers have no receipt and can be removed after the spool TTL.
             if now < self._next_orphan_cleanup:
                 return
@@ -234,24 +239,32 @@ async def receive_frame(request: Request) -> dict:
         request.app.state.settings, frame.agent_id, request.headers.get("authorization", "")
     )
     semaphore = request.app.state.screen_upload_slots
-    if semaphore.locked():
-        raise HTTPException(429, "Gateway screenshot upload concurrency limit")
-    async with semaphore:
-        data = bytearray()
-        try:
-            async with asyncio.timeout(15):
-                async for chunk in request.stream():
-                    if len(data) + len(chunk) > min(MAX_FRAME_BYTES, frame.size_bytes):
-                        raise HTTPException(413, "screenshot byte limit exceeded")
-                    data.extend(chunk)
-        except TimeoutError as exc:
-            raise HTTPException(408, "screenshot upload timed out") from exc
-        try:
-            return await asyncio.to_thread(request.app.state.screen_spool.put, frame, bytes(data))
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        except OSError as exc:
-            raise HTTPException(507, "Gateway screenshot storage unavailable or full") from exc
+    try:
+        async with asyncio.timeout(15):
+            async with semaphore:
+                data = bytearray()
+                try:
+                    async with asyncio.timeout(15):
+                        async for chunk in request.stream():
+                            if len(data) + len(chunk) > min(MAX_FRAME_BYTES, frame.size_bytes):
+                                raise HTTPException(413, "screenshot byte limit exceeded")
+                            data.extend(chunk)
+                except TimeoutError as exc:
+                    raise HTTPException(408, "screenshot upload timed out") from exc
+                try:
+                    return await asyncio.to_thread(
+                        request.app.state.screen_spool.put, frame, bytes(data)
+                    )
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from exc
+                except OSError as exc:
+                    raise HTTPException(
+                        507, "Gateway screenshot storage unavailable or full"
+                    ) from exc
+    except TimeoutError as exc:
+        raise HTTPException(
+            429, "Gateway screenshot upload concurrency limit; queue wait timed out"
+        ) from exc
 
 
 class ScreenForwarder:
@@ -300,6 +313,7 @@ class ScreenForwarder:
                     for k, v in values
                     if v["state"] == "pending" and v["next_attempt"] <= time.time()
                 ]
+                pending.sort(key=lambda item: item[1]["frame"].get("captured_at", ""))
                 await asyncio.gather(
                     *(asyncio.to_thread(self.forward, k, v) for k, v in pending[:4])
                 )

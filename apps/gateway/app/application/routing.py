@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 from apps.gateway.app.application.ports import (
@@ -87,7 +88,7 @@ class GatewayRouter:
             if event.correlation_id and envelope.correlation_id != event.correlation_id:
                 raise ValueError("Event correlation does not match envelope")
             if self._event_buffer is not None:
-                inserted = self._event_buffer.put(envelope)
+                inserted = await asyncio.to_thread(self._event_buffer.put, envelope)
                 if self._event_flusher is not None:
                     self._event_flusher.note_buffered(inserted)
                     self._event_flusher.wake()

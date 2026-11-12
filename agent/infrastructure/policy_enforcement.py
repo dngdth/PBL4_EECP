@@ -250,12 +250,16 @@ class WindowsPolicyEnforcer:
         if state and state.get("mode") == "audit":
             self._state_path.unlink(missing_ok=True)
             return
+        rule_names = set(self._managed_rule_names(state))
+        inventory = getattr(self._firewall, "owned_rule_names", None)
+        if inventory is not None:
+            rule_names.update(inventory())
         self._write_blocked_domains([])
         self._restore_browser_policies()
         if state and state.get("usb_deny"):
             previous = state.get("usb_previous")
             self._set_usb_start(previous if isinstance(previous, int) else 3)
-        self._firewall.remove_rules(self._managed_rule_names(state))
+        self._firewall.remove_rules(sorted(rule_names))
         self._state_path.unlink(missing_ok=True)
         self._seen_processes.clear()
         self._process_outcomes.clear()

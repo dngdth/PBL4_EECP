@@ -65,6 +65,10 @@ def _isolate_network_adapters(monkeypatch):
         "agent.infrastructure.windows.firewall_enforcer.WindowsFirewallEnforcer.remove_rules",
         lambda *args: None,
     )
+    monkeypatch.setattr(
+        "agent.infrastructure.windows.firewall_enforcer.WindowsFirewallEnforcer.owned_rule_names",
+        lambda *args: (),
+    )
 
 
 def test_command_processor_applies_and_acknowledges_policy(tmp_path: Path) -> None:

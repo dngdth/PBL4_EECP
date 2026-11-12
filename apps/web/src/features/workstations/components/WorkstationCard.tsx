@@ -3,6 +3,7 @@ import { Monitor, Clock, Shield, Network, Activity, Cpu } from 'lucide-react';
 import { Workstation } from '@/src/domain';
 import { cn } from '@/src/shared/lib/cn';
 import { formatRelativeTime } from '@/src/shared/lib/formatters';
+import { WORKSTATION_STATUS_LABELS } from '@/src/shared/config/labels';
 
 export interface WorkstationCardProps {
   workstation: Workstation;
@@ -19,13 +20,7 @@ export const WorkstationCard: React.FC<WorkstationCardProps> = ({
   const isPending = workstation.status === 'PENDING';
 
   const statusLabel =
-    workstation.status === 'ONLINE' ? 'Trực tuyến' :
-    workstation.status === 'OFFLINE' ? 'Ngoại tuyến' :
-    workstation.status === 'DEGRADED' ? 'Giảm cấp' :
-    workstation.status === 'READY' ? 'Sẵn sàng' :
-    workstation.status === 'WARNING' ? 'Cảnh báo' :
-    workstation.status === 'FAILED' ? 'Lỗi' :
-    workstation.status === 'PENDING' ? 'Đang chờ' : workstation.status;
+    WORKSTATION_STATUS_LABELS[workstation.status] || workstation.status;
 
   const details = workstation.preflight_details;
 
@@ -47,9 +42,9 @@ export const WorkstationCard: React.FC<WorkstationCardProps> = ({
       <div
         className={cn(
           'w-full bg-slate-100 dark:bg-surface rounded-t-xl rounded-b-md border-2 p-1.5 sm:p-2 shadow-2xs transition-all duration-200 flex flex-col justify-between relative overflow-hidden',
-          isReady && 'border-slate-300 dark:border-border group-hover:border-primary group-hover:shadow-[0_4px_16px_rgba(59,130,246,0.15)]',
-          isWarning && 'border-amber-400 bg-amber-50/20 group-hover:border-amber-500 group-hover:shadow-[0_4px_16px_rgba(245,158,11,0.18)]',
-          isFailed && 'border-rose-400 bg-rose-50/20 group-hover:border-rose-500 group-hover:shadow-[0_4px_16px_rgba(244,63,94,0.18)]',
+          isReady && 'border-border group-hover:border-primary group-hover:shadow-[0_4px_16px_rgba(232,117,42,0.15)]',
+          isWarning && 'border-warning/40 bg-warning-soft/30 group-hover:border-warning group-hover:shadow-[0_4px_16px_rgba(217,154,34,0.18)]',
+          isFailed && 'border-error/40 bg-error-soft/30 group-hover:border-error group-hover:shadow-[0_4px_16px_rgba(201,76,76,0.18)]',
           isPending && 'border-slate-200 dark:border-border'
         )}
       >
@@ -200,9 +195,9 @@ export const WorkstationCard: React.FC<WorkstationCardProps> = ({
           <div
             className={cn(
               'w-2 h-0.5 rounded-full transition-all',
-              isReady && 'bg-emerald-500 shadow-[0_0_4px_rgba(16,185,129,0.7)]',
-              isWarning && 'bg-amber-500 shadow-[0_0_4px_rgba(245,158,11,0.7)]',
-              isFailed && 'bg-rose-500 shadow-[0_0_4px_rgba(244,63,94,0.7)]'
+              isReady && 'bg-success shadow-[0_0_4px_rgba(79,138,98,0.7)]',
+              isWarning && 'bg-warning shadow-[0_0_4px_rgba(217,154,34,0.7)]',
+              isFailed && 'bg-error shadow-[0_0_4px_rgba(201,76,76,0.7)]'
             )}
           />
         </div>

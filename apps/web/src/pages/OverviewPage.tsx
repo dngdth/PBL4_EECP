@@ -69,13 +69,13 @@ export const OverviewPage: React.FC = () => {
 
   const allWorkstations = sessions.flatMap((s) => s.workstations);
   const totalWorkstations = allWorkstations.length;
-  const readyWorkstations = allWorkstations.filter((w) => w.status === 'READY').length;
-  const warningWorkstations = allWorkstations.filter((w) => w.status === 'WARNING').length;
-  const failedWorkstations = allWorkstations.filter((w) => w.status === 'FAILED').length;
+  const readyWorkstations = allWorkstations.filter((w) => w.status === 'READY' || w.status === 'ONLINE').length;
+  const warningWorkstations = allWorkstations.filter((w) => w.status === 'WARNING' || w.status === 'DEGRADED').length;
+  const failedWorkstations = allWorkstations.filter((w) => w.status === 'FAILED' || w.status === 'OFFLINE').length;
 
   const aggregatedActivities = sessions
     .flatMap((s) => s.activity_log || [])
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')))
     .slice(0, 10);
 
   if (isLoading) {

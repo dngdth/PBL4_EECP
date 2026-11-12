@@ -33,7 +33,7 @@ export const WorkstationsPage: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Inspection & Modals
-  const [inspectingWorkstation, setInspectingWorkstation] = useState<Workstation | null>(null);
+  const [inspectingWorkstationId, setInspectingWorkstationId] = useState<string | null>(null);
   const [commandQueueTargetId, setCommandQueueTargetId] = useState<string | null>(null);
 
   const fetchAgentData = useCallback(async (silent = false) => {
@@ -52,6 +52,12 @@ export const WorkstationsPage: React.FC = () => {
 
   useEffect(() => {
     fetchAgentData(false);
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchAgentData(true);
+      }
+    }, 10_000);
+    return () => clearInterval(interval);
   }, [fetchAgentData]);
 
   useRealtimeRefresh(() => {
@@ -76,12 +82,17 @@ export const WorkstationsPage: React.FC = () => {
     });
   }, [agents]);
 
+  const inspectingWorkstation = useMemo(() => {
+    if (!inspectingWorkstationId) return null;
+    return workstations.find((w) => w.id === inspectingWorkstationId) || null;
+  }, [workstations, inspectingWorkstationId]);
+
   const onlineCount = useMemo(
-    () => workstations.filter((w) => w.status === 'ONLINE').length,
+    () => workstations.filter((w) => w.status === 'ONLINE' || w.status === 'READY' || w.status === 'DEGRADED').length,
     [workstations]
   );
   const offlineCount = useMemo(
-    () => workstations.filter((w) => w.status !== 'ONLINE').length,
+    () => workstations.filter((w) => w.status === 'OFFLINE' || w.status === 'FAILED' || w.status === 'UNKNOWN').length,
     [workstations]
   );
 
@@ -197,7 +208,7 @@ export const WorkstationsPage: React.FC = () => {
         <div className="h-[640px]">
           <WorkstationGrid
             workstations={workstations}
-            onInspectWorkstation={(ws) => setInspectingWorkstation(ws)}
+            onInspectWorkstation={(ws) => setInspectingWorkstationId(ws.id)}
             onRefresh={() => fetchAgentData(false)}
           />
         </div>
@@ -207,7 +218,7 @@ export const WorkstationsPage: React.FC = () => {
       {inspectingWorkstation && (
         <WorkstationInspectModal
           isOpen={Boolean(inspectingWorkstation)}
-          onClose={() => setInspectingWorkstation(null)}
+          onClose={() => setInspectingWorkstationId(null)}
           workstation={inspectingWorkstation}
           onViewCommandQueue={(wsId) => {
             setCommandQueueTargetId(wsId);

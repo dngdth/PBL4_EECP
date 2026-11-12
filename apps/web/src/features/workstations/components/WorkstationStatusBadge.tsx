@@ -50,6 +50,11 @@ export const WorkstationStatusBadge: React.FC<WorkstationStatusBadgeProps> = ({
       badgeClass: 'bg-error-soft text-error-dark border-error/30',
       dotClass: 'bg-error',
     },
+    UNKNOWN: {
+      label: WORKSTATION_STATUS_LABELS.UNKNOWN,
+      badgeClass: 'bg-surface-subtle text-text-muted border-border',
+      dotClass: 'bg-text-subtle',
+    },
   }[status] || {
     label: status,
     badgeClass: 'bg-surface-subtle text-text-muted border-border',
@@ -105,6 +110,11 @@ export const PreflightStatusBadge: React.FC<PreflightStatusBadgeProps> = ({
     },
     PENDING: {
       label: PREFLIGHT_STATUS_LABELS.PENDING,
+      badgeClass: 'bg-surface-subtle text-text-muted border-border',
+      dotClass: 'bg-text-subtle',
+    },
+    UNKNOWN: {
+      label: PREFLIGHT_STATUS_LABELS.UNKNOWN,
       badgeClass: 'bg-surface-subtle text-text-muted border-border',
       dotClass: 'bg-text-subtle',
     },

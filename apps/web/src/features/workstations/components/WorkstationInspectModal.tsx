@@ -174,7 +174,7 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
                 <span className="text-error font-bold text-xs flex items-center gap-1">
                   <XCircle className="w-4 h-4" /> Mất kết nối (Ngoại tuyến)
                 </span>
-              ) : details?.agent_health || workstation.service_health === 'HEALTHY' ? (
+              ) : details?.agent_health || workstation.service_health === 'HEALTHY' || workstation.status === 'ONLINE' ? (
                 <span className="text-success-dark font-bold text-xs flex items-center gap-1">
                   <CheckCircle2 className="w-4 h-4" /> Hoạt động tốt
                 </span>

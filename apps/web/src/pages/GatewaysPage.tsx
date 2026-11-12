@@ -7,6 +7,8 @@ import { Badge } from '@/src/shared/ui/badge';
 import { Modal } from '@/src/shared/ui/modal';
 import { Spinner } from '@/src/shared/ui/spinner';
 import { formatDateTime } from '@/src/shared/lib/formatters';
+import { GATEWAY_STATUS_LABELS } from '@/src/shared/config/labels';
+import { useRealtimeRefresh } from '@/src/shared/api/realtime';
 
 const formatValue = (item: unknown) =>
   item === null || item === undefined || item === '' ? 'Chưa có' : String(item);
@@ -16,9 +18,18 @@ const formatAge = (seconds: number | null) =>
 
 const bufferLabel = (status: GatewayOperationalState['buffer_status']) => {
   if (status === 'ONLINE') return 'Bình thường';
-  if (status === 'DEGRADED') return 'Suy giảm';
+  if (status === 'DEGRADED') return 'Cảnh báo';
   if (status === 'OFFLINE') return 'Ngoại tuyến';
   return status || 'Chưa có';
+};
+
+const gatewayStatusLabel = (status: string | undefined): string => {
+  if (!status) return 'Chưa rõ';
+  const upper = status.toUpperCase();
+  if (upper in GATEWAY_STATUS_LABELS) {
+    return GATEWAY_STATUS_LABELS[upper as keyof typeof GATEWAY_STATUS_LABELS];
+  }
+  return status;
 };
 
 const statusBadgeVariant = (
@@ -59,7 +70,17 @@ export const GatewaysPage: React.FC = () => {
 
   useEffect(() => {
     void refresh();
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refresh();
+      }
+    }, 10_000);
+    return () => clearInterval(timer);
   }, [refresh]);
+
+  useRealtimeRefresh(() => {
+    void refresh();
+  }, ['api']);
 
   return (
     <div className="flex flex-col min-h-full w-full overflow-x-hidden">
@@ -137,7 +158,7 @@ export const GatewaysPage: React.FC = () => {
                     </p>
                   </div>
                   <Badge variant={statusBadgeVariant(gateway.status)} dot size="sm">
-                    {gateway.status || 'Chưa rõ'}
+                    {gatewayStatusLabel(gateway.status)}
                   </Badge>
                 </div>
 
@@ -145,7 +166,7 @@ export const GatewaysPage: React.FC = () => {
                   <div>
                     <dt className="text-text-muted">Kết nối Backend (Uplink)</dt>
                     <dd className="font-semibold text-text mt-0.5">
-                      {gateway.backend_uplink_status || 'Chưa rõ'}
+                      {gatewayStatusLabel(gateway.backend_uplink_status)}
                     </dd>
                   </div>
                   <div>
@@ -202,7 +223,7 @@ export const GatewaysPage: React.FC = () => {
                   </span>
                 </div>
                 <Badge variant={statusBadgeVariant(selected.status)} dot size="sm">
-                  {selected.status}
+                  {gatewayStatusLabel(selected.status)}
                 </Badge>
               </div>
 
@@ -218,7 +239,7 @@ export const GatewaysPage: React.FC = () => {
                 <div className="p-3 bg-surface border border-border rounded-sm">
                   <dt className="text-text-muted">Kết nối Backend (Uplink)</dt>
                   <dd className="font-bold text-text text-sm mt-0.5">
-                    {selected.backend_uplink_status}
+                    {gatewayStatusLabel(selected.backend_uplink_status)}
                   </dd>
                 </div>
                 <div className="p-3 bg-surface border border-border rounded-sm">

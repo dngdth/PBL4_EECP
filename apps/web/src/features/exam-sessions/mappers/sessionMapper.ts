@@ -10,6 +10,17 @@ import {
  * Maps an AssignedAgentView from Backend management API into a Workstation entity for UI.
  */
 function mapAgentToWorkstation(agent: any, sessionWorkstation?: any): Workstation {
+  if (!agent) {
+    return {
+      id: 'unknown',
+      ip: 'unknown',
+      status: 'UNKNOWN',
+      preflight_status: 'UNKNOWN',
+      last_heartbeat: '',
+      agent_version: 'unknown',
+    };
+  }
+
   const isOnline = agent.presence_health ? agent.presence_health === 'ONLINE' : agent.status === 'ONLINE';
   const isFailed = agent.policy_status === 'FAILED';
 
@@ -26,7 +37,7 @@ function mapAgentToWorkstation(agent: any, sessionWorkstation?: any): Workstatio
     ? sessionWorkstation.preflight_checks
     : [];
   const checkPassed = (...names: string[]) => {
-    const match = checks.find((check: any) => names.includes(check.name));
+    const match = checks.find((check: any) => check && names.includes(check.name));
     return match ? Boolean(match.passed) : false;
   };
   const preflight_details = checks.length
@@ -36,7 +47,7 @@ function mapAgentToWorkstation(agent: any, sessionWorkstation?: any): Workstatio
         agent_health: checkPassed('agent_health', 'agent_online'),
         peripheral_check: checkPassed('peripheral_check', 'display_peripherals'),
         notes: checks
-          .filter((check: any) => check.details)
+          .filter((check: any) => check && check.details)
           .map((check: any) => check.details)
           .join('; ') || undefined,
       }
@@ -63,10 +74,11 @@ function mapAgentToWorkstation(agent: any, sessionWorkstation?: any): Workstatio
  * Maps legacy workstation dictionary format from pipeline API.
  */
 function mapLegacyWorkstations(workstationsDict: Record<string, any>): Workstation[] {
+  if (!workstationsDict || typeof workstationsDict !== 'object') return [];
   return Object.entries(workstationsDict).map(([wsId, val]) => {
     const readiness = val?.readiness || 'PENDING';
-    const checks = val?.preflight_checks || [];
-    const passedAll = checks.length > 0 ? checks.every((c: any) => c.passed) : readiness === 'READY';
+    const checks = Array.isArray(val?.preflight_checks) ? val.preflight_checks : [];
+    const passedAll = checks.length > 0 ? checks.every((c: any) => c && c.passed) : readiness === 'READY';
 
     return {
       id: wsId,
@@ -109,6 +121,12 @@ function mapPolicy(rawPolicy: any): PolicyConfig | undefined {
   const deniedProcesses = Array.isArray(applications.deny) ? applications.deny : [];
   // strict_mode is active only if denylist is non-empty
   const strictMode = deniedProcesses.length > 0;
+  const rawAllowed = applications.allow || rawPolicy.allowed_processes;
+  const allowedProcesses = Array.isArray(rawAllowed)
+    ? rawAllowed
+    : typeof rawAllowed === 'string'
+      ? [rawAllowed]
+      : ['exam-browser.exe'];
 
   return {
     policy_id: rawPolicy.policy_hash || rawPolicy.policy_id || 'pol-default',
@@ -116,7 +134,7 @@ function mapPolicy(rawPolicy: any): PolicyConfig | undefined {
     strict_mode: strictMode,
     network_lockdown: networkLockdown,
     usb_storage_blocked: usbBlocked,
-    allowed_processes: applications.allow || rawPolicy.allowed_processes || ['exam-browser.exe'],
+    allowed_processes: allowedProcesses,
     denied_processes: deniedProcesses,
     deployed_at: rawPolicy.deployed_at,
   };
@@ -132,13 +150,14 @@ function mapActivityLog(raw: any): ActivityItem[] {
 
   if (Array.isArray(raw.security_events)) {
     raw.security_events.forEach((event: any) => {
+      if (!event) return;
       const actor = event.username ? ` — ${event.username}` : '';
       const process = event.process_name
         ? ` — ${event.process_name}${event.pid ? ` (PID ${event.pid})` : ''}`
         : '';
-      const result = event.enforcement_result || event.recovery_status || event.action;
+      const result = event.enforcement_result || event.recovery_status || event.action || 'THỰC THI';
       logs.push({
-        id: event.event_id,
+        id: event.event_id || `evt-${Math.random()}`,
         timestamp: event.occurred_at || '',
         level:
           event.severity === 'CRITICAL'
@@ -146,7 +165,7 @@ function mapActivityLog(raw: any): ActivityItem[] {
             : event.severity === 'WARNING'
               ? 'WARNING'
               : 'INFO',
-        message: `${event.agent_id}${actor}${process} — ${event.category} — ${result}`,
+        message: `${event.agent_id || 'AGENT'}${actor}${process} — ${event.category || 'BẢO MẬT'} — ${result}`,
         source: event.source || 'AGENT_SERVICE',
         details: { payload: event.payload },
       });
@@ -156,14 +175,15 @@ function mapActivityLog(raw: any): ActivityItem[] {
   // 1. Violations from Backend PolicyViolationView
   if (Array.isArray(raw.violations)) {
     raw.violations.forEach((v: any, idx: number) => {
+      if (!v) return;
       const isObserved = v.action === 'OBSERVED';
       logs.push({
         id: `act-viol-${idx}`,
         timestamp: v.occurred_at || '',
         level: 'WARNING',
         message: isObserved
-          ? `Audit DNS trên máy ${v.workstation_id} quan sát thấy tên miền bị cấm${v.destination ? `: ${v.destination}` : ''}`
-          : `Máy ${v.workstation_id} bị chặn truy cập${v.destination ? `: ${v.destination}` : ''}`,
+          ? `Audit DNS trên máy ${v.workstation_id || 'N/A'} quan sát thấy tên miền bị cấm${v.destination ? `: ${v.destination}` : ''}`
+          : `Máy ${v.workstation_id || 'N/A'} bị chặn truy cập${v.destination ? `: ${v.destination}` : ''}`,
         source: 'AGENT',
       });
     });
@@ -200,7 +220,9 @@ function mapActivityLog(raw: any): ActivityItem[] {
     });
   }
 
-  return logs.sort((left, right) => right.timestamp.localeCompare(left.timestamp));
+  return logs.sort((left, right) =>
+    String(right?.timestamp || '').localeCompare(String(left?.timestamp || ''))
+  );
 }
 
 /**
@@ -213,11 +235,13 @@ export function normalizeSession(raw: any): ExamSession {
   // Extract workstations: prefer raw.agents (Management API), then raw.workstations
   let workstations: Workstation[] = [];
   if (Array.isArray(raw.agents) && raw.agents.length > 0) {
-    workstations = raw.agents.map((agent: any) =>
-      mapAgentToWorkstation(agent, raw.workstations?.[agent.id])
-    );
+    workstations = raw.agents
+      .filter((agent: any) => agent && typeof agent === 'object')
+      .map((agent: any) =>
+        mapAgentToWorkstation(agent, agent.id ? raw.workstations?.[agent.id] : undefined)
+      );
   } else if (Array.isArray(raw.workstations)) {
-    workstations = raw.workstations;
+    workstations = raw.workstations.filter((w: any) => w && typeof w === 'object');
   } else if (raw.workstations && typeof raw.workstations === 'object') {
     workstations = mapLegacyWorkstations(raw.workstations);
   }

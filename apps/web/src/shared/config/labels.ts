@@ -18,9 +18,15 @@ export const WORKSTATION_STATUS_LABELS: Record<WorkstationStatus, string> = {
   FAILED: 'Lỗi',
   PENDING: 'Đang chờ',
   ONLINE: 'Trực tuyến',
-  DEGRADED: 'Giảm cấp',
+  DEGRADED: 'Cảnh báo',
   OFFLINE: 'Ngoại tuyến',
   UNKNOWN: 'Không rõ',
+};
+
+export const GATEWAY_STATUS_LABELS: Record<'ONLINE' | 'DEGRADED' | 'OFFLINE', string> = {
+  ONLINE: 'Trực tuyến',
+  DEGRADED: 'Cảnh báo',
+  OFFLINE: 'Ngoại tuyến',
 };
 
 export const PREFLIGHT_STATUS_LABELS: Record<PreflightStatus, string> = {
@@ -28,7 +34,7 @@ export const PREFLIGHT_STATUS_LABELS: Record<PreflightStatus, string> = {
   WARNING: 'Cảnh báo',
   FAILED: 'Lỗi',
   PENDING: 'Đang chờ',
-  UNKNOWN: 'Unknown',
+  UNKNOWN: 'Chưa kiểm tra',
 };
 
 export const UI_LABELS = {

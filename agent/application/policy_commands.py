@@ -89,7 +89,7 @@ class PolicyCommandProcessor:
                     actor=self._agent_id,
                     service_version=result.service_version,
                 )
-                self._log(f"Policy command {command_id} failed: {error}")
+                self._log(f"Agent command {command_id} type={command_type} failed: {error}")
                 return
 
             if request.operation == CommandType.APPLY_POLICY:
@@ -110,7 +110,7 @@ class PolicyCommandProcessor:
                 error=error,
                 actor=self._agent_id,
             )
-            self._log(f"Policy command {command_id} failed: {error}")
+            self._log(f"Agent command {command_id} type={command_type} failed: {error}")
             return
 
         self._client.acknowledge_command(
@@ -120,7 +120,9 @@ class PolicyCommandProcessor:
             actor=self._agent_id,
             service_version=result.service_version,
         )
-        self._log(f"Policy command {command_id} applied successfully")
+        self._log(
+            f"Agent command {command_id} type={request.operation.value} completed successfully"
+        )
 
     def _build_service_request(
         self,

@@ -170,6 +170,15 @@ class WindowsFirewallEnforcer:
         existing = self._query_rules(rule.name for rule in rules)
         return all(self._rule_matches(rule, existing.get(rule.name)) for rule in rules)
 
+    def owned_rule_names(self) -> tuple[str, ...]:
+        """Include rules left behind before a failed apply could persist state."""
+        self._require_windows()
+        existing = self._query_rules(("EECP-*",))
+        return tuple(sorted(
+            name for name, value in existing.items()
+            if _is_owned_rule_name(name) and value.get("Group") == "-".join(name.split("-")[:2])
+        ))
+
     @staticmethod
     def _validate_owned_names(names: Iterable[str]) -> None:
         for name in names:

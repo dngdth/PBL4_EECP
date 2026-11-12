@@ -1,5 +1,6 @@
 import ctypes
 import os
+import threading
 import time
 import uuid
 
@@ -151,4 +152,84 @@ def test_named_pipe_server_stalled_client_times_out_and_recovers() -> None:
         except IpcTimeoutError:
             pass
     finally:
+        server.stop()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows Named Pipes")
+def test_timed_out_handler_never_writes_into_a_later_connection(monkeypatch):
+    from agent.ipc import named_pipe_server as server_module
+
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    late_writes = []
+    original_write = server_module.write_handle
+
+    def write(handle, payload):
+        if payload == b"OLD":
+            late_writes.append(handle)
+        return original_write(handle, payload)
+
+    monkeypatch.setattr(server_module, "write_handle", write)
+
+    def handler(payload):
+        if payload == b"old":
+            entered.set()
+            release.wait(3)
+            finished.set()
+        return payload.upper()
+
+    pipe_name = rf"\\.\pipe\eecp-late-{uuid.uuid4()}"
+    server = NamedPipeServer(pipe_name, 4096, exchange_timeout_seconds=0.1)
+    server.start(handler)
+    client = NamedPipeClient(NamedPipeClientConfig(pipe_name, 1, 0.05, 4096))
+    try:
+        with pytest.raises(IpcTimeoutError):
+            client.request(b"old")
+        assert entered.is_set()
+        time.sleep(0.2)
+        next_client = NamedPipeClient(NamedPipeClientConfig(pipe_name, 1, 2, 4096))
+        assert next_client.request(b"new") == b"NEW"
+        release.set()
+        assert finished.wait(1)
+        deadline = time.monotonic() + 1
+        while server._workers and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not server._workers
+        assert late_writes == []
+        assert next_client.request(b"health") == b"HEALTH"
+    finally:
+        release.set()
+        server.stop()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows Named Pipes")
+def test_client_timeout_closes_connection_only_once_in_owning_worker(monkeypatch):
+    from agent.ipc import named_pipe_client as client_module
+
+    release = threading.Event()
+    closed_by = []
+    original_close = client_module.close_handle
+
+    def close(handle):
+        if handle is not None:
+            closed_by.append(threading.current_thread().name)
+        original_close(handle)
+
+    monkeypatch.setattr(client_module, "close_handle", close)
+    pipe_name = rf"\\.\pipe\eecp-owner-{uuid.uuid4()}"
+    server = NamedPipeServer(pipe_name, 4096)
+
+    def handler(payload):
+        release.wait(3)
+        return payload
+
+    server.start(handler)
+    client = NamedPipeClient(NamedPipeClientConfig(pipe_name, 1, 0.05, 4096))
+    try:
+        with pytest.raises(IpcTimeoutError):
+            client.request(b"slow")
+        assert closed_by == ["eecp-pipe-request"]
+    finally:
+        release.set()
         server.stop()

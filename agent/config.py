@@ -44,7 +44,9 @@ REQUEST_TIMEOUT_SECONDS = 5
 IPC_PIPE_NAME = os.getenv("EECP_PIPE_NAME", r"\\.\pipe\eecp-agent-v2")
 IPC_CONNECT_TIMEOUT_SECONDS = 2.0
 # APPLY_POLICY includes bounded DNS discovery plus OS rule reconciliation.
-IPC_REQUEST_TIMEOUT_SECONDS = 30.0
+# A signed command has a five-minute delivery window. Allow Windows policy
+# reconciliation to finish and return its ACK within that window.
+IPC_REQUEST_TIMEOUT_SECONDS = 180.0
 IPC_MAX_MESSAGE_BYTES = 1024 * 1024
 IPC_REPLAY_CACHE_SIZE = 1024
 SERVICE_MAINTENANCE_INTERVAL_SECONDS = 5.0

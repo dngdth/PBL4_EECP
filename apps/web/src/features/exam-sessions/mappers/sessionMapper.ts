@@ -67,6 +67,7 @@ function mapAgentToWorkstation(agent: any, sessionWorkstation?: any): Workstatio
     actual_policy_hash: sessionWorkstation?.actual_policy_hash || null,
     desired_policy_hash: sessionWorkstation?.desired_policy_hash || null,
     policy_compliant: Boolean(sessionWorkstation?.policy_compliant),
+    restored: Boolean(sessionWorkstation?.restored),
   };
 }
 
@@ -91,6 +92,7 @@ function mapLegacyWorkstations(workstationsDict: Record<string, any>): Workstati
       actual_policy_hash: val?.actual_policy_hash || null,
       desired_policy_hash: val?.desired_policy_hash || null,
       policy_compliant: Boolean(val?.policy_compliant),
+      restored: Boolean(val?.restored),
     };
   });
 }
@@ -256,6 +258,7 @@ export function normalizeSession(raw: any): ExamSession {
     room_id: raw.room || raw.room_id || 'Chưa chỉ định',
     gateway_id: raw.gateway_id ?? null,
     gateway_policy_hash: raw.gateway_policy_hash ?? null,
+    gateway_restored: Boolean(raw.gateway_restored),
     status,
     workstations,
     agents: Array.isArray(raw.agents) ? raw.agents : undefined,

@@ -4,6 +4,7 @@ import queue
 import random
 import ssl
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
 from agent.client.infrastructure.event_spool import AgentEventSpool, EventSpoolFullError
+from agent.config import HEARTBEAT_INTERVAL_SECONDS
 from agent.domain.identity import WorkstationIdentity
 from contracts.v2 import (
     Ack,
@@ -96,6 +98,8 @@ class GatewayControlClient:
         self._enqueued_event_ids: set[str] = set()
         self._commands: queue.Queue[Command] = queue.Queue()
         self._command_index: dict[str, Command] = {}
+        self._pending_command_ids: set[str] = set()
+        self._last_presence_at = time.monotonic()
         self._active_policy: tuple[str, dict[str, Any]] | None = None
         self._backend_session_status = AgentSessionStateStatus.INACTIVE
         self._state_lock = threading.Lock()
@@ -151,6 +155,7 @@ class GatewayControlClient:
             f"presence_{agent_id}_{int(presence.last_seen.timestamp() * 1000)}",
             presence.model_dump(mode="json", exclude_none=True),
         )
+        self._last_presence_at = time.monotonic()
 
     def pending_commands(self, agent_id: str) -> list[dict[str, Any]]:
         self._require_identity(agent_id)
@@ -214,6 +219,8 @@ class GatewayControlClient:
             ack.model_dump(mode="json", exclude_none=True),
             correlation_id=correlation_id,
         )
+        with self._state_lock:
+            self._pending_command_ids.discard(command_id)
 
     def active_policy(self, agent_id: str) -> tuple[str, dict[str, Any]] | None:
         self._require_identity(agent_id)
@@ -345,6 +352,8 @@ class GatewayControlClient:
                     self._enqueue_pending_spool()
                     delay = self._reconnect_initial
                     while not self._stop.is_set():
+                        if time.monotonic() - self._last_presence_at >= HEARTBEAT_INTERVAL_SECONDS:
+                            self.heartbeat(self._identity.agent_id)
                         self._flush_outbound(websocket)
                         try:
                             message = websocket.recv(timeout=0.1)
@@ -496,8 +505,14 @@ class GatewayControlClient:
             raise ValueError("Gateway command target does not match Agent identity")
         if envelope.correlation_id != command.correlation_id:
             raise ValueError("Gateway command correlation does not match payload")
-        self._command_index[command.command_id] = command
-        self._commands.put_nowait(command)
+        with self._state_lock:
+            previous = self._command_index.get(command.command_id)
+            if previous is not None and previous != command:
+                raise ValueError("Gateway reused command_id with different content")
+            if command.command_id not in self._pending_command_ids:
+                self._command_index[command.command_id] = command
+                self._pending_command_ids.add(command.command_id)
+                self._commands.put_nowait(command)
 
     def _enqueue_pending_spool(self) -> None:
         if self._event_spool is None or self._identity is None:

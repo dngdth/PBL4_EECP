@@ -11,6 +11,7 @@ from agent.ipc._windows import (
     GENERIC_WRITE,
     INVALID_HANDLE_VALUE,
     OPEN_EXISTING,
+    cancel_thread_io,
     close_handle,
     kernel32,
     read_handle,
@@ -46,24 +47,28 @@ class NamedPipeClient:
     def __init__(self, config: NamedPipeClientConfig):
         self._config = config
         self._request_lock = threading.Lock()
-        self._handle_lock = threading.Lock()
-        self._active_handle: int | None = None
 
     def request(self, payload: bytes) -> bytes:
         require_windows()
         outcomes: queue.Queue[bytes | BaseException] = queue.Queue(maxsize=1)
         with self._request_lock:
+            cancelled = threading.Event()
             worker = threading.Thread(
                 target=self._exchange_worker,
-                args=(payload, outcomes),
+                args=(payload, outcomes, cancelled),
                 name="eecp-pipe-request",
                 daemon=True,
             )
             worker.start()
             worker.join(self._config.request_timeout_seconds)
             if worker.is_alive():
-                self._cancel_active()
-                worker.join(timeout=1.0)
+                cancelled.set()
+                # The worker alone owns and closes its connection. Closing it
+                # here could let a late worker use a recycled Windows handle.
+                deadline = time.monotonic() + 1.0
+                while worker.is_alive() and time.monotonic() < deadline:
+                    cancel_thread_io(worker.native_id)
+                    worker.join(timeout=0.01)
                 raise IpcTimeoutError("Named Pipe request timed out")
             outcome = outcomes.get_nowait()
             if isinstance(outcome, BaseException):
@@ -73,18 +78,23 @@ class NamedPipeClient:
             return outcome
 
     def _exchange_worker(
-        self, payload: bytes, outcomes: queue.Queue[bytes | BaseException]
+        self,
+        payload: bytes,
+        outcomes: queue.Queue[bytes | BaseException],
+        cancelled: threading.Event,
     ) -> None:
         handle: int | None = None
         try:
-            handle = self._connect()
-            with self._handle_lock:
-                self._active_handle = handle
+            handle = self._connect(cancelled)
+            if cancelled.is_set():
+                return
             write_frame(
                 lambda chunk: write_handle(handle, chunk),
                 payload,
                 self._config.max_message_bytes,
             )
+            if cancelled.is_set():
+                return
             response = read_frame(
                 lambda size: read_handle(handle, size),
                 self._config.max_message_bytes,
@@ -93,15 +103,14 @@ class NamedPipeClient:
         except BaseException as exc:
             outcomes.put_nowait(exc)
         finally:
-            with self._handle_lock:
-                if self._active_handle == handle:
-                    self._active_handle = None
             close_handle(handle)
 
-    def _connect(self) -> int:
+    def _connect(self, cancelled: threading.Event) -> int:
         api = kernel32()
         deadline = time.monotonic() + self._config.connect_timeout_seconds
         while True:
+            if cancelled.is_set():
+                raise IpcTimeoutError("Named Pipe request cancelled")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise IpcTimeoutError("EECP Agent Service pipe is unavailable")
@@ -119,9 +128,3 @@ class NamedPipeClient:
                 if handle != INVALID_HANDLE_VALUE:
                     return int(handle)
             time.sleep(min(0.05, remaining))
-
-    def _cancel_active(self) -> None:
-        with self._handle_lock:
-            handle = self._active_handle
-            self._active_handle = None
-        close_handle(handle)

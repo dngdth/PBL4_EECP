@@ -109,7 +109,14 @@ class WindowsPolicyEnforcer:
         self._hosts_path = hosts_path or (
             Path(os.getenv("SYSTEMROOT", r"C:\Windows")) / "System32" / "drivers" / "etc" / "hosts"
         )
-        self._runner = runner
+        def bounded_runner(arguments, **options):
+            options.setdefault("timeout", 30.0)
+            try:
+                return runner(arguments, **options)
+            except subprocess.TimeoutExpired as exc:
+                raise OSError(f"Windows policy command timed out: {arguments[0]}") from exc
+
+        self._runner = bounded_runner
         self._firewall = firewall or WindowsFirewallEnforcer(runner=runner)
         self._event_sink = event_sink
         self._process_provider = process_provider or self._windows_processes

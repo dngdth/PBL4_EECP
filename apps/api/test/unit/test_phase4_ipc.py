@@ -210,6 +210,31 @@ def test_execution_service_replay_returns_cached_result_without_reexecution() ->
     assert executor.requests == [request]
 
 
+def test_concurrent_duplicate_command_executes_once():
+    from concurrent.futures import ThreadPoolExecutor
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class SlowExecutor(RecordingExecutor):
+        def execute(self, request):
+            entered.set()
+            release.wait(2)
+            return super().execute(request)
+
+    executor = SlowExecutor()
+    service = ExecutionService(executor, clock=lambda: NOW)
+    request = _request(CommandType.APPLY_POLICY)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(service.handle, request)
+        assert entered.wait(1)
+        second = pool.submit(service.handle, request)
+        time.sleep(0.05)
+        release.set()
+        assert first.result() is second.result()
+    assert executor.requests == [request]
+
+
 def test_execution_service_rejects_conflicting_duplicate_command() -> None:
     executor = RecordingExecutor()
     service = ExecutionService(executor, service_version="1.1.0", clock=lambda: NOW)

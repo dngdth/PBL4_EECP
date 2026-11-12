@@ -206,7 +206,13 @@ class UpdateExamSessionStatus:
         data: UpdateExamSessionStatusInput,
         at: datetime,
     ) -> None:
-        session.transition_management(data.status, at)
+        retry_restore = (
+            session.gateway_id is None
+            and session.state == SessionState.FINISHED
+            and data.status == SessionState.FINISHED
+        )
+        if not retry_restore:
+            session.transition_management(data.status, at)
         uow.sessions.save(session)
         if data.status == SessionState.FINISHED and session.policy is not None:
             uow.commands.add_many(
@@ -223,12 +229,19 @@ class UpdateExamSessionStatus:
                         created_at=at,
                     )
                     for agent_id in sorted(session.workstations)
+                    if not session.workstations[agent_id].restored
+                    and not any(
+                        command.session_id == session.id
+                        and command.type == CommandType.RESTORE_BASELINE
+                        and not command.should_timeout(at)
+                        for command in uow.commands.list_for_target(agent_id)
+                    )
                 ]
             )
         uow.audits.append(
             session.id,
             actor=data.actor,
-            action="SESSION_STATUS_UPDATED",
+            action="SESSION_RESTORE_RETRIED" if retry_restore else "SESSION_STATUS_UPDATED",
             target=session.id,
             details={"state": session.state},
         )

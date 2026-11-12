@@ -80,6 +80,10 @@ def kernel32():
     api.WriteFile.restype = wintypes.BOOL
     api.CancelIoEx.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
     api.CancelIoEx.restype = wintypes.BOOL
+    api.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    api.OpenThread.restype = wintypes.HANDLE
+    api.CancelSynchronousIo.argtypes = [wintypes.HANDLE]
+    api.CancelSynchronousIo.restype = wintypes.BOOL
     api.CloseHandle.argtypes = [wintypes.HANDLE]
     api.CloseHandle.restype = wintypes.BOOL
     api.LocalFree.argtypes = [wintypes.HLOCAL]
@@ -128,6 +132,19 @@ def close_handle(handle: int | None) -> None:
     api = kernel32()
     api.CancelIoEx(wintypes.HANDLE(handle), None)
     api.CloseHandle(wintypes.HANDLE(handle))
+
+
+def cancel_thread_io(thread_id: int | None) -> None:
+    """Interrupt blocking pipe I/O without closing another thread's handle."""
+    if thread_id is None:
+        return
+    api = kernel32()
+    thread_handle = api.OpenThread(0x0001, False, thread_id)  # THREAD_TERMINATE
+    if thread_handle:
+        try:
+            api.CancelSynchronousIo(thread_handle)
+        finally:
+            api.CloseHandle(thread_handle)
 
 
 def read_handle(handle: int, size: int) -> bytes:

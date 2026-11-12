@@ -126,6 +126,20 @@ export const SessionDetailPage: React.FC = () => {
     setInspectingWorkstationId(wsId);
   };
 
+  const handleRetryRestore = async () => {
+    if (!session) return;
+    setIsTransitioning(true);
+    setActionError(null);
+    try {
+      const result = await updateSessionStatus(session.id, 'FINISHED');
+      handleSessionUpdated(result.session);
+    } catch (err: any) {
+      setActionError(err.message || 'Không thể gửi lại lệnh khôi phục.');
+    } finally {
+      setIsTransitioning(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center p-8 min-h-[400px]">
@@ -193,7 +207,11 @@ export const SessionDetailPage: React.FC = () => {
 
         {/* Completed Summary Banner */}
         {isCompleted && (
-          <CompletedSummaryCard session={session} />
+          <CompletedSummaryCard
+            session={session}
+            onRetryRestore={handleRetryRestore}
+            isRetrying={isTransitioning}
+          />
         )}
 
         {/* Alerts & Critical Diagnostics Panel */}

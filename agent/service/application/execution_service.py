@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -66,8 +67,15 @@ class ExecutionService(PrivilegedExecutionPort):
         )
         self._active_policy_hash = active_policy_hash
         self._active_session_id = active_session_id
+        self._execution_lock = threading.RLock()
 
     def handle(self, request: ServiceRequest) -> ServiceResult:
+        # Timed-out connections may finish after a new connection arrives.
+        # Serialize validation, replay lookup, execution, and active state updates.
+        with self._execution_lock:
+            return self._handle_locked(request)
+
+    def _handle_locked(self, request: ServiceRequest) -> ServiceResult:
         validation_failure = self._validate_authorization(request)
         if validation_failure is not None:
             return validation_failure

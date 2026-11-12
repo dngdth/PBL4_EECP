@@ -272,6 +272,41 @@ def test_valid_management_status_updates_succeed_in_order(tmp_path: Path) -> Non
     assert finished.session.finished_at == NOW + timedelta(seconds=3)
 
 
+def test_finished_session_retries_failed_restore_without_duplicate_pending_commands(tmp_path):
+    database = _database(tmp_path)
+    _register(database, "PC01")
+    created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
+        CreateExamSessionInput("Exam", "A101", ["PC01"])
+    )
+    _apply_policy(database, "PC01")
+    current = [NOW + timedelta(seconds=1)]
+    update = UpdateExamSessionStatus(database.unit_of_work, clock=lambda: current[0])
+    finish = UpdateExamSessionStatusInput(created.session.id, SessionState.FINISHED)
+    update(finish)
+    first = GetPendingCommands(database.unit_of_work, clock=lambda: current[0])("PC01")[0]
+
+    # Repeated clicks while delivery is pending reuse the existing command.
+    update(finish)
+    with database.unit_of_work() as uow:
+        assert len(uow.commands.list_for_target("PC01")) == 1
+
+    ack = AcknowledgeCommand(database.unit_of_work, clock=lambda: current[0])
+    ack(AcknowledgeCommandInput(first.id, False, error="pipe timed out", actor="PC01"))
+    current[0] += timedelta(seconds=1)
+    retry = update(finish)
+    second = GetPendingCommands(database.unit_of_work, clock=lambda: current[0])("PC01")[0]
+    assert second.id != first.id
+    assert second.payload["policy_hash"] == first.payload["policy_hash"]
+    assert retry.session.finished_at == NOW + timedelta(seconds=1)
+
+    ack(AcknowledgeCommandInput(second.id, True, actor="PC01"))
+    done = update(finish)
+    assert done.session.workstations["PC01"].restored
+    with database.unit_of_work() as uow:
+        assert uow.commands.list_for_target("PC01") == []
+        assert len(uow.commands.list_for_target("PC01", active_only=False)) == 3
+
+
 def test_running_and_finished_updates_do_not_recheck_agent_liveness(tmp_path: Path) -> None:
     database = _database(tmp_path)
     _register(database, "PC01")

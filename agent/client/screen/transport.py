@@ -4,6 +4,7 @@ import json
 import ssl
 import urllib.error
 import urllib.request
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from contracts.v2.screen import ScreenFrame
@@ -16,7 +17,12 @@ class ScreenUploader:
             ("https" if parts.scheme == "wss" else "http", parts.netloc, "/screen/frames", "", "")
         )
         self.token = token
-        self.context = ssl.create_default_context(cafile=ca_file)
+        if parts.scheme == "wss":
+            if ca_file is not None and not Path(ca_file).is_file():
+                raise FileNotFoundError(f"Gateway CA certificate not found: {ca_file}")
+            self.context: ssl.SSLContext | None = ssl.create_default_context(cafile=ca_file)
+        else:
+            self.context = None
 
     def __call__(self, metadata: ScreenFrame, data: bytes) -> bool:
         request = urllib.request.Request(
@@ -32,8 +38,14 @@ class ScreenUploader:
         try:
             with urllib.request.urlopen(request, context=self.context, timeout=10) as response:
                 receipt = json.loads(response.read(8192))
-        except (urllib.error.URLError, json.JSONDecodeError) as exc:
-            raise OSError("screenshot upload not acknowledged") from exc
+        except urllib.error.HTTPError as exc:
+            raise OSError(f"screenshot upload rejected ({exc.code}): {exc.reason}") from exc
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, ssl.SSLError):
+                raise OSError(f"screenshot upload TLS verification failed: {exc.reason}") from exc
+            raise OSError(f"screenshot upload failed: {exc.reason}") from exc
+        except json.JSONDecodeError as exc:
+            raise OSError("screenshot upload returned invalid JSON receipt") from exc
         if receipt.get("sha256") != metadata.sha256:
             raise OSError("screenshot receipt checksum mismatch")
         return receipt.get("server_stored") is True

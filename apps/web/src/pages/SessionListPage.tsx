@@ -12,12 +12,14 @@ import { cn } from '@/src/shared/lib/cn';
 export const SessionListPage: React.FC = () => {
   const [sessions, setSessions] = useState<ExamSession[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [search, setSearch] = useState<string>('');
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
 
-  const fetchSessions = async () => {
-    setIsLoading(true);
+  const fetchSessions = async (silent = false) => {
+    if (!silent) setIsLoading(true);
+    else setIsRefreshing(true);
     setErrorMsg(null);
     try {
       const res = await listSessions();
@@ -26,15 +28,16 @@ export const SessionListPage: React.FC = () => {
       setErrorMsg(err.message || 'Không thể tải danh mục ca thi.');
     } finally {
       setIsLoading(false);
+      setIsRefreshing(false);
     }
   };
 
   useRealtimeRefresh(() => {
-    fetchSessions();
+    fetchSessions(true);
   }, ['sessions', 'commands', 'agents', 'api']);
 
   useEffect(() => {
-    fetchSessions();
+    fetchSessions(false);
   }, []);
 
   const filteredSessions = useMemo(() => {
@@ -81,8 +84,8 @@ export const SessionListPage: React.FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={fetchSessions}
-                isLoading={isLoading}
+                onClick={() => fetchSessions(false)}
+                isLoading={isLoading || isRefreshing}
                 leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
               >
                 Làm mới

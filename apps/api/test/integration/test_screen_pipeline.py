@@ -659,3 +659,177 @@ def test_thirty_agent_evidence_uploads_do_not_block_heartbeat(tmp_path, monkeypa
         assert all(response.status_code == 200 for response in results)
         values = app.state.screen_store.list_evidence(session_id)
         assert {value["agent_id"] for value in values} == set(agents)
+
+
+def test_screen_store_avoids_nested_connections_n_plus_one_and_read_lock(tmp_path, monkeypatch):
+    app, client, session_id, first = setup_backend(tmp_path, monkeypatch)
+    assert ingest(client, first).status_code == 200
+    second = frame(
+        session_id,
+        frame_id="frame2",
+        evidence_id="evidence2",
+        event_id="evt2",
+    )
+    assert (
+        client.post(
+            f"/api/v1/sessions/{session_id}/telemetry",
+            json={
+                "workstation_id": "PC01",
+                "event_type": "POLICY_VIOLATION",
+                "severity": "WARNING",
+                "category": "PROHIBITED_WEBSITE",
+                "action": "OBSERVED",
+                "event_id": "evt2",
+                "occurred_at": second.event_occurred_at.isoformat(),
+                "payload": {"evidence_id": "evidence2", "source": "windows-dns-cache"},
+            },
+        ).status_code
+        == 202
+    )
+    assert ingest(client, second).status_code == 200
+
+    now = datetime.now(UTC)
+    control = ScreenRequest(
+        protocol_version=2,
+        request_id="req-single-conn",
+        agent_id="PC01",
+        session_id=session_id,
+        mode="REPLAY",
+        evidence_id=first.evidence_id,
+        issued_at=now,
+        deadline=now + timedelta(seconds=60),
+    )
+    store = app.state.screen_store
+    store.save_request(control)
+    store.save_response(
+        ScreenResponse(
+            protocol_version=2,
+            request_id=control.request_id,
+            agent_id="PC01",
+            session_id=session_id,
+            evidence_id=first.evidence_id,
+            event_id=first.event_id,
+            status="uploading",
+            frames=[first],
+            available_until=first.available_until,
+        )
+    )
+
+    real_db = store.database
+    active = 0
+    queries: list[str] = []
+
+    class SingleConnWrapper:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, params=()):
+            queries.append(sql)
+            return self._inner.execute(sql, params)
+
+        def commit(self):
+            return self._inner.commit()
+
+        def close(self):
+            nonlocal active
+            active -= 1
+            return self._inner.close()
+
+    def checked_connect():
+        nonlocal active
+        if active >= 1:
+            raise RuntimeError("nested database connection detected")
+        active += 1
+        return SingleConnWrapper(real_db.connect())
+
+    class SinglePoolDatabase:
+        def connect(self):
+            return checked_connect()
+
+    store.database = SinglePoolDatabase()
+    try:
+        items = store.list_evidence(session_id)
+        assert len(items) == 2
+        assert all(item["frames"] for item in items)
+        assert sum("FROM screen_frames" in q for q in queries) == 1
+        assert store.evidence(first.evidence_id) is not None
+        assert store.get_request(control.request_id)["status"] == "available"
+    finally:
+        store.database = real_db
+
+    # read_frame should not require acquiring store.lock on disk reads
+    with store.lock:
+        import threading
+
+        result: list = []
+        t = threading.Thread(
+            target=lambda: result.append(store.read_frame(first.evidence_id, first.frame_id))
+        )
+        t.start()
+        t.join(timeout=2)
+        assert not t.is_alive()
+        assert result and result[0] is not None
+
+
+def test_list_evidence_throttles_audits_skips_full_telemetry_scan_and_publishes_realtime(
+    tmp_path, monkeypatch
+):
+    app, client, session_id, value = setup_backend(tmp_path, monkeypatch)
+    published = []
+
+    async def fake_publish(**kwargs):
+        published.append(kwargs)
+
+    monkeypatch.setattr(app.state.realtime_hub, "publish_change", fake_publish)
+    assert ingest(client, value).status_code == 200
+    assert any(
+        item["resource"] == "sessions" and item["resource_id"] == session_id
+        for item in published
+    )
+    assert (
+        client.post(
+            f"/api/v1/sessions/{session_id}/telemetry",
+            json={
+                "workstation_id": "PC01",
+                "event_type": "POLICY_VIOLATION",
+                "severity": "WARNING",
+                "category": "PROHIBITED_WEBSITE",
+                "action": "OBSERVED",
+                "event_id": "evt_extra",
+                "occurred_at": value.event_occurred_at.isoformat(),
+                "payload": {"evidence_id": value.evidence_id},
+            },
+        ).status_code
+        == 202
+    )
+    for _ in range(5):
+        resp = client.get(f"/api/v1/sessions/{session_id}/screen/evidence")
+        assert resp.status_code == 200
+        assert set(resp.json()[0]["event_ids"]) == {"evt1", "evt_extra"}
+
+    with app.state.container.database.unit_of_work() as uow:
+        list_audits = [
+            entry
+            for entry in uow.audits.list_for_session(session_id)
+            if entry.action == "SCREEN_EVIDENCE_LISTED"
+        ]
+    assert len(list_audits) == 1
+
+
+def test_ingest_concurrency_env_and_clock_skew_rejection(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("EECP_SCREEN_INGEST_CONCURRENCY", "12")
+    app, client, session_id, value = setup_backend(tmp_path, monkeypatch)
+    assert app.state.screen_ingest_slots._value == 12
+
+    future = value.model_copy(
+        update={
+            "captured_at": datetime.now(UTC) + timedelta(seconds=15),
+            "available_until": datetime.now(UTC) + timedelta(minutes=20),
+            "kind": "trigger",
+        }
+    )
+    with caplog.at_level("WARNING"):
+        resp = ingest(client, future)
+    assert resp.status_code == 409
+    assert "NTP time sync" in resp.text
+    assert any("CLOCK_SKEW_REJECTED" in rec.message for rec in caplog.records)

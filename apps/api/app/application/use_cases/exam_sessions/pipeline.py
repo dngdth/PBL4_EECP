@@ -212,6 +212,8 @@ class ExamPipelineService:
                 raise PolicyValidationError("telemetry timestamp must be timezone-aware")
             if data.occurred_at > self._clock() + timedelta(minutes=5):
                 raise PolicyValidationError("telemetry timestamp is too far in the future")
+            if data.occurred_at < self._clock() - timedelta(hours=24):
+                raise PolicyValidationError("telemetry timestamp is too far in the past")
         event = TelemetryEvent(
             id=data.event_id or new_id("evt"),
             session_id=data.session_id,
@@ -239,6 +241,27 @@ class ExamPipelineService:
             session = uow.sessions.get(data.session_id)
             if data.workstation_id not in session.workstations:
                 raise PolicyValidationError("telemetry workstation does not belong to session")
+
+            now = self._clock()
+            skew_detected = (
+                session.started_at is not None
+                and event.occurred_at < session.started_at
+            )
+            base_payload = {
+                **event.payload,
+                "server_received_at": now.isoformat(),
+            }
+            if skew_detected:
+                base_payload["clock_skew_detected"] = True
+                base_payload["original_occurred_at"] = event.occurred_at.isoformat()
+                event = replace(
+                    event,
+                    occurred_at=session.started_at,
+                    payload=base_payload,
+                )
+            else:
+                event = replace(event, payload=base_payload)
+
             if session.state != SessionState.RUNNING:
                 self._validate_late_security_event(session, event)
                 event = replace(event, payload={**event.payload, "late_arrival": True})
@@ -251,7 +274,8 @@ class ExamPipelineService:
                     details={
                         "event_type": event.event_type,
                         "occurred_at": event.occurred_at.isoformat(),
-                        "received_at": self._clock().isoformat(),
+                        "received_at": now.isoformat(),
+                        "clock_skew_detected": skew_detected,
                     },
                 )
                 uow.commit()
@@ -298,10 +322,23 @@ class ExamPipelineService:
             )
         if not event.id or session.started_at is None or session.finished_at is None:
             raise PolicyValidationError("late security event lacks required timing evidence")
-        if not session.started_at <= event.occurred_at <= session.finished_at:
-            raise PolicyValidationError(
-                "late security event did not occur during the RUNNING interval"
+        orig_occurred_at_str = event.payload.get("original_occurred_at")
+        check_time = (
+            datetime.fromisoformat(orig_occurred_at_str)
+            if orig_occurred_at_str
+            else event.occurred_at
+        )
+        if not (session.started_at <= check_time <= session.finished_at):
+            skew_window = (
+                check_time < session.started_at
+                and (session.started_at - check_time) <= timedelta(hours=3)
             )
+            if skew_window:
+                pass
+            else:
+                raise PolicyValidationError(
+                    "late security event did not occur during the RUNNING interval"
+                )
         if self._clock() > session.finished_at + self.LATE_SECURITY_EVENT_GRACE:
             raise PolicyValidationError("late security event exceeded the delivery grace period")
 
@@ -372,10 +409,17 @@ def _same_event_content(
     incoming: TelemetryEvent,
     check_occurred_at: bool = True,
 ) -> bool:
-    existing_payload = dict(existing.payload)
-    existing_payload.pop("late_arrival", None)
-    incoming_payload = dict(incoming.payload)
-    incoming_payload.pop("late_arrival", None)
+    ignored_keys = {
+        "late_arrival",
+        "server_received_at",
+        "clock_skew_detected",
+        "original_occurred_at",
+    }
+    existing_payload = {k: v for k, v in existing.payload.items() if k not in ignored_keys}
+    incoming_payload = {k: v for k, v in incoming.payload.items() if k not in ignored_keys}
+    effective_check_occurred = (
+        check_occurred_at and "original_occurred_at" not in existing.payload
+    )
     return (
         existing.session_id == incoming.session_id
         and existing.workstation_id == incoming.workstation_id
@@ -385,6 +429,6 @@ def _same_event_content(
         and existing.action == incoming.action
         and existing.destination == incoming.destination
         and existing.correlation_id == incoming.correlation_id
-        and (not check_occurred_at or existing.occurred_at == incoming.occurred_at)
+        and (not effective_check_occurred or existing.occurred_at == incoming.occurred_at)
         and existing_payload == incoming_payload
     )

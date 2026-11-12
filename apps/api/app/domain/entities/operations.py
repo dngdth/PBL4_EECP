@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+from app.domain.exceptions.errors import InvalidStateTransitionError
 from app.domain.value_objects.enums import CommandStatus, CommandType, IncidentStatus, Severity
 from app.domain.value_objects.primitives import new_id, utc_now
 
@@ -38,9 +39,9 @@ class Command:
 
     def deliver(self, at: datetime) -> None:
         if self.status not in {CommandStatus.PENDING, CommandStatus.DELIVERED}:
-            raise ValueError(f"cannot deliver command while it is {self.status}")
+            raise InvalidStateTransitionError(f"cannot deliver command while it is {self.status}")
         if self.should_timeout(at):
-            raise ValueError("expired command cannot be delivered")
+            raise InvalidStateTransitionError("expired command cannot be delivered")
         self.status = CommandStatus.DELIVERED
         self.attempt_count += 1
         self.last_attempt_at = at
@@ -54,7 +55,7 @@ class Command:
 
     def time_out(self) -> None:
         if self.status not in {CommandStatus.PENDING, CommandStatus.DELIVERED}:
-            raise ValueError(f"cannot time out command while it is {self.status}")
+            raise InvalidStateTransitionError(f"cannot time out command while it is {self.status}")
         self.status = CommandStatus.TIMED_OUT
         self.error = "command acknowledgement timed out"
         self.next_retry_at = None

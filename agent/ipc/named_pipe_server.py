@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import threading
 from collections.abc import Callable
+from contextlib import suppress
 
 from agent.ipc._windows import (
     ERROR_OPERATION_ABORTED,
@@ -17,6 +18,7 @@ from agent.ipc._windows import (
     PIPE_TYPE_BYTE,
     PIPE_UNLIMITED_INSTANCES,
     PIPE_WAIT,
+    cancel_handle_io,
     close_handle,
     create_security_attributes,
     free_security_descriptor,
@@ -31,9 +33,15 @@ from agent.ipc.framing import FrameError, read_frame, write_frame
 class NamedPipeServer:
     """Local-only Windows Named Pipe server; policy logic remains in its handler."""
 
-    def __init__(self, pipe_name: str, max_message_bytes: int):
+    def __init__(
+        self,
+        pipe_name: str,
+        max_message_bytes: int,
+        exchange_timeout_seconds: float = 5.0,
+    ):
         self._pipe_name = pipe_name
         self._max_message_bytes = max_message_bytes
+        self._exchange_timeout_seconds = exchange_timeout_seconds
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._active_handle: int | None = None
@@ -67,6 +75,23 @@ class NamedPipeServer:
             self._thread.join(timeout=2.0)
             self._thread = None
 
+    def _exchange(self, handle: int, handler: Callable[[bytes], bytes]) -> None:
+        try:
+            request = read_frame(
+                lambda size, pipe=handle: read_handle(pipe, size),
+                self._max_message_bytes,
+            )
+            response = handler(request)
+            write_frame(
+                lambda chunk, pipe=handle: write_handle(pipe, chunk),
+                response,
+                self._max_message_bytes,
+            )
+        except (FrameError, OSError):
+            pass
+        except Exception:
+            pass
+
     def _serve(self, handler: Callable[[bytes], bytes]) -> None:
         try:
             while not self._stop_event.is_set():
@@ -79,27 +104,27 @@ class NamedPipeServer:
                         continue
                     if self._stop_event.is_set():
                         continue
-                    try:
-                        request = read_frame(
-                            lambda size, pipe=handle: read_handle(pipe, size),
-                            self._max_message_bytes,
-                        )
-                        response = handler(request)
-                        write_frame(
-                            lambda chunk, pipe=handle: write_handle(pipe, chunk),
-                            response,
-                            self._max_message_bytes,
-                        )
-                    except (FrameError, OSError):
-                        continue
+                    worker = threading.Thread(
+                        target=self._exchange,
+                        args=(handle, handler),
+                        name="eecp-pipe-exchange",
+                        daemon=True,
+                    )
+                    worker.start()
+                    worker.join(timeout=self._exchange_timeout_seconds)
+                    if worker.is_alive():
+                        cancel_handle_io(handle)
+                        worker.join(timeout=0.2)
                 finally:
-                    api = kernel32()
-                    if not self._stop_event.is_set():
-                        api.FlushFileBuffers(handle)
-                    api.DisconnectNamedPipe(handle)
                     with self._handle_lock:
                         if self._active_handle == handle:
                             self._active_handle = None
+                    api = kernel32()
+                    if not self._stop_event.is_set():
+                        with suppress(OSError):
+                            api.FlushFileBuffers(handle)
+                    with suppress(OSError):
+                        api.DisconnectNamedPipe(handle)
                     close_handle(handle)
         except Exception as exc:
             self._startup_error = exc
@@ -152,4 +177,4 @@ class NamedPipeServer:
         with self._handle_lock:
             handle = self._active_handle
         if handle is not None:
-            close_handle(handle)
+            cancel_handle_io(handle)

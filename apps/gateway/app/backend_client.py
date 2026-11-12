@@ -103,7 +103,11 @@ class BackendUplink:
         headers = {"Authorization": f"Bearer {self._settings.gateway_bootstrap_token}"}
         while not self._stop_event.is_set():
             try:
-                options = {"additional_headers": headers}
+                options = {
+                    "additional_headers": headers,
+                    "ping_interval": 10.0,
+                    "ping_timeout": 10.0,
+                }
                 if self._ssl_context is not None:
                     options["ssl"] = self._ssl_context
                 async with self._connector(url, **options) as websocket:
@@ -115,7 +119,7 @@ class BackendUplink:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                self.status = PresenceHealth.DEGRADED
+                self.status = PresenceHealth.OFFLINE
                 wait = min(
                     self._settings.reconnect_max_seconds,
                     delay * (1 + 0.25 * self._jitter()),

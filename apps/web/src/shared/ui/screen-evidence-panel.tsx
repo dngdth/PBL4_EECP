@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiClient } from '@/src/shared/api/client';
+import { useRealtimeRefresh } from '@/src/shared/api/realtime';
 import { frameTimeOffset, frameTimingLabel } from './screen-evidence-time';
 
 interface Frame {
@@ -118,9 +119,12 @@ export function ScreenEvidencePanel({
       catch (error: any) { if (active) setError(error.message); }
     };
     update();
-    const timer = window.setInterval(update, 5000);
+    const timer = window.setInterval(update, 20000);
     return () => { active = false; window.clearInterval(timer); };
   }, [refresh]);
+  useRealtimeRefresh(() => {
+    refresh().catch((err: any) => setError(err.message));
+  }, ['sessions']);
   useEffect(() => {
     if (!pending || !['capturing', 'uploading'].includes(pending.status)) return;
     let active = true;

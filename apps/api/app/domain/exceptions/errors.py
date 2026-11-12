@@ -10,7 +10,7 @@ class InvalidStateTransitionError(DomainError):
     pass
 
 
-class PolicyValidationError(DomainError):
+class PolicyValidationError(DomainError, ValueError):
     pass
 
 

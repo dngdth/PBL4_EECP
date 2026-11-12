@@ -100,22 +100,39 @@ class WindowsDomainResolver:
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
         timeout_seconds: float = 8.0,
         observe_cache: bool = False,
+        observe_interval_seconds: float = 0.0,
         history_seconds: float = 3600.0,
         max_history_records: int = 10000,
         clock: Callable[[], float] = time.monotonic,
     ):
-        if timeout_seconds <= 0 or history_seconds <= 0 or max_history_records < 1:
+        if (
+            timeout_seconds <= 0
+            or observe_interval_seconds < 0
+            or history_seconds <= 0
+            or max_history_records < 1
+        ):
             raise ValueError("DNS discovery limits must be positive")
         self._runner, self._timeout, self._clock = runner, timeout_seconds, clock
         self._observe_cache = observe_cache
+        self._observe_interval_seconds = observe_interval_seconds
+        self._last_observe: float | None = None
         self._history_seconds, self._max_history_records = history_seconds, max_history_records
         self._history: dict[DnsRecord, float] = {}
         self.last_evidence: dict[str, list[dict]] = {}
 
     def observe(self) -> None:
         """Read cache without queries, including before an exam starts."""
-        if self._observe_cache:
-            self._remember(self._snapshot(DNS_OBSERVE_SCRIPT, None, min(3.0, self._timeout)))
+        if not self._observe_cache:
+            return
+        now = self._clock()
+        if (
+            self._observe_interval_seconds > 0
+            and self._last_observe is not None
+            and now - self._last_observe < self._observe_interval_seconds
+        ):
+            return
+        self._remember(self._snapshot(DNS_OBSERVE_SCRIPT, None, min(3.0, self._timeout)))
+        self._last_observe = now
 
     def resolve(self, domains: Iterable[str]) -> dict[str, tuple[str, ...]]:
         requested = self._requested(domains)

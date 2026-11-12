@@ -23,6 +23,57 @@ class CapturedFrame:
         return hashlib.sha256(self.data).hexdigest()
 
 
+_DPI_AWARE_INITIALIZED = False
+
+
+def ensure_process_dpi_aware() -> bool:
+    """Best-effort activation of Per-Monitor DPI awareness on Windows."""
+    global _DPI_AWARE_INITIALIZED
+    if _DPI_AWARE_INITIALIZED:
+        return True
+    if sys.platform != "win32":
+        return False
+
+    import ctypes
+
+    # 1. Try Windows 10 v1703+ DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 (-4)
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        if hasattr(user32, "SetProcessDpiAwarenessContext"):
+            user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            user32.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
+            if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+                _DPI_AWARE_INITIALIZED = True
+                return True
+    except Exception:
+        pass
+
+    # 2. Try Windows 8.1 / 10 early PROCESS_PER_MONITOR_DPI_AWARE (2)
+    try:
+        shcore = ctypes.WinDLL("shcore", use_last_error=True)
+        if hasattr(shcore, "SetProcessDpiAwareness"):
+            shcore.SetProcessDpiAwareness.argtypes = [ctypes.c_int]
+            shcore.SetProcessDpiAwareness.restype = ctypes.c_long
+            if shcore.SetProcessDpiAwareness(2) == 0:
+                _DPI_AWARE_INITIALIZED = True
+                return True
+    except Exception:
+        pass
+
+    # 3. Fallback to basic system-wide DPI awareness
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        if hasattr(user32, "SetProcessDPIAware"):
+            user32.SetProcessDPIAware.restype = ctypes.c_bool
+            if user32.SetProcessDPIAware():
+                _DPI_AWARE_INITIALIZED = True
+                return True
+    except Exception:
+        pass
+
+    return False
+
+
 class WindowsScreenCapture:
     """Pillow/GDI capture in the normal user's desktop, including all monitors.
 
@@ -35,6 +86,7 @@ class WindowsScreenCapture:
             raise ValueError("invalid screen capture widths")
         self.low_width = low_width
         self.high_width = high_width
+        ensure_process_dpi_aware()
 
     def __call__(self, high_quality: bool = False) -> CapturedFrame:
         if sys.platform != "win32":
@@ -74,19 +126,26 @@ class WindowsScreenCapture:
         except ImportError as exc:
             raise OSError("screen capture requires Pillow; run uv sync --all-packages") from exc
         captured_at = datetime.now(UTC)
-        with ImageGrab.grab(all_screens=True) as original:
-            # Bound compression work for extreme virtual desktops.
-            if original.width * original.height > 80_000_000:
-                raise OSError("virtual desktop exceeds capture pixel budget")
-            with original.convert("RGB") as image:
-                width = self.high_width if high_quality else self.low_width
-                image.thumbnail((width, width), Image.Resampling.LANCZOS)
-                output = io.BytesIO()
-                image.save(output, format="JPEG", quality=85 if high_quality else 40)
-                data = output.getvalue()
-                if len(data) > 2 * 1024 * 1024:
-                    raise OSError("compressed screenshot exceeds 2 MiB")
-                return CapturedFrame(uuid.uuid4().hex, captured_at, data, image.width, image.height)
+        try:
+            with ImageGrab.grab(all_screens=True) as original:
+                # Bound compression work for extreme virtual desktops.
+                if original.width * original.height > 80_000_000:
+                    raise OSError("virtual desktop exceeds capture pixel budget")
+                with original.convert("RGB") as image:
+                    width = self.high_width if high_quality else self.low_width
+                    image.thumbnail((width, width), Image.Resampling.LANCZOS)
+                    output = io.BytesIO()
+                    image.save(output, format="JPEG", quality=85 if high_quality else 40)
+                    data = output.getvalue()
+                    if len(data) > 2 * 1024 * 1024:
+                        raise OSError("compressed screenshot exceeds 2 MiB")
+                    return CapturedFrame(
+                        uuid.uuid4().hex, captured_at, data, image.width, image.height
+                    )
+        except OSError:
+            raise
+        except Exception as exc:
+            raise OSError(f"screen capture grab failed: {exc}") from exc
 
 
 @dataclass(frozen=True, slots=True)

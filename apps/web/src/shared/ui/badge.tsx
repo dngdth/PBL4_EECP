@@ -23,10 +23,10 @@ export const Badge: React.FC<BadgeProps> = ({
   };
 
   const variantStyles = {
-    neutral: 'bg-background text-text-muted border border-border',
-    success: 'bg-success-soft text-success border border-success/20',
+    neutral: 'bg-surface-subtle text-text-muted border border-border',
+    success: 'bg-success-soft text-success-dark border border-success/30',
     warning: 'bg-warning-soft text-warning-dark border border-warning/30',
-    error: 'bg-error-soft text-error border border-error/30',
+    error: 'bg-error-soft text-error-dark border border-error/30',
     orange: 'bg-primary-soft text-primary border border-primary/30',
     info: 'bg-surface-subtle text-text-muted border border-border',
   };

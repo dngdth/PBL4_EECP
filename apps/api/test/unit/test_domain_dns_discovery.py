@@ -228,3 +228,25 @@ def test_diagnostic_keeps_firewall_snapshot_when_dns_discovery_fails():
     assert report["dns_discovery_error"]
     assert report["tcp_flows"] == []
     assert json.loads(calls[0][1]["input"]) == {"rule_names": []}
+
+
+def test_domain_resolver_throttles_passive_cache_observation():
+    now = [0.0]
+    runner = DnsRunner(
+        [{"name": "cdn.example.com", "address": "198.51.100.10", "source": "windows-cache"}]
+    )
+
+    resolver = WindowsDomainResolver(
+        runner=runner,
+        observe_cache=True,
+        observe_interval_seconds=20.0,
+        clock=lambda: now[0],
+    )
+    resolver.observe()
+    now[0] = 10.0
+    resolver.observe()
+    now[0] = 20.0
+    resolver.observe()
+
+    assert len(runner.calls) == 2
+

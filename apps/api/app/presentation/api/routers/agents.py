@@ -45,14 +45,8 @@ def heartbeat_agent(
 def list_agents(use_case: ListAgentsUseCase, request: Request) -> list[AgentView]:
     authorize(request, Permission.VIEW_AGENT)
     values = []
-    latest_by_agent = {}
     with request.app.state.container.database.unit_of_work() as uow:
-        for session in uow.sessions.list_all():
-            for incident in uow.incidents.list_for_session(session.id):
-                agent_id = incident.workstation_id
-                current = latest_by_agent.get(agent_id)
-                if agent_id and (current is None or incident.created_at > current.created_at):
-                    latest_by_agent[agent_id] = incident
+        latest_by_agent = uow.incidents.latest_by_workstation()
     for agent in use_case():
         presence = request.app.state.presence.get_agent(agent.id) or {}
         latest = latest_by_agent.get(agent.id)

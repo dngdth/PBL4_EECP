@@ -44,6 +44,7 @@ export interface ExamSession {
   room_id: string;
   gateway_id: string | null;
   gateway_policy_hash?: string | null;
+  gateway_restored?: boolean;
   status: SessionStatus;
   workstations: Workstation[];
   agents?: Agent[];

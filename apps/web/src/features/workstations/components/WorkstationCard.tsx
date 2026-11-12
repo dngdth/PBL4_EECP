@@ -3,6 +3,7 @@ import { Monitor, Clock, Shield, Network, Activity, Cpu } from 'lucide-react';
 import { Workstation } from '@/src/domain';
 import { cn } from '@/src/shared/lib/cn';
 import { formatRelativeTime } from '@/src/shared/lib/formatters';
+import { WORKSTATION_STATUS_LABELS } from '@/src/shared/config/labels';
 
 export interface WorkstationCardProps {
   workstation: Workstation;
@@ -13,9 +14,13 @@ export const WorkstationCard: React.FC<WorkstationCardProps> = ({
   workstation,
   onInspect,
 }) => {
-  const isWarning = workstation.status === 'WARNING';
-  const isFailed = workstation.status === 'FAILED';
-  const isReady = workstation.status === 'READY';
+  const isReady = workstation.status === 'READY' || workstation.status === 'ONLINE';
+  const isWarning = workstation.status === 'WARNING' || workstation.status === 'DEGRADED';
+  const isFailed = workstation.status === 'FAILED' || workstation.status === 'OFFLINE';
+  const isPending = workstation.status === 'PENDING';
+
+  const statusLabel =
+    WORKSTATION_STATUS_LABELS[workstation.status] || workstation.status;
 
   const details = workstation.preflight_details;
 
@@ -31,15 +36,16 @@ export const WorkstationCard: React.FC<WorkstationCardProps> = ({
           onInspect(workstation);
         }
       }}
-      aria-label={`Máy trạm ${workstation.id} - ${workstation.status}`}
+      aria-label={`Máy trạm ${workstation.id} - ${statusLabel}`}
     >
       {/* 1. Computer Monitor Unit (Màn hình máy tính màu trắng/sáng) */}
       <div
         className={cn(
           'w-full bg-slate-100 dark:bg-surface rounded-t-xl rounded-b-md border-2 p-1.5 sm:p-2 shadow-2xs transition-all duration-200 flex flex-col justify-between relative overflow-hidden',
-          isReady && 'border-slate-300 dark:border-border group-hover:border-primary group-hover:shadow-[0_4px_16px_rgba(59,130,246,0.15)]',
-          isWarning && 'border-amber-400 bg-amber-50/20 group-hover:border-amber-500 group-hover:shadow-[0_4px_16px_rgba(245,158,11,0.18)]',
-          isFailed && 'border-rose-400 bg-rose-50/20 group-hover:border-rose-500 group-hover:shadow-[0_4px_16px_rgba(244,63,94,0.18)]'
+          isReady && 'border-border group-hover:border-primary group-hover:shadow-[0_4px_16px_rgba(232,117,42,0.15)]',
+          isWarning && 'border-warning/40 bg-warning-soft/30 group-hover:border-warning group-hover:shadow-[0_4px_16px_rgba(217,154,34,0.18)]',
+          isFailed && 'border-error/40 bg-error-soft/30 group-hover:border-error group-hover:shadow-[0_4px_16px_rgba(201,76,76,0.18)]',
+          isPending && 'border-slate-200 dark:border-border'
         )}
       >
         {/* Top Bezel: Sleek minimalist frame with webcam dot */}
@@ -63,7 +69,8 @@ export const WorkstationCard: React.FC<WorkstationCardProps> = ({
                   'w-7 h-7 rounded flex items-center justify-center shrink-0 border',
                   isReady && 'bg-success-soft border-success/30 text-success-dark',
                   isWarning && 'bg-warning-soft border-warning/30 text-warning-dark',
-                  isFailed && 'bg-error-soft border-error/30 text-error-dark'
+                  isFailed && 'bg-error-soft border-error/30 text-error-dark',
+                  isPending && 'bg-surface-subtle border-border text-text-muted'
                 )}
               >
                 <Monitor className="w-4 h-4" />
@@ -79,9 +86,10 @@ export const WorkstationCard: React.FC<WorkstationCardProps> = ({
                       'w-2 h-2 rounded-full shrink-0 animate-pulse',
                       isReady && 'bg-success shadow-[0_0_6px_rgba(79,138,98,0.8)]',
                       isWarning && 'bg-warning shadow-[0_0_6px_rgba(217,154,34,0.8)]',
-                      isFailed && 'bg-error shadow-[0_0_6px_rgba(201,76,76,0.8)]'
+                      isFailed && 'bg-error shadow-[0_0_6px_rgba(201,76,76,0.8)]',
+                      isPending && 'bg-slate-400'
                     )}
-                    title={isReady ? 'Sẵn sàng' : isWarning ? 'Cảnh báo' : 'Lỗi tiền kiểm'}
+                    title={statusLabel}
                   />
                 </div>
                 <span className="font-mono text-[11px] text-text-muted truncate mt-0.5">
@@ -95,9 +103,10 @@ export const WorkstationCard: React.FC<WorkstationCardProps> = ({
                 'inline-block px-1.5 py-0.5 rounded text-[10px] font-sans font-semibold border',
                 isReady && 'text-success-dark bg-success-soft border-success/30',
                 isWarning && 'text-warning-dark bg-warning-soft border-warning/30',
-                isFailed && 'text-error-dark bg-error-soft border-error/30'
+                isFailed && 'text-error-dark bg-error-soft border-error/30',
+                isPending && 'text-text-muted bg-surface-subtle border-border'
               )}>
-                {isReady ? 'Sẵn sàng' : isWarning ? 'Cảnh báo' : 'Lỗi'}
+                {statusLabel}
               </span>
             </div>
           </div>
@@ -186,9 +195,9 @@ export const WorkstationCard: React.FC<WorkstationCardProps> = ({
           <div
             className={cn(
               'w-2 h-0.5 rounded-full transition-all',
-              isReady && 'bg-emerald-500 shadow-[0_0_4px_rgba(16,185,129,0.7)]',
-              isWarning && 'bg-amber-500 shadow-[0_0_4px_rgba(245,158,11,0.7)]',
-              isFailed && 'bg-rose-500 shadow-[0_0_4px_rgba(244,63,94,0.7)]'
+              isReady && 'bg-success shadow-[0_0_4px_rgba(79,138,98,0.7)]',
+              isWarning && 'bg-warning shadow-[0_0_4px_rgba(217,154,34,0.7)]',
+              isFailed && 'bg-error shadow-[0_0_4px_rgba(201,76,76,0.7)]'
             )}
           />
         </div>

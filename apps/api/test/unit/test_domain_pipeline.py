@@ -48,3 +48,40 @@ def test_multiple_policy_delivery_failures_remain_degraded() -> None:
 
     assert session.state == SessionState.DEGRADED
     assert session.workstations["PC01"].readiness == Readiness.FAILED
+
+
+def test_cannot_force_start_when_gateway_failed_policy() -> None:
+    session = ExamSession.create("Programming C", "F301", "gw-f301", ["PC01"])
+    session.deploy_policy("PROGRAMMING_EXAM", {})
+    session.record_policy_failure("gw-f301")
+
+    with pytest.raises(
+        ReadinessGateError, match="cannot force-start when gateway has not applied policy"
+    ):
+        session.start(force=True, reason="override", at=session.created_at)
+
+
+def test_cannot_force_start_when_all_workstations_failed() -> None:
+    session = ExamSession.create("Programming C", "F301", "gw-f301", ["PC01"])
+    policy = session.deploy_policy("PROGRAMMING_EXAM", {})
+    session.acknowledge_policy("gw-f301", policy.policy_hash)
+    session.record_policy_failure("PC01")
+
+    with pytest.raises(
+        ReadinessGateError, match="cannot force-start when all workstations failed readiness"
+    ):
+        session.start(force=True, reason="override", at=session.created_at)
+
+
+def test_can_force_start_when_gateway_applied_and_partial_workstation_ready() -> None:
+    session = ExamSession.create("Programming C", "F301", "gw-f301", ["PC01", "PC02"])
+    policy = session.deploy_policy("PROGRAMMING_EXAM", {})
+    session.acknowledge_policy("gw-f301", policy.policy_hash)
+    session.acknowledge_policy("PC01", policy.policy_hash)
+    session.record_policy_failure("PC02")
+
+    assert session.state == SessionState.DEGRADED
+    session.start(force=True, reason="PC02 student absent", at=session.created_at)
+    assert session.state == SessionState.RUNNING
+    assert session.force_started is True
+    assert session.force_start_reason == "PC02 student absent"

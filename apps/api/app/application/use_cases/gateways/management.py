@@ -10,6 +10,7 @@ from app.application.dtos.gateways import (
 )
 from app.domain.entities.gateway import AgentGatewayBinding, Gateway, GatewayStatus
 from app.domain.entities.operations import Command
+from app.domain.exceptions.errors import PolicyValidationError
 from app.domain.interfaces.unit_of_work import UnitOfWorkFactory
 from app.domain.value_objects.enums import CommandStatus
 from app.domain.value_objects.primitives import utc_now
@@ -122,10 +123,10 @@ class RecordGatewayDeliveryFailure:
         with self._uow_factory() as uow:
             binding = uow.agent_gateway_bindings.find_for_agent(data.agent_id)
             if binding is None or binding.gateway_id != data.gateway_id:
-                raise ValueError("delivery failure Agent is not bound to this Gateway")
+                raise PolicyValidationError("delivery failure Agent is not bound to this Gateway")
             command = uow.commands.get(data.command_id)
             if command.target_id != data.agent_id or data.correlation_id != command.id:
-                raise ValueError("delivery failure does not match the target command")
+                raise PolicyValidationError("delivery failure does not match the target command")
             if command.status not in {CommandStatus.PENDING, CommandStatus.DELIVERED}:
                 return command
             reason = data.reason[:500]

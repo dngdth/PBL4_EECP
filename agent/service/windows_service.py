@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 SERVICE_NAME = "EECPAgentService"
@@ -183,7 +184,15 @@ def _require_pywin32() -> None:
 
 def run_scm_command(command: str) -> None:
     _require_pywin32()
+    if command == "install":
+        from agent.service.installation import prepare_service_executable
+
+        EECPWindowsService._exe_name_ = str(prepare_service_executable())
+    # SCM starts outside the repository; pywin32 supports an explicit import root.
+    project_root = Path(__file__).resolve().parents[2]
+    service_class = f"{project_root}\\agent.service.windows_service.EECPWindowsService"
     win32serviceutil.HandleCommandLine(
         EECPWindowsService,
+        serviceClassString=service_class,
         argv=[sys.argv[0], command],
     )

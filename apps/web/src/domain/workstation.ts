@@ -45,6 +45,7 @@ export interface Workstation {
   desired_policy_hash?: string | null;
   /** Whether the workstation has successfully acknowledged the desired policy. */
   policy_compliant?: boolean;
+  restored?: boolean;
   latest_incident?: LatestIncident | null;
 }
 

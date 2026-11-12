@@ -14,6 +14,22 @@ from urllib.parse import urlparse
 
 RULE_PREFIX = "EECP-"
 LOGGER = logging.getLogger(__name__)
+FIREWALL_COMMAND_TIMEOUT_SECONDS = 30.0
+
+# Missing exact names are expected during reconciliation. Permission/provider
+# errors must propagate instead of being mistaken for an absent rule.
+_SCRIPT_HEADER = (
+    "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';"
+    "$request=ConvertFrom-Json ([Console]::In.ReadToEnd());"
+    "function Get-EecpRule([string[]]$Names){"
+    "if($Names.Count -eq 0){return};"
+    "$lookupErrors=@();"
+    "$found=@(Get-NetFirewallRule -Name $Names -ErrorAction SilentlyContinue "
+    "-ErrorVariable lookupErrors);"
+    "foreach($lookupError in $lookupErrors){"
+    "if($lookupError.CategoryInfo.Category -ne 'ObjectNotFound'){throw $lookupError}};"
+    "$found};"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,29 +118,20 @@ class WindowsFirewallEnforcer:
         current_rule_names: Iterable[str],
     ) -> None:
         self._require_windows()
+        current_names = set(current_rule_names)
         desired_names = {rule.name for rule in desired}
+        self._validate_owned_names(current_names | desired_names)
+        existing = self._query_rules(desired_names)
+        replacements = []
         for rule in desired:
-            if self._rule_matches(rule):
+            if self._rule_matches(rule, existing.get(rule.name)):
                 LOGGER.info(
                     "firewall operation=ensure rule=%s remote=%s result=unchanged",
                     rule.name,
                     rule.remote_address,
                 )
                 continue
-            self._remove_rule(rule.name)
-            script = (
-                "$ErrorActionPreference='Stop';"
-                "$request=ConvertFrom-Json ([Console]::In.ReadToEnd());"
-                "$remoteAddresses=@($request.remote_addresses);"
-                "if($remoteAddresses.Count -eq 0){throw 'RemoteAddress is required'};"
-                "New-NetFirewallRule -Name $request.name "
-                "-DisplayName $request.display_name "
-                "-Group $request.group -Direction $request.direction "
-                "-Action Block -Profile Any "
-                "-Enabled True -Protocol Any -LocalAddress Any "
-                "-RemoteAddress $remoteAddresses -ErrorAction Stop|Out-Null"
-            )
-            payload = {
+            replacements.append({
                 "name": rule.name,
                 "display_name": rule.name,
                 "group": rule.group,
@@ -136,43 +143,64 @@ class WindowsFirewallEnforcer:
                     if rule.direction.casefold() in {"in", "inbound"}
                     else "Outbound"
                 ),
-            }
-            result = self._run(
-                [
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    script,
-                ],
-                input_text=json.dumps(payload),
-            )
-            if result.returncode != 0:
-                detail = _command_error(result)
-                suffix = f": {detail}" if detail else ""
-                raise OSError(f"cannot create Windows Firewall rule {rule.name}{suffix}")
-            LOGGER.info(
-                "firewall operation=add rule=%s remote=%s result=succeeded",
-                rule.name,
-                rule.remote_address,
-            )
+            })
         # Install replacements before removing old addresses: refreshing DNS
         # must not create a window where previously blocked flows can resume.
-        for name in sorted(set(current_rule_names) - desired_names):
-            LOGGER.info("firewall operation=remove rule=%s result=started", name)
-            self._remove_rule(name)
-        if not self.verify_rules(desired):
+        obsolete = sorted(current_names - desired_names)
+        if not replacements and not obsolete:
+            return
+        self._update_rules(replacements, obsolete)
+        verified = self._query_rules(desired_names | set(obsolete))
+        if any(name in verified for name in obsolete):
+            raise OSError("Windows Firewall obsolete rule removal verification failed")
+        if not all(self._rule_matches(rule, verified.get(rule.name)) for rule in desired):
             raise OSError("Windows Firewall rule verification failed")
 
     def remove_rules(self, rule_names: Iterable[str]) -> None:
         self._require_windows()
-        for name in sorted(set(rule_names)):
-            LOGGER.info("firewall operation=remove rule=%s result=started", name)
-            self._remove_rule(name)
+        names = sorted(set(rule_names))
+        self._validate_owned_names(names)
+        if names:
+            self._update_rules([], names)
+            if self._query_rules(names):
+                raise OSError("Windows Firewall rule removal verification failed")
 
     def verify_rules(self, rules: tuple[FirewallRule, ...]) -> bool:
         self._require_windows()
-        return all(self._rule_matches(rule) for rule in rules)
+        existing = self._query_rules(rule.name for rule in rules)
+        return all(self._rule_matches(rule, existing.get(rule.name)) for rule in rules)
+
+    def owned_rule_names(self) -> tuple[str, ...]:
+        """Include rules left behind before a failed apply could persist state."""
+        self._require_windows()
+        existing = self._query_rules(("EECP-*",))
+        return tuple(sorted(
+            name for name, value in existing.items()
+            if _is_owned_rule_name(name) and value.get("Group") == "-".join(name.split("-")[:2])
+        ))
+
+    @staticmethod
+    def _validate_owned_names(names: Iterable[str]) -> None:
+        for name in names:
+            if not _is_owned_rule_name(name):
+                raise ValueError(f"refusing to change non-EECP Firewall rule: {name}")
+
+    def _update_rules(self, replacements: list[dict], obsolete: list[str]) -> None:
+        script = _SCRIPT_HEADER + (
+            "foreach($item in @($request.upsert)){"
+            "$remoteAddresses=@($item.remote_addresses);"
+            "if($remoteAddresses.Count -eq 0){throw 'RemoteAddress is required'};"
+            "$existing=@(Get-EecpRule -Names @($item.name));"
+            "if($existing.Count -gt 0){$existing|Remove-NetFirewallRule -ErrorAction Stop};"
+            "New-NetFirewallRule -Name $item.name -DisplayName $item.display_name "
+            "-Group $item.group -Direction $item.direction "
+            "-Action Block -Profile Any -Enabled True -Protocol Any -LocalAddress Any "
+            "-RemoteAddress $remoteAddresses -ErrorAction Stop|Out-Null};"
+            "$obsolete=@(Get-EecpRule -Names @($request.remove));"
+            "if($obsolete.Count -gt 0){$obsolete|Remove-NetFirewallRule -ErrorAction Stop}"
+        )
+        operation = "update" if replacements else "remove"
+        self._run(script, {"upsert": replacements, "remove": obsolete}, operation=operation)
 
     def _reject_management_overlap(
         self,
@@ -195,37 +223,38 @@ class WindowsFirewallEnforcer:
                     f"blocked address {blocked} overlaps protected Gateway endpoint {protected}"
                 )
 
-    def _rule_matches(self, rule: FirewallRule) -> bool:
-        script = (
-            "& { param([string]$RuleName) "
-            "$rule=Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue;"
-            "if($null -eq $rule){exit 3};"
-            "$filter=$rule|Get-NetFirewallAddressFilter;"
-            "$port=$rule|Get-NetFirewallPortFilter;"
+    def _query_rules(self, names: Iterable[str]) -> dict[str, dict]:
+        names = sorted(set(names))
+        if not names:
+            return {}
+        script = _SCRIPT_HEADER + (
+            "$rows=@(foreach($rule in @(Get-EecpRule -Names @($request.names))){"
+            "$filter=$rule|Get-NetFirewallAddressFilter -ErrorAction Stop;"
+            "$port=$rule|Get-NetFirewallPortFilter -ErrorAction Stop;"
             "[PSCustomObject]@{Name=$rule.Name;DisplayName=$rule.DisplayName;"
             "Group=$rule.Group;"
             "Enabled=$rule.Enabled.ToString();"
             "Direction=$rule.Direction.ToString();Action=$rule.Action.ToString();"
             "Profile=$rule.Profile.ToString();Protocol=$port.Protocol.ToString();"
             "LocalAddress=@($filter.LocalAddress);"
-            "RemoteAddress=@($filter.RemoteAddress)}|"
-            "ConvertTo-Json -Compress }"
+            "RemoteAddress=@($filter.RemoteAddress)}});"
+            "ConvertTo-Json -InputObject @($rows) -Depth 6 -Compress"
         )
-        result = self._run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                script,
-                rule.name,
-            ]
-        )
-        if result.returncode != 0:
-            return False
+        result = self._run(script, {"names": names}, operation="query")
         try:
-            value = json.loads(result.stdout)
-        except (json.JSONDecodeError, TypeError):
+            values = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise OSError("Windows Firewall query returned invalid JSON") from exc
+        if not isinstance(values, list) or any(
+            not isinstance(value, dict) or not isinstance(value.get("Name"), str)
+            for value in values
+        ):
+            raise OSError("Windows Firewall query returned invalid rule records")
+        return {value["Name"]: value for value in values}
+
+    @staticmethod
+    def _rule_matches(rule: FirewallRule, value: dict | None) -> bool:
+        if not isinstance(value, dict):
             return False
         remote = value.get("RemoteAddress", []) if isinstance(value, dict) else []
         if isinstance(remote, str):
@@ -268,48 +297,33 @@ class WindowsFirewallEnforcer:
             )
         )
 
-    def _remove_rule(self, name: str) -> None:
-        if not _is_owned_rule_name(name):
-            raise ValueError(f"refusing to remove non-EECP Firewall rule: {name}")
-        script = (
-            "& { param([string]$RuleName) "
-            "$rule=Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue;"
-            "if($null -eq $rule){exit 3};"
-            "$rule|Remove-NetFirewallRule -ErrorAction Stop }"
-        )
-        result = self._run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                script,
-                name,
-            ]
-        )
-        if result.returncode == 3:
-            return
-        if result.returncode != 0:
-            raise OSError(f"cannot remove Windows Firewall rule {name}")
-
     def _run(
         self,
-        arguments: list[str],
+        script: str,
+        payload: dict,
         *,
-        input_text: str | None = None,
+        operation: str,
     ) -> subprocess.CompletedProcess[str]:
         try:
-            kwargs: dict[str, object] = {
-                "capture_output": True,
-                "text": True,
-                "check": False,
-                "timeout": 5.0,
-            }
-            if input_text is not None:
-                kwargs["input"] = input_text
-            return self._runner(arguments, **kwargs)
+            result = self._runner(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=FIREWALL_COMMAND_TIMEOUT_SECONDS,
+            )
         except subprocess.TimeoutExpired as exc:
-            raise OSError("Windows Firewall command timed out") from exc
+            raise OSError(
+                f"Windows Firewall {operation} timed out after "
+                f"{FIREWALL_COMMAND_TIMEOUT_SECONDS:g}s"
+            ) from exc
+        if result.returncode != 0:
+            detail = _command_error(result)
+            suffix = f": {detail}" if detail else ""
+            raise OSError(f"Windows Firewall {operation} failed (exit {result.returncode}){suffix}")
+        LOGGER.info("firewall operation=%s result=succeeded", operation)
+        return result
 
     def _require_windows(self) -> None:
         if self._platform != "win32":

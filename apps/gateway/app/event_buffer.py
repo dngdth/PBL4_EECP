@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from apps.gateway.app.application.models import BufferedEvent, EventBufferHealth
@@ -52,12 +52,18 @@ class EventBuffer:
                     last_error TEXT
                 );
                 CREATE INDEX IF NOT EXISTS ix_gateway_events_due
-                    ON gateway_events(state, next_attempt_at, created_at);
+                    ON gateway_events(state, next_attempt_at, occurred_at, sequence);
                 CREATE TABLE IF NOT EXISTS gateway_event_meta (
                     key TEXT PRIMARY KEY,
                     value TEXT
                 );
                 """
+            )
+            # Purge stale terminal failures (> 7 days) so they don't leak storage quota
+            cutoff_terminal = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+            connection.execute(
+                "DELETE FROM gateway_events WHERE state = 'FAILED_TERMINAL' AND created_at < ?",
+                (cutoff_terminal,),
             )
             # Crash recovery on startup: Any events left IN_FLIGHT by a previous process
             # crash are no longer being actively sent. Reset them to PENDING and ensure
@@ -130,7 +136,7 @@ class EventBuffer:
                 """
                 SELECT * FROM gateway_events
                  WHERE state IN ('PENDING', 'IN_FLIGHT') AND next_attempt_at <= ?
-                 ORDER BY next_attempt_at, created_at, event_id
+                 ORDER BY next_attempt_at, occurred_at, sequence, event_id
                  LIMIT ?
                 """,
                 (now.isoformat(), limit),
@@ -182,6 +188,18 @@ class EventBuffer:
             )
             self._set_meta(connection, "last_flush_error", error[:500])
             connection.commit()
+
+    def cleanup_terminal(self, older_than_seconds: int = 7 * 86400) -> int:
+        cutoff = (datetime.now(UTC) - timedelta(seconds=older_than_seconds)).isoformat()
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                "DELETE FROM gateway_events WHERE state = 'FAILED_TERMINAL' AND created_at < ?",
+                (cutoff,),
+            )
+            deleted = cursor.rowcount
+            if deleted > 0:
+                connection.commit()
+            return deleted
 
     def count(self, *, include_terminal: bool = True) -> int:
         query = "SELECT COUNT(*) FROM gateway_events"

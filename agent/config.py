@@ -5,8 +5,22 @@ from pathlib import Path
 def load_agent_id() -> str:
     agent_id = os.getenv("EECP_AGENT_ID", "").strip()
     if not agent_id:
+        fallback = (
+            os.getenv("COMPUTERNAME", "").strip()
+            or os.getenv("HOSTNAME", "").strip()
+        )
+        if not fallback:
+            try:
+                import socket
+
+                fallback = socket.gethostname().split(".")[0].strip()
+            except Exception:
+                fallback = ""
+        agent_id = fallback
+    if not agent_id:
         raise RuntimeError(
-            "EECP_AGENT_ID is required. Example: $env:EECP_AGENT_ID='PC02'"
+            "EECP_AGENT_ID is required and computer hostname could not be determined. "
+            "Example: $env:EECP_AGENT_ID='PC02'"
         )
     return agent_id
 
@@ -30,7 +44,9 @@ REQUEST_TIMEOUT_SECONDS = 5
 IPC_PIPE_NAME = os.getenv("EECP_PIPE_NAME", r"\\.\pipe\eecp-agent-v2")
 IPC_CONNECT_TIMEOUT_SECONDS = 2.0
 # APPLY_POLICY includes bounded DNS discovery plus OS rule reconciliation.
-IPC_REQUEST_TIMEOUT_SECONDS = 30.0
+# A signed command has a five-minute delivery window. Allow Windows policy
+# reconciliation to finish and return its ACK within that window.
+IPC_REQUEST_TIMEOUT_SECONDS = 180.0
 IPC_MAX_MESSAGE_BYTES = 1024 * 1024
 IPC_REPLAY_CACHE_SIZE = 1024
 SERVICE_MAINTENANCE_INTERVAL_SECONDS = 5.0

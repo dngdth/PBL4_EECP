@@ -206,7 +206,13 @@ class UpdateExamSessionStatus:
         data: UpdateExamSessionStatusInput,
         at: datetime,
     ) -> None:
-        session.transition_management(data.status, at)
+        retry_restore = (
+            session.gateway_id is None
+            and session.state == SessionState.FINISHED
+            and data.status == SessionState.FINISHED
+        )
+        if not retry_restore:
+            session.transition_management(data.status, at)
         uow.sessions.save(session)
         if data.status == SessionState.FINISHED and session.policy is not None:
             uow.commands.add_many(
@@ -223,12 +229,19 @@ class UpdateExamSessionStatus:
                         created_at=at,
                     )
                     for agent_id in sorted(session.workstations)
+                    if not session.workstations[agent_id].restored
+                    and not any(
+                        command.session_id == session.id
+                        and command.type == CommandType.RESTORE_BASELINE
+                        and not command.should_timeout(at)
+                        for command in uow.commands.list_for_target(agent_id)
+                    )
                 ]
             )
         uow.audits.append(
             session.id,
             actor=data.actor,
-            action="SESSION_STATUS_UPDATED",
+            action="SESSION_RESTORE_RETRIED" if retry_restore else "SESSION_STATUS_UPDATED",
             target=session.id,
             details={"state": session.state},
         )
@@ -268,6 +281,15 @@ def _build_details(
         if refresh_at is not None and agent.refresh_liveness(refresh_at):
             uow.agents.save(agent)
         agents.append(_agent_details(session, agent, assigned_at))
+    if hasattr(uow.telemetry, "latest_violations_for_session"):
+        raw_events = uow.telemetry.latest_violations_for_session(session.id, limit=10)
+    else:
+        raw_events = [
+            event
+            for event in reversed(uow.telemetry.list_for_session(session.id))
+            if event.event_type == "POLICY_VIOLATION"
+            and event.action in {"BLOCKED", "OBSERVED"}
+        ][:10]
     violations = [
         PolicyViolationDetails(
             workstation_id=event.workstation_id,
@@ -276,10 +298,8 @@ def _build_details(
             action=event.action,
             occurred_at=event.occurred_at,
         )
-        for event in reversed(uow.telemetry.list_for_session(session.id))
-        if event.event_type == "POLICY_VIOLATION"
-        and event.action in {"BLOCKED", "OBSERVED"}
-    ][:10]
+        for event in raw_events
+    ]
     return ExamSessionDetails(session=session, agents=agents, violations=violations)
 
 
@@ -306,7 +326,9 @@ def _agent_details(
 
 
 def _policy_status(session: ExamSession, agent_id: str) -> str:
-    workstation = session.workstations[agent_id]
+    workstation = session.workstations.get(agent_id)
+    if workstation is None:
+        return "NOT_ASSIGNED"
     if workstation.restored and session.state == SessionState.FINISHED:
         return "RESTORED"
     if workstation.policy_compliant:

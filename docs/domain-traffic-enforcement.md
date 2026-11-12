@@ -3,14 +3,20 @@
 Domain policies now install Windows Firewall blocks as well as the existing
 managed hosts entries. No browser extension, UI inspection, TLS decryption, or
 browser restart is involved. Previously displayed/cached content is unaffected.
-The rule applies to traffic, regardless of whether it is a question, refresh,
-background fetch, WebSocket, or streamed response.
+For discovered addresses, the rule applies to traffic regardless of whether it
+is a question, refresh, background fetch, WebSocket, or streamed response.
 
 ## Apply and maintenance
 
-1. The privileged Service snapshots A/AAAA entries in the Windows DNS cache,
-   including cached subdomains of each blocked category/domain, and queries the
-   domain and its `www` alias with `Resolve-DnsName -NoHostsFile`.
+1. The privileged Service observes A/AAAA and CNAME entries in the Windows DNS
+   cache during maintenance, including before any policy is applied. A bounded
+   in-memory history keeps up to 10,000 records for one hour after last seeing
+   them. The resolver follows forward CNAME chains (up to 32 names, with cycle
+   detection), including addresses under another CDN domain. It does not follow
+   reverse aliases or block sibling CDN names without DNS evidence. Numeric and
+   named record types and the cache's `Name`/`RecordName` fields are supported.
+   Full discovery queries explicit domains, their `www` aliases and up to 256
+   cached/historical matching hostnames with `Resolve-DnsName -NoHostsFile`.
 2. Real unicast addresses are collected before hosts mutation and `flushdns`.
    Sinkholes (`127.0.0.1`, `::1`, unspecified addresses), multicast and link-local
    addresses are excluded. Every required domain needs at least one known real
@@ -26,7 +32,11 @@ background fetch, WebSocket, or streamed response.
    policy contract, version, hash or signature. Failures roll back managed rules
    and hosts to the previous state.
 5. Service maintenance repairs missing rules every maintenance cycle and
-   refreshes DNS at most once per 60 seconds. Old addresses are retained while
+   performs full DNS queries at most once per 60 seconds. Newly observed cache
+   addresses are reconciled during maintenance without waiting for that timer.
+   Passive cache reads have a three-second timeout. An observation failure is
+   reported as degraded health while existing integrity repairs still run.
+   Old addresses are retained while
    the domain remains blocked, because existing connections can still use them.
    Refresh failures leave the old state/rules intact and surface as maintenance
    errors. Restart reconstructs both directions from the persisted state. A
@@ -37,6 +47,15 @@ Commands and maintenance are serialized inside the enforcer. DNS discovery is
 bounded at eight seconds and individual Firewall commands at five seconds. The
 Client IPC request timeout is 30 seconds to accommodate DNS and OS reconciliation.
 Audit mode still records intent only; it does not resolve domains or install rules.
+
+The Service enables passive observation only in enforce mode. General cache
+history is not written to disk or sent to the backend. Restart clears this
+pre-policy history; addresses derived for an active policy remain in its state.
+`domain_resolution` records hostname, IP, source (`windows-cache`, `dns-query`,
+or `dns-history`), CNAME chain, and retained addresses for each blocked domain.
+`network_enforcement.coverage=best-effort` and `packet_enforcement=not-verified`
+explicitly distinguish configured rules from a live traffic acceptance test.
+Discovery logs plus `managed_firewall_rules` allow domain-to-IP-to-rule comparison.
 
 ## Established connections and limits
 
@@ -58,7 +77,8 @@ This is destination-IP enforcement, not URL inspection:
   until policy removal favors stopping persistent connections over minimizing
   collateral blocks during the exam.
 - Only cached subdomains plus the explicit domains/`www` aliases are discovered;
-  arbitrary unknown subdomains are not enumerated. Include additional API
+  observed history and forward CNAME targets extend coverage, but arbitrary
+  unknown subdomains are not enumerated. Include additional API
   domains in the policy when needed.
 - Bytes already delivered to the browser cannot be retracted. A page may remain
   visible, show locally generated UI, or briefly display buffered response data.
@@ -73,12 +93,33 @@ This is destination-IP enforcement, not URL inspection:
 References: [ALE reauthorization](https://learn.microsoft.com/en-us/windows/win32/fwp/ale-re-authorization),
 [Resolve-DnsName](https://learn.microsoft.com/en-us/powershell/module/dnsclient/resolve-dnsname).
 
+## Diagnose a tab that still sends data
+
+Run this **on the affected Windows agent**, elevated, while reproducing the issue:
+
+```powershell
+python -m scripts.windows.diagnose_domain_traffic --state '<actual Service policy-state.json path>'
+```
+
+Use the path configured as `EECP_POLICY_STATE_PATH` for the Service, not a normal
+user's default state path. The command reads current DNS, active Firewall
+profiles/rules and TCP connections; it does not apply policy or change OS state.
+It reports DNS addresses missing from saved state, missing/mismatched directions,
+disabled profiles, and connections without domain attribution. IP matches are
+candidate domains because services may share an address. `configured-not-packet-verified`
+does not prove that application data is blocked, and `unattributed` does not mean
+allowed. Compare a request's remote IP in browser DevTools with this report.
+
+`Get-NetTCPConnection` does not show UDP/QUIC remote destinations. Use a packet
+trace/live smoke test for those; this diagnostic explicitly marks that gap.
+See [Get-NetTCPConnection](https://learn.microsoft.com/en-us/powershell/module/nettcpip/get-nettcpconnection).
+
 ## Automated tests
 
 From the repository root:
 
 ```powershell
-uv run pytest apps/api/test/unit/test_domain_traffic.py apps/api/test/unit/test_phase6_firewall.py apps/api/test/unit/test_agent_policy.py apps/api/test/integration/test_phase6_full_vertical.py
+uv run pytest apps/api/test/unit/test_domain_dns_discovery.py apps/api/test/unit/test_domain_traffic.py apps/api/test/unit/test_phase6_firewall.py apps/api/test/unit/test_agent_policy.py apps/api/test/integration/test_phase6_full_vertical.py
 ```
 
 These tests use fake Firewall/DNS adapters. Windows-specific tests execute the

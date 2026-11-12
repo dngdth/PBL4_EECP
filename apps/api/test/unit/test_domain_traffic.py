@@ -100,11 +100,11 @@ def test_resolver_matches_cached_subdomains_and_filters_sinkholes():
     resolver = WindowsDomainResolver(runner=runner)
     assert resolver.resolve(["chatgpt.com"]) == {"chatgpt.com": ("2001:db8::10", "203.0.113.9")}
     args, kwargs = calls[0]
-    assert json.loads(kwargs["input"]) == ["chatgpt.com"]
-    assert "-NoHostsFile" in args[-1]
+    assert json.loads(kwargs["input"]) == {"domains": ["chatgpt.com"], "known_names": []}
+    assert "NoHostsFile=$true" in args[-1]
     assert "Get-DnsClientCache" in args[-1]
     assert "shell" not in kwargs
-    assert kwargs["timeout"] == 8.0
+    assert kwargs["timeout"] == 45.0
 
 
 @pytest.mark.parametrize("output", ["", "{}", "null", '[{"name":"chatgpt.com"}]'])
@@ -135,12 +135,18 @@ def test_powershell_handles_single_and_multiple_domains_without_real_dns(domains
     # cmdlets, so this regression test needs neither network nor elevation.
     def runner(args, **kwargs):
         args = list(args)
+        query_mock = (
+            "function Resolve-DnsName { [pscustomobject]@{IPAddress='203.0.113.10'} }\n"
+        )
+        args[-1] = args[-1].replace(
+            "param([string]$name)", "param([string]$name)\n" + query_mock
+        )
         args[-1] = (
             "function Get-DnsClientCache {\n"
             " [pscustomobject]@{Entry='api.chatgpt.com'; RecordType=1; Data='203.0.113.11'}\n"
             " [pscustomobject]@{Entry='chatgpt.com'; RecordType=1; Data=''}\n"
             "}\n"
-            "function Resolve-DnsName { [pscustomobject]@{IPAddress='203.0.113.10'} }\n" + args[-1]
+            + args[-1]
         )
         return subprocess.run(args, **kwargs)
 
@@ -327,46 +333,40 @@ def test_domain_rules_use_all_protocols_and_correct_direction():
 
     def runner(args, **kwargs):
         script = args[4]
+        payload = json.loads(kwargs["input"])
         if "New-NetFirewallRule" in script:
             additions.append((args, kwargs))
-            payload = json.loads(kwargs["input"])
-            name = payload["name"]
-            display_name = payload["display_name"]
-            group = payload["group"]
-            direction = payload["direction"]
-            installed[name] = (
-                {
+            for item in payload["upsert"]:
+                name = item["name"]
+                installed[name] = {
                     "Name": name,
-                    "DisplayName": display_name,
-                    "Group": group,
+                    "DisplayName": item["display_name"],
+                    "Group": item["group"],
                     "Enabled": "True",
-                    "Direction": direction,
+                    "Direction": item["direction"],
                     "Action": "Block",
                     "Profile": "Any",
                     "Protocol": "Any",
                     "LocalAddress": ["Any"],
-                    "RemoteAddress": payload["remote_addresses"],
+                    "RemoteAddress": item["remote_addresses"],
                 }
-            )
+            for name in payload["remove"]:
+                installed.pop(name, None)
             return subprocess.CompletedProcess(args, 0, "", "")
-        if "Remove-NetFirewallRule" in script:
-            existed = installed.pop(args[-1], None) is not None
-            return subprocess.CompletedProcess(args, 0 if existed else 3, "", "")
-        rule = installed.get(args[-1])
-        if rule is None:
-            return subprocess.CompletedProcess(args, 3, "", "")
-        return subprocess.CompletedProcess(args, 0, json.dumps(rule), "")
+        found = [installed[name] for name in payload["names"] if name in installed]
+        return subprocess.CompletedProcess(args, 0, json.dumps(found), "")
 
     adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
     rules = domain_traffic_rules(adapter.plan("SES-TRAFFIC", ["203.0.113.10"], []))
     adapter.reconcile(rules, ())
-    assert len(additions) == 2
+    assert len(additions) == 1
     assert all(
         "-Protocol Any" in args[4] and "-Profile Any" in args[4]
         for args, _kwargs in additions
     )
     assert {
-        json.loads(kwargs["input"])["direction"] for _args, kwargs in additions
+        item["direction"] for _args, kwargs in additions
+        for item in json.loads(kwargs["input"])["upsert"]
     } == {"Inbound", "Outbound"}
     # Direction verification must not accept an inbound rule as outbound.
     installed[rules[0].name]["Direction"] = "Inbound"
@@ -407,7 +407,7 @@ def test_verification_rejects_rules_that_do_not_block_all_required_traffic(field
     }
 
     def runner(args, **kwargs):
-        return subprocess.CompletedProcess(args, 0, json.dumps(fields), "")
+        return subprocess.CompletedProcess(args, 0, json.dumps([fields]), "")
 
     adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
     assert adapter.verify_rules((rule,))

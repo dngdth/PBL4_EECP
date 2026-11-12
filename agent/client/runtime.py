@@ -40,6 +40,7 @@ class AgentClientRuntime:
         monitor: PolicyMonitor,
         heartbeat_interval_seconds: int,
         sensors: SensorSuite | None = None,
+        screen=None,
     ):
         self._backend = backend
         self._identity = identity
@@ -47,6 +48,7 @@ class AgentClientRuntime:
         self._monitor = monitor
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._sensors = sensors
+        self._screen = screen
 
     def run(
         self,
@@ -54,24 +56,37 @@ class AgentClientRuntime:
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = print,
     ) -> None:
-        run_agent(
-            self._backend,
-            self._identity,
-            self._heartbeat_interval_seconds,
-            sleep=sleep,
-            log=log,
-            process_commands=self.process_control_cycle,
-        )
+        if self._screen is not None:
+            self._screen.start()
+        try:
+            run_agent(
+                self._backend,
+                self._identity,
+                self._heartbeat_interval_seconds,
+                sleep=sleep,
+                log=log,
+                process_commands=self.process_control_cycle,
+            )
+        finally:
+            if self._screen is not None:
+                self._screen.close()
+            close = getattr(self._backend, "close", None)
+            if close is not None:
+                close()
 
     def process_control_cycle(self) -> None:
         self._command_processor.process_pending()
         active_policy = self._backend.active_policy(self._identity.agent_id)
         if active_policy is None:
+            if self._screen is not None:
+                self._screen.deactivate()
             self._monitor.deactivate()
             if self._sensors is not None:
                 self._sensors.deactivate()
         else:
             session_id, policy = active_policy
+            if self._screen is not None:
+                self._screen.activate(session_id, policy)
             self._monitor.activate(session_id, policy)
             if self._sensors is not None:
                 self._sensors.activate(session_id, policy)

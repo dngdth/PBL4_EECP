@@ -78,11 +78,18 @@ class PostgresDatabase:
             ) from exc
         if row is None:
             raise RuntimeError("PostgreSQL schema has no applied migration")
+        if int(row["version"]) < 2:
+            raise RuntimeError(
+                "PostgreSQL screenshot schema is not migrated; run database migrations"
+            )
 
     def migrate(self) -> None:
         migration = Path(__file__).with_name("migrations") / "0001_initial.sql"
         with self._pool.connection() as connection:
             connection.execute(migration.read_text(encoding="utf-8"))
+            connection.execute(
+                migration.with_name("0002_screen.sql").read_text(encoding="utf-8")
+            )
             for profile in BUILT_IN_POLICY_PROFILES.list_all():
                 connection.execute(
                     """

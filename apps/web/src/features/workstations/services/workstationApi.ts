@@ -4,20 +4,22 @@ import { normalizeSession } from '@/src/features/exam-sessions';
 
 export async function listAgents(): Promise<Agent[]> {
   const res = await apiClient<any>('/agents');
-  const items = Array.isArray(res) ? res : res.agents || [];
-  return items.map((a: any) => ({
-    id: a.id,
-    hostname: a.hostname || null,
-    ip_address: a.ip_address || null,
-    status: (a.status || 'OFFLINE') as Agent['status'],
-    last_seen: a.last_seen || null,
-    agent_version: a.agent_version || null,
-    presence_health: a.presence_health || null,
-    service_health: a.service_health || null,
-    active_policy_hash: a.active_policy_hash || null,
-    gateway_id: a.gateway_id || null,
-    latest_incident: a.latest_incident || null,
-  }));
+  const items = Array.isArray(res) ? res : Array.isArray(res?.agents) ? res.agents : [];
+  return items
+    .filter((a: any) => a && typeof a === 'object' && a.id)
+    .map((a: any) => ({
+      id: String(a.id),
+      hostname: a.hostname || null,
+      ip_address: a.ip_address || null,
+      status: (a.status || 'OFFLINE') as Agent['status'],
+      last_seen: a.last_seen || null,
+      agent_version: a.agent_version || null,
+      presence_health: a.presence_health || null,
+      service_health: a.service_health || null,
+      active_policy_hash: a.active_policy_hash || null,
+      gateway_id: a.gateway_id || null,
+      latest_incident: a.latest_incident || null,
+    }));
 }
 
 export async function listTargetCommands(targetId: string): Promise<CommandItem[]> {

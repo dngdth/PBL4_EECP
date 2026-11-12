@@ -162,6 +162,34 @@ def test_agent_gateway_client_reconnects_with_backoff() -> None:
     client.close()
 
 
+def test_gateway_thread_keeps_presence_alive_while_control_cycle_waits(monkeypatch):
+    monkeypatch.setattr(
+        "agent.client.infrastructure.gateway_control_client.HEARTBEAT_INTERVAL_SECONDS", 0.05
+    )
+    connection = FakeConnection()
+    client = GatewayControlClient(
+        "ws://gateway/ws/agents", "agent-token", "test",
+        allow_plaintext_ws=True,
+        connector=lambda *_args, **_kwargs: connection,
+    )
+    try:
+        client.register(WorkstationIdentity("AGT-001", "HOST", "192.0.2.1", "test"))
+        # The main/control thread does not call heartbeat while waiting on Service.
+        deadline = time.monotonic() + 2
+        presences = []
+        while len(presences) < 2 and time.monotonic() < deadline:
+            messages = [GatewayEnvelope.model_validate_json(value) for value in connection.sent]
+            presences = [
+                message for message in messages
+                if message.message_type == GatewayMessageType.PRESENCE
+            ]
+            time.sleep(0.01)
+        assert len(presences) >= 2
+        assert all(item.payload["agent_id"] == "AGT-001" for item in presences)
+    finally:
+        client.close()
+
+
 def test_agent_presence_is_degraded_when_service_is_unavailable() -> None:
     connection = FakeConnection()
     client = GatewayControlClient(

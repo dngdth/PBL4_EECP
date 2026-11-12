@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from hashlib import sha256
 from typing import Any
 
 from pydantic import ValidationError
@@ -13,7 +12,7 @@ from app.domain.exceptions.errors import (
     ReadinessGateError,
 )
 from app.domain.value_objects.enums import Readiness, SessionState
-from app.domain.value_objects.primitives import canonical_json, new_id, utc_now
+from app.domain.value_objects.primitives import new_id, utc_now
 from contracts.v2.policy import PolicyRules, compute_policy_hash
 
 
@@ -280,6 +279,12 @@ class ExamSession:
         elif force and self.state == SessionState.DEGRADED:
             if not reason or not reason.strip():
                 raise ReadinessGateError("force-start requires a reason")
+            if self.policy is not None and self.gateway_policy_hash != self.policy.policy_hash:
+                raise ReadinessGateError("cannot force-start when gateway has not applied policy")
+            if all(ws.readiness == Readiness.FAILED for ws in self.workstations.values()):
+                raise ReadinessGateError(
+                    "cannot force-start when all workstations failed readiness"
+                )
             self.force_started = True
             self.force_start_reason = reason.strip()
         else:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -69,6 +70,9 @@ class MemoryFirewall:
     def verify_rules(self, rules):
         return all(self.rules.get(rule.name) == rule for rule in rules)
 
+    def owned_rule_names(self):
+        return tuple(self.rules)
+
 
 class WindowsFirewallRunner:
     """Stateful test double for exact PowerShell Firewall operations."""
@@ -81,33 +85,33 @@ class WindowsFirewallRunner:
         self.calls.append((arguments, kwargs))
         if arguments[0] == "powershell.exe":
             script = arguments[4]
+            payload = json.loads(kwargs["input"])
             if "New-NetFirewallRule" in script:
-                payload = json.loads(kwargs["input"])
-                name = payload["name"]
-                display_name = payload["display_name"]
-                group = payload["group"]
-                direction = payload["direction"]
-                self.rules[name] = {
-                    "Name": name,
-                    "DisplayName": display_name,
-                    "Group": group,
-                    "Enabled": True,
-                    "Direction": direction,
-                    "Action": "Block",
-                    "Profile": "Any",
-                    "Protocol": "Any",
-                    "LocalAddress": ["Any"],
-                    "RemoteAddress": payload["remote_addresses"],
-                }
+                for item in payload["upsert"]:
+                    name = item["name"]
+                    self.rules[name] = {
+                        "Name": name,
+                        "DisplayName": item["display_name"],
+                        "Group": item["group"],
+                        "Enabled": True,
+                        "Direction": item["direction"],
+                        "Action": "Block",
+                        "Profile": "Any",
+                        "Protocol": "Any",
+                        "LocalAddress": ["Any"],
+                        "RemoteAddress": item["remote_addresses"],
+                    }
+                for name in payload["remove"]:
+                    self.rules.pop(name, None)
                 return subprocess.CompletedProcess(arguments, 0, "", "")
-            if "Remove-NetFirewallRule" in script:
-                existed = self.rules.pop(arguments[-1], None) is not None
-                return subprocess.CompletedProcess(arguments, 0 if existed else 3, "", "")
-            rule = self.rules.get(arguments[-1])
+            rules = [
+                value for name, value in self.rules.items()
+                if any(fnmatchcase(name, pattern) for pattern in payload["names"])
+            ]
             return subprocess.CompletedProcess(
                 arguments,
-                0 if rule is not None else 3,
-                stdout=json.dumps(rule) if rule is not None else "",
+                0,
+                stdout=json.dumps(rules),
                 stderr="",
             )
 
@@ -216,11 +220,14 @@ def test_windows_adapter_uses_exact_name_and_argument_safe_powershell() -> None:
     assert "ConvertFrom-Json ([Console]::In.ReadToEnd())" in add_arguments[4]
     assert add_arguments[5:] == []
     assert json.loads(add_kwargs["input"]) == {
+        "upsert": [{
         "name": planned[0].name,
         "display_name": planned[0].name,
         "group": planned[0].group,
         "remote_addresses": ["203.0.113.10"],
         "direction": "Outbound",
+        }],
+        "remove": [],
     }
     assert "shell" not in add_kwargs
     assert adapter.verify_rules(planned)
@@ -249,7 +256,7 @@ def test_windows_adapter_sends_mixed_multi_address_rule_as_json_array() -> None:
     add_arguments, add_kwargs = next(
         item for item in runner.calls if "New-NetFirewallRule" in item[0][4]
     )
-    payload = json.loads(add_kwargs["input"])
+    payload = json.loads(add_kwargs["input"])["upsert"][0]
     assert add_arguments[5:] == []
     assert payload["remote_addresses"] == [
         "104.18.32.47",
@@ -257,6 +264,145 @@ def test_windows_adapter_sends_mixed_multi_address_rule_as_json_array() -> None:
         "2a06:98c1:3101::6812:202f",
     ]
     assert adapter.verify_rules(grouped)
+
+
+def test_firewall_batches_many_rules_and_reuses_matching_rules():
+    runner = WindowsFirewallRunner()
+    adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
+    rules = adapter.plan("SES-BATCH", [f"203.0.113.{value}" for value in range(1, 21)], [])
+    runner.rules["School-Allow-DNS"] = {"external": True}
+
+    adapter.reconcile(rules, ())
+    assert len(runner.calls) == 3  # Snapshot, update, verification for all 20 rules.
+    assert all(options["timeout"] == 30.0 for _, options in runner.calls)
+    runner.calls.clear()
+    adapter.reconcile(rules, (rule.name for rule in rules))
+    assert len(runner.calls) == 1
+    runner.calls.clear()
+    adapter.remove_rules(rule.name for rule in rules)
+    assert len(runner.calls) == 2
+    assert runner.rules == {"School-Allow-DNS": {"external": True}}
+
+
+@pytest.mark.parametrize("operation", ["query", "update"])
+def test_firewall_timeout_reports_operation_and_allows_slow_provider(operation):
+    memory = WindowsFirewallRunner()
+
+    def runner(arguments, **options):
+        # A provider that takes six seconds must fit the configured budget.
+        assert options["timeout"] >= 6
+        current = "update" if "New-NetFirewallRule" in arguments[4] else "query"
+        if current == operation:
+            raise subprocess.TimeoutExpired(arguments, options["timeout"])
+        return memory(arguments, **options)
+
+    adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
+    rules = adapter.plan("SES-TIMEOUT", ["203.0.113.10"], [])
+    with pytest.raises(OSError, match=f"Windows Firewall {operation} timed out after 30s"):
+        adapter.reconcile(rules, ())
+
+
+def test_firewall_query_failure_does_not_attempt_mutation():
+    calls = []
+
+    def runner(arguments, **options):
+        calls.append((arguments, options))
+        return subprocess.CompletedProcess(arguments, 1, "", "Access is denied")
+
+    adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
+    rules = adapter.plan("SES-ERROR", ["203.0.113.10"], [])
+    with pytest.raises(OSError, match="Windows Firewall query failed.*Access is denied"):
+        adapter.reconcile(rules, ())
+    assert len(calls) == 1
+    assert "New-NetFirewallRule" not in calls[0][0][4]
+
+
+def test_firewall_removal_requires_confirmation_and_validates_all_names_first():
+    memory = WindowsFirewallRunner()
+    adapter = WindowsFirewallEnforcer(runner=memory, platform="win32")
+    rules = adapter.plan("SES-REMOVE", ["203.0.113.10"], [])
+    adapter.reconcile(rules, ())
+    memory.calls.clear()
+    with pytest.raises(ValueError, match="non-EECP"):
+        adapter.remove_rules([rules[0].name, "School-Allow-DNS"])
+    assert memory.calls == []
+
+    def ignore_removal(arguments, **options):
+        if "New-NetFirewallRule" in arguments[4]:
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+        return memory(arguments, **options)
+
+    adapter = WindowsFirewallEnforcer(runner=ignore_removal, platform="win32")
+    with pytest.raises(OSError, match="removal verification failed"):
+        adapter.remove_rules([rules[0].name])
+
+
+def test_firewall_reconcile_detects_obsolete_rules_that_remain_installed():
+    memory = WindowsFirewallRunner()
+    adapter = WindowsFirewallEnforcer(runner=memory, platform="win32")
+    previous = adapter.plan("SES-UPDATE", ["203.0.113.10"], [])
+    desired = adapter.plan("SES-UPDATE", ["203.0.113.11"], [])
+    adapter.reconcile(previous, ())
+
+    def ignore_old_removal(arguments, **options):
+        payload = json.loads(options["input"])
+        if "upsert" in payload:
+            payload["remove"] = []
+            options["input"] = json.dumps(payload)
+        return memory(arguments, **options)
+
+    adapter = WindowsFirewallEnforcer(runner=ignore_old_removal, platform="win32")
+    with pytest.raises(OSError, match="obsolete rule removal verification failed"):
+        adapter.reconcile(desired, (rule.name for rule in previous))
+
+
+def test_firewall_inventory_requires_both_owned_name_and_matching_group():
+    runner = WindowsFirewallRunner()
+    adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
+    owned = adapter.plan("OLD-SESSION", ["203.0.113.10"], [])
+    adapter.reconcile(owned, ())
+    foreign = adapter.plan("FOREIGN-SESSION", ["203.0.113.11"], [])[0]
+    runner.rules[foreign.name] = {"Name": foreign.name, "Group": "School-Managed"}
+    runner.rules["EECP-Custom-Admin"] = {"Name": "EECP-Custom-Admin", "Group": "EECP-Admin"}
+    runner.rules["School-Allow-DNS"] = {"Name": "School-Allow-DNS", "Group": "School"}
+
+    assert adapter.owned_rule_names() == (owned[0].name,)
+    adapter.remove_rules(adapter.owned_rule_names())
+    assert set(runner.rules) == {foreign.name, "EECP-Custom-Admin", "School-Allow-DNS"}
+
+
+@pytest.mark.parametrize("with_active_state", [False, True])
+def test_restore_removes_orphaned_rules_from_old_failed_policy(tmp_path, with_active_state):
+    firewall = MemoryFirewall()
+    enforcer, _hosts, _calls = _enforcer(tmp_path, firewall)
+    old_rule = firewall.plan("OLD-FAILED-SESSION", ["203.0.113.99"], [])[0]
+    firewall.rules[old_rule.name] = old_rule
+    if with_active_state:
+        enforcer.apply(_payload(ips=["203.0.113.10"]))
+    assert old_rule.name in firewall.rules
+
+    enforcer.restore()
+    assert firewall.rules == {}
+    assert firewall.external == {"School-Allow-DNS", "Admin-Rule-A"}
+    assert not (tmp_path / "state.json").exists()
+    enforcer.restore()
+    assert firewall.rules == {}
+
+
+def test_restore_inventory_failure_preserves_state_for_retry(tmp_path):
+    firewall = MemoryFirewall()
+    enforcer, _hosts, _calls = _enforcer(tmp_path, firewall)
+    enforcer.apply(_payload(ips=["203.0.113.10"]))
+    original = (tmp_path / "state.json").read_bytes()
+
+    def fail_inventory():
+        raise OSError("cannot query owned Firewall rules")
+
+    firewall.owned_rule_names = fail_inventory
+    with pytest.raises(OSError, match="cannot query owned Firewall rules"):
+        enforcer.restore()
+    assert (tmp_path / "state.json").read_bytes() == original
+    assert firewall.rules
 
 
 def test_windows_adapter_surfaces_bounded_firewall_creation_error() -> None:
@@ -269,7 +415,7 @@ def test_windows_adapter_surfaces_bounded_firewall_creation_error() -> None:
                 "",
                 "New-NetFirewallRule: The address is invalid.\n" + "x" * 600,
             )
-        return subprocess.CompletedProcess(arguments, 3, "", "")
+        return subprocess.CompletedProcess(arguments, 0, "[]", "")
 
     adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
     planned = adapter.plan("SES-001", ["203.0.113.10"], [])
@@ -279,7 +425,7 @@ def test_windows_adapter_surfaces_bounded_firewall_creation_error() -> None:
 
     message = str(caught.value)
     assert "The address is invalid" in message
-    prefix = f"cannot create Windows Firewall rule {planned[0].name}: "
+    prefix = "Windows Firewall update failed (exit 1): "
     assert len(message.removeprefix(prefix)) == 500
 
 

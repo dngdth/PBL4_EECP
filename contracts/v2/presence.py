@@ -1,5 +1,7 @@
 from enum import StrEnum
 
+from pydantic import Field
+
 from contracts.v2.common import OpaqueId, Sha256Hex, UtcDatetime, VersionedContract
 
 
@@ -23,3 +25,4 @@ class Presence(VersionedContract):
     active_policy_hash: Sha256Hex | None = None
     service_health: ServiceHealth | None = None
     agent_version: OpaqueId | None = None
+    screen_capture_supported: bool = Field(default=False, strict=True)

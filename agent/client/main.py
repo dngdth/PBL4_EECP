@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Sequence
 
 from agent.application.policy_commands import PolicyCommandProcessor
@@ -9,6 +10,8 @@ from agent.client.infrastructure.event_spool import AgentEventSpool
 from agent.client.infrastructure.gateway_control_client import GatewayControlClient
 from agent.client.infrastructure.named_pipe_executor import NamedPipePrivilegedExecutor
 from agent.client.runtime import AgentClientRuntime
+from agent.client.screen.manager import EvidenceManager
+from agent.client.screen.transport import ScreenUploader
 from agent.client.sensors.dns_audit_sensor import DnsAuditSensor
 from agent.client.sensors.process_sensor import ProcessSensor
 from agent.client.sensors.security_event_sensor import SecurityEventSensor
@@ -60,6 +63,18 @@ def build_client_runtime(
         reconnect_initial_seconds=GATEWAY_RECONNECT_INITIAL_SECONDS,
         reconnect_max_seconds=GATEWAY_RECONNECT_MAX_SECONDS,
     )
+    screen = None
+    if isinstance(backend, GatewayControlClient) and os.getenv(
+        "EECP_SCREEN_ENABLED", "true"
+    ).lower() in {"true", "1", "yes", "on"}:
+        screen = EvidenceManager(
+            agent_id, backend.send_screen_response,
+            ScreenUploader(GATEWAY_URL, load_agent_gateway_token(), GATEWAY_CA_FILE),
+            require_session_authorization=True,
+        )
+        backend.screen_event_handler = screen.on_event
+        backend.screen_request_handler = screen.request
+        backend.screen_session_handler = lambda state: screen.authorize_session(state.session_id)
     monitor = BlockedDomainMonitor(
         lambda session_id, destination: backend.report_policy_violation(
             session_id, identity.agent_id, destination
@@ -165,6 +180,7 @@ def build_client_runtime(
         monitor,
         HEARTBEAT_INTERVAL_SECONDS,
         sensors=sensors,
+        screen=screen,
     )
 
 

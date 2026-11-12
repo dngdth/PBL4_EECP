@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -66,8 +67,15 @@ class ExecutionService(PrivilegedExecutionPort):
         )
         self._active_policy_hash = active_policy_hash
         self._active_session_id = active_session_id
+        self._execution_lock = threading.RLock()
 
     def handle(self, request: ServiceRequest) -> ServiceResult:
+        # Timed-out connections may finish after a new connection arrives.
+        # Serialize validation, replay lookup, execution, and active state updates.
+        with self._execution_lock:
+            return self._handle_locked(request)
+
+    def _handle_locked(self, request: ServiceRequest) -> ServiceResult:
         validation_failure = self._validate_authorization(request)
         if validation_failure is not None:
             return validation_failure
@@ -81,6 +89,16 @@ class ExecutionService(PrivilegedExecutionPort):
             if request.command_id in self._processed:
                 self._processed.move_to_end(request.command_id)
             if previous_fingerprint == fingerprint:
+                if (
+                    self._require_signed_policy
+                    and result.status == AckStatus.SUCCEEDED
+                    and request.operation == CommandType.APPLY_POLICY
+                    and request.policy_hash != self._active_policy_hash
+                ):
+                    return self._failure(
+                        request, ErrorCode.INVALID_POLICY,
+                        "replayed policy is no longer the active policy", rejected=True,
+                    )
                 if (
                     self._require_authorized_commands
                     and request.operation == CommandType.RESTORE_BASELINE

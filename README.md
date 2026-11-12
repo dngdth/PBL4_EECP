@@ -84,6 +84,9 @@ the Client as Administrator to compensate for a missing Service. See
 Enforce-mode process, Windows-session, and integrity event delivery is described in
 [`docs/v2/enforce-security-monitoring.md`](docs/v2/enforce-security-monitoring.md).
 
+RAM screen context, violation evidence, Gateway buffering and scoped Dashboard
+requests are described in [`docs/v2/screen-evidence.md`](docs/v2/screen-evidence.md).
+
 ## Production-like Docker stack
 
 Copy `.env.example` to a protected local `.env`, replace every required secret and

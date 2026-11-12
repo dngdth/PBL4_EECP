@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from app.application.dtos.exam_pipeline import CreateSessionInput
+from app.application.dtos.exam_pipeline import CreateSessionInput, TelemetryInput
 from app.application.dtos.policies import AcknowledgeCommandInput
 from app.application.dtos.session_management import (
     CreateExamSessionInput,
@@ -27,7 +27,7 @@ from app.domain.exceptions.errors import (
     ReadinessGateError,
     SessionConflictError,
 )
-from app.domain.value_objects.enums import AgentStatus, SessionState
+from app.domain.value_objects.enums import AgentStatus, SessionState, Severity
 from app.infrastructure.persistence.database import SqliteDatabase
 
 NOW = datetime(2026, 8, 25, 8, 0, tzinfo=UTC)
@@ -272,6 +272,41 @@ def test_valid_management_status_updates_succeed_in_order(tmp_path: Path) -> Non
     assert finished.session.finished_at == NOW + timedelta(seconds=3)
 
 
+def test_finished_session_retries_failed_restore_without_duplicate_pending_commands(tmp_path):
+    database = _database(tmp_path)
+    _register(database, "PC01")
+    created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
+        CreateExamSessionInput("Exam", "A101", ["PC01"])
+    )
+    _apply_policy(database, "PC01")
+    current = [NOW + timedelta(seconds=1)]
+    update = UpdateExamSessionStatus(database.unit_of_work, clock=lambda: current[0])
+    finish = UpdateExamSessionStatusInput(created.session.id, SessionState.FINISHED)
+    update(finish)
+    first = GetPendingCommands(database.unit_of_work, clock=lambda: current[0])("PC01")[0]
+
+    # Repeated clicks while delivery is pending reuse the existing command.
+    update(finish)
+    with database.unit_of_work() as uow:
+        assert len(uow.commands.list_for_target("PC01")) == 1
+
+    ack = AcknowledgeCommand(database.unit_of_work, clock=lambda: current[0])
+    ack(AcknowledgeCommandInput(first.id, False, error="pipe timed out", actor="PC01"))
+    current[0] += timedelta(seconds=1)
+    retry = update(finish)
+    second = GetPendingCommands(database.unit_of_work, clock=lambda: current[0])("PC01")[0]
+    assert second.id != first.id
+    assert second.payload["policy_hash"] == first.payload["policy_hash"]
+    assert retry.session.finished_at == NOW + timedelta(seconds=1)
+
+    ack(AcknowledgeCommandInput(second.id, True, actor="PC01"))
+    done = update(finish)
+    assert done.session.workstations["PC01"].restored
+    with database.unit_of_work() as uow:
+        assert uow.commands.list_for_target("PC01") == []
+        assert len(uow.commands.list_for_target("PC01", active_only=False)) == 3
+
+
 def test_running_and_finished_updates_do_not_recheck_agent_liveness(tmp_path: Path) -> None:
     database = _database(tmp_path)
     _register(database, "PC01")
@@ -328,3 +363,105 @@ def test_get_legacy_session_tolerates_unregistered_workstation(tmp_path: Path) -
     assert details.agents[0].status is None
     assert details.agents[0].last_seen is None
     assert details.agents[0].assigned_at is None
+
+
+def test_clock_skew_defense_in_telemetry_pipeline(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    _register(database, "PC01")
+    created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
+        CreateExamSessionInput("Security Exam", "LAB-A", ["PC01"])
+    )
+    _apply_policy(database, "PC01")
+    UpdateExamSessionStatus(database.unit_of_work, clock=lambda: NOW)(
+        UpdateExamSessionStatusInput(created.session.id, SessionState.READY)
+    )
+    session_started = NOW + timedelta(minutes=10)
+    running = UpdateExamSessionStatus(database.unit_of_work, clock=lambda: session_started)(
+        UpdateExamSessionStatusInput(created.session.id, SessionState.RUNNING)
+    )
+    assert running.session.state == SessionState.RUNNING
+
+    pipeline = ExamPipelineService(database.unit_of_work, clock=lambda: session_started)
+
+    # Student manipulated workstation clock to 2 hours in the past
+    tampered_time = session_started - timedelta(hours=2)
+    telemetry = TelemetryInput(
+        session_id=created.session.id,
+        workstation_id="PC01",
+        event_type="POLICY_VIOLATION",
+        severity=Severity.WARNING,
+        category="PROHIBITED_WEBSITE",
+        action="BLOCKED",
+        event_id="EVT-SKEW-1",
+        occurred_at=tampered_time,
+        payload={"url": "https://chatgpt.com"},
+    )
+
+    # 1. Pipeline detects clock skew, clamps occurred_at to started_at, records metadata
+    event, incident_id, duplicate = pipeline.ingest_protocol_event(telemetry)
+    assert not duplicate
+    assert event.payload["clock_skew_detected"] is True
+    assert event.payload["original_occurred_at"] == tampered_time.isoformat()
+    assert event.payload["server_received_at"] == session_started.isoformat()
+    assert event.occurred_at == running.session.started_at
+
+    # 2. Idempotent re-send succeeds despite injected metadata
+    event_dup, inc_dup, is_dup = pipeline.ingest_protocol_event(telemetry)
+    assert is_dup is True
+    assert event_dup.id == event.id
+
+    # 3. Rejection of ancient telemetry (> 24 hours in the past)
+    ancient = TelemetryInput(
+        session_id=created.session.id,
+        workstation_id="PC01",
+        event_type="POLICY_VIOLATION",
+        severity=Severity.WARNING,
+        category="PROHIBITED_WEBSITE",
+        action="BLOCKED",
+        event_id="EVT-ANCIENT",
+        occurred_at=session_started - timedelta(hours=25),
+    )
+    with pytest.raises(PolicyValidationError, match="too far in the past"):
+        pipeline.ingest_protocol_event(ancient)
+
+
+def test_late_security_event_accepts_privileged_event_with_clock_skew(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    _register(database, "PC01")
+    created = CreateExamSession(database.unit_of_work, clock=lambda: NOW)(
+        CreateExamSessionInput("Security Exam", "LAB-A", ["PC01"])
+    )
+    _apply_policy(database, "PC01")
+    UpdateExamSessionStatus(database.unit_of_work, clock=lambda: NOW)(
+        UpdateExamSessionStatusInput(created.session.id, SessionState.READY)
+    )
+    session_started = NOW + timedelta(minutes=10)
+    session_finished = session_started + timedelta(hours=2)
+    UpdateExamSessionStatus(database.unit_of_work, clock=lambda: session_started)(
+        UpdateExamSessionStatusInput(created.session.id, SessionState.RUNNING)
+    )
+    UpdateExamSessionStatus(database.unit_of_work, clock=lambda: session_finished)(
+        UpdateExamSessionStatusInput(created.session.id, SessionState.FINISHED)
+    )
+
+    delivery_time = session_finished + timedelta(minutes=2)
+    pipeline = ExamPipelineService(database.unit_of_work, clock=lambda: delivery_time)
+
+    tampered_time = session_started - timedelta(hours=1, minutes=30)
+    telemetry = TelemetryInput(
+        session_id=created.session.id,
+        workstation_id="PC01",
+        event_type="ENFORCEMENT_ACTION",
+        severity=Severity.WARNING,
+        category="FORBIDDEN_PROCESS",
+        action="BLOCKED",
+        event_id="EVT-LATE-SKEW",
+        occurred_at=tampered_time,
+        payload={"source": "privileged-service", "process_name": "cheat.exe"},
+    )
+
+    event, incident_id, duplicate = pipeline.ingest_protocol_event(telemetry)
+    assert not duplicate
+    assert event.payload["late_arrival"] is True
+    assert event.payload["clock_skew_detected"] is True
+    assert event.occurred_at == session_started

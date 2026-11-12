@@ -65,6 +65,10 @@ def _isolate_network_adapters(monkeypatch):
         "agent.infrastructure.windows.firewall_enforcer.WindowsFirewallEnforcer.remove_rules",
         lambda *args: None,
     )
+    monkeypatch.setattr(
+        "agent.infrastructure.windows.firewall_enforcer.WindowsFirewallEnforcer.owned_rule_names",
+        lambda *args: (),
+    )
 
 
 def test_command_processor_applies_and_acknowledges_policy(tmp_path: Path) -> None:
@@ -301,6 +305,27 @@ def test_violation_monitor_extracts_tls_sni() -> None:
     assert extract_requested_hostname(outgoing.read()) == "chatgpt.com"
 
 
+def test_process_inventory_timeout_rolls_back_partial_policy(tmp_path: Path) -> None:
+    hosts_path = tmp_path / "hosts"
+    original_hosts = "127.0.0.1 localhost\n"
+    hosts_path.write_text(original_hosts, encoding="utf-8")
+    state_path = tmp_path / "policy-state.json"
+
+    def runner(arguments, **options):
+        assert options["timeout"] == 30.0
+        if arguments[0] == "powershell.exe":
+            raise subprocess.TimeoutExpired(arguments, options["timeout"])
+        return subprocess.CompletedProcess(
+            arguments, 0, stdout="Start    REG_DWORD    0x3", stderr=""
+        )
+
+    enforcer = WindowsPolicyEnforcer(state_path, hosts_path=hosts_path, runner=runner)
+    with pytest.raises(OSError, match="Windows policy command timed out"):
+        enforcer.apply(_payload())
+    assert hosts_path.read_text(encoding="utf-8") == original_hosts
+    assert not state_path.exists()
+
+
 def test_windows_enforcer_applies_reversible_controls(tmp_path: Path) -> None:
     hosts_path = tmp_path / "hosts"
     hosts_path.write_text("127.0.0.1 localhost\n", encoding="utf-8")
@@ -370,7 +395,10 @@ def test_switching_from_audit_to_enforce_does_not_restore_unmodified_usb(
         _payload()
     )
 
-    usb_writes = [call for call in calls if call[:2] == ["reg", "add"]]
+    usb_writes = [
+        call for call in calls
+        if call[:2] == ["reg", "add"] and any("USBSTOR" in str(arg) for arg in call)
+    ]
     assert len(usb_writes) == 1
     assert "4" in usb_writes[0]
 

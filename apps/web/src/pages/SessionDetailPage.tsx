@@ -24,6 +24,7 @@ import { ActivityFeed, ActivityDetailModal } from '@/src/features/recent-activit
 import { AlertPanel } from '@/src/features/alerts';
 import { useRealtimeRefresh } from '@/src/shared/api/realtime';
 import { Spinner } from '@/src/shared/ui/spinner';
+import { ScreenEvidencePanel } from '@/src/shared/ui/screen-evidence-panel';
 import { Button } from '@/src/shared/ui/button';
 
 export const SessionDetailPage: React.FC = () => {
@@ -41,12 +42,17 @@ export const SessionDetailPage: React.FC = () => {
   const [isForceStartOpen, setIsForceStartOpen] = useState<boolean>(false);
   const [isFinishModalOpen, setIsFinishModalOpen] = useState<boolean>(false);
   const [isInterveneModalOpen, setIsInterveneModalOpen] = useState<boolean>(false);
-  const [inspectingWorkstation, setInspectingWorkstation] = useState<Workstation | null>(null);
+  const [inspectingWorkstationId, setInspectingWorkstationId] = useState<string | null>(null);
   const [selectedActivity, setSelectedActivity] = useState<ActivityItem | null>(null);
   const [commandQueueTarget, setCommandQueueTarget] = useState<{
     id: string;
     type: 'GATEWAY' | 'WORKSTATION';
   } | null>(null);
+
+  const inspectingWorkstation = React.useMemo(() => {
+    if (!inspectingWorkstationId || !session) return null;
+    return session.workstations.find((w) => w.id === inspectingWorkstationId) || null;
+  }, [session, inspectingWorkstationId]);
 
   // Auto-polling toggle for active phases
   const [autoPoll] = useState<boolean>(true);
@@ -78,29 +84,28 @@ export const SessionDetailPage: React.FC = () => {
     fetchSessionData(true);
   }, ['sessions', 'agents', 'commands', 'api']);
 
-  // Auto-polling when deploying or in preflight
+  // Auto-polling when deploying, preflight, running, or readiness phases
+  const sessionStatus = session?.status;
   useEffect(() => {
-    if (!autoPoll || !session) return;
-    const isTransitional =
-      session.status === 'CREATED' ||
-      session.status === 'DEPLOYING' ||
-      session.status === 'PREFLIGHT' ||
-      session.status === 'RUNNING';
-    if (!isTransitional) return;
+    if (!autoPoll || !sessionStatus) return;
+    const isFastPolling =
+      sessionStatus === 'CREATED' ||
+      sessionStatus === 'DEPLOYING' ||
+      sessionStatus === 'PREFLIGHT' ||
+      sessionStatus === 'RUNNING';
 
+    const intervalMs = isFastPolling ? 2000 : 10000;
     const timer = setInterval(() => {
-      fetchSessionData(true);
-    }, 2000);
+      if (document.visibilityState === 'visible') {
+        fetchSessionData(true);
+      }
+    }, intervalMs);
 
     return () => clearInterval(timer);
-  }, [autoPoll, session, fetchSessionData]);
+  }, [autoPoll, sessionStatus, fetchSessionData]);
 
   const handleSessionUpdated = (updated: ExamSession) => {
     setSession(updated);
-    if (inspectingWorkstation) {
-      const refreshedWs = updated.workstations.find((w) => w.id === inspectingWorkstation.id);
-      if (refreshedWs) setInspectingWorkstation(refreshedWs);
-    }
   };
 
   const handleMarkReady = async () => {
@@ -118,10 +123,20 @@ export const SessionDetailPage: React.FC = () => {
   };
 
   const handleInspectWorkstationById = (wsId: string) => {
+    setInspectingWorkstationId(wsId);
+  };
+
+  const handleRetryRestore = async () => {
     if (!session) return;
-    const targetWs = session.workstations.find((w) => w.id === wsId);
-    if (targetWs) {
-      setInspectingWorkstation(targetWs);
+    setIsTransitioning(true);
+    setActionError(null);
+    try {
+      const result = await updateSessionStatus(session.id, 'FINISHED');
+      handleSessionUpdated(result.session);
+    } catch (err: any) {
+      setActionError(err.message || 'Không thể gửi lại lệnh khôi phục.');
+    } finally {
+      setIsTransitioning(false);
     }
   };
 
@@ -192,7 +207,11 @@ export const SessionDetailPage: React.FC = () => {
 
         {/* Completed Summary Banner */}
         {isCompleted && (
-          <CompletedSummaryCard session={session} />
+          <CompletedSummaryCard
+            session={session}
+            onRetryRestore={handleRetryRestore}
+            isRetrying={isTransitioning}
+          />
         )}
 
         {/* Alerts & Critical Diagnostics Panel */}
@@ -201,7 +220,7 @@ export const SessionDetailPage: React.FC = () => {
           onInspectWorkstation={(wsOrId) =>
             typeof wsOrId === 'string'
               ? handleInspectWorkstationById(wsOrId)
-              : setInspectingWorkstation(wsOrId)
+              : setInspectingWorkstationId(wsOrId.id)
           }
         />
 
@@ -240,7 +259,7 @@ export const SessionDetailPage: React.FC = () => {
           <div className="lg:col-span-9 xl:col-span-9 flex flex-col min-w-0">
             <WorkstationGrid
               workstations={session.workstations}
-              onInspectWorkstation={(ws) => setInspectingWorkstation(ws)}
+              onInspectWorkstation={(ws) => setInspectingWorkstationId(ws.id)}
               onRefresh={() => fetchSessionData(false)}
             />
           </div>
@@ -275,7 +294,7 @@ export const SessionDetailPage: React.FC = () => {
           <section className="min-w-0">
             <WorkstationGrid
               workstations={session.workstations}
-              onInspectWorkstation={(ws) => setInspectingWorkstation(ws)}
+              onInspectWorkstation={(ws) => setInspectingWorkstationId(ws.id)}
               onRefresh={() => fetchSessionData(false)}
             />
           </section>
@@ -322,16 +341,22 @@ export const SessionDetailPage: React.FC = () => {
       {inspectingWorkstation && (
         <WorkstationInspectModal
           isOpen={Boolean(inspectingWorkstation)}
-          onClose={() => setInspectingWorkstation(null)}
+          onClose={() => setInspectingWorkstationId(null)}
           workstation={inspectingWorkstation}
           sessionId={session.id}
+          allowScreenCapture={session.status === 'RUNNING'}
           onWorkstationUpdated={handleSessionUpdated}
           onViewCommandQueue={(wsId) => setCommandQueueTarget({ id: wsId, type: 'WORKSTATION' })}
         />
       )}
 
       {/* Activity Event Detail Pop-up Modal */}
+      <ScreenEvidencePanel sessionId={session.id}
+        agentIds={session.workstations.map(workstation => workstation.id)}
+        allowCapture={session.status === 'RUNNING'} />
       <ActivityDetailModal
+        sessionId={session.id}
+        allowScreenCapture={session.status === 'RUNNING'}
         activity={selectedActivity}
         isOpen={Boolean(selectedActivity)}
         onClose={() => setSelectedActivity(null)}

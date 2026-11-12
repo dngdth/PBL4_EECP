@@ -563,6 +563,10 @@ def _legacy_command(command: Command) -> dict[str, Any]:
         }
     else:
         legacy_payload = payload.model_dump(mode="json", exclude_none=True)
+        # Restore carries its signed policy hash on the command envelope.
+        # The Service request builder reads it from the legacy payload.
+        if command.policy_hash is not None:
+            legacy_payload["policy_hash"] = command.policy_hash
     return {
         "id": command.command_id,
         "session_id": command.session_id,

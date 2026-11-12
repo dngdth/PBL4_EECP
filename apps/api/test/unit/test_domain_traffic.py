@@ -104,7 +104,7 @@ def test_resolver_matches_cached_subdomains_and_filters_sinkholes():
     assert "NoHostsFile=$true" in args[-1]
     assert "Get-DnsClientCache" in args[-1]
     assert "shell" not in kwargs
-    assert kwargs["timeout"] == 8.0
+    assert kwargs["timeout"] == 45.0
 
 
 @pytest.mark.parametrize("output", ["", "{}", "null", '[{"name":"chatgpt.com"}]'])
@@ -135,12 +135,18 @@ def test_powershell_handles_single_and_multiple_domains_without_real_dns(domains
     # cmdlets, so this regression test needs neither network nor elevation.
     def runner(args, **kwargs):
         args = list(args)
+        query_mock = (
+            "function Resolve-DnsName { [pscustomobject]@{IPAddress='203.0.113.10'} }\n"
+        )
+        args[-1] = args[-1].replace(
+            "param([string]$name)", "param([string]$name)\n" + query_mock
+        )
         args[-1] = (
             "function Get-DnsClientCache {\n"
             " [pscustomobject]@{Entry='api.chatgpt.com'; RecordType=1; Data='203.0.113.11'}\n"
             " [pscustomobject]@{Entry='chatgpt.com'; RecordType=1; Data=''}\n"
             "}\n"
-            "function Resolve-DnsName { [pscustomobject]@{IPAddress='203.0.113.10'} }\n" + args[-1]
+            + args[-1]
         )
         return subprocess.run(args, **kwargs)
 

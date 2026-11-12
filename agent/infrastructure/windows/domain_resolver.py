@@ -11,6 +11,8 @@ from typing import Protocol
 
 from contracts.v2.policy import validate_hostname
 
+DNS_DISCOVERY_TIMEOUT_SECONDS = 45.0
+
 
 class DomainResolver(Protocol):
     def resolve(self, domains: Iterable[str]) -> Mapping[str, Iterable[str]]: ...
@@ -44,34 +46,65 @@ DNS_SNAPSHOT_SCRIPT = (
     DNS_CACHE_SCRIPT
     + r"""
 $request = ConvertFrom-Json ([Console]::In.ReadToEnd())
-$names = [System.Collections.Generic.HashSet[string]]::new()
+$names = [System.Collections.Generic.List[string]]::new()
+$seenNames = [System.Collections.Generic.HashSet[string]]::new()
 foreach ($domain in $request.domains) {
-    [void]$names.Add($domain)
-    [void]$names.Add('www.' + $domain)
+    foreach ($name in @($domain, ('www.' + $domain))) {
+        if ($seenNames.Add($name)) { $names.Add($name) }
+    }
 }
 $extra = 0
 foreach ($name in @($request.known_names) + @($cachedNames)) {
     if ($extra -ge 256) { break }
     foreach ($domain in $request.domains) {
         if ($name -eq $domain -or $name.EndsWith('.' + $domain)) {
-            if ($names.Add($name)) { $extra++ }
+            if ($seenNames.Add($name)) { $names.Add($name); $extra++ }
             break
         }
     }
 }
-foreach ($name in $names) {
-    try {
-        $arguments = @{Name=$name; Type='A_AAAA'; DnsOnly=$true; NoHostsFile=$true;
-                       QuickTimeout=$true; ErrorAction='Stop'}
-        foreach ($answer in @(Resolve-DnsName @arguments)) {
-            if ($answer.IPAddress) {
-                $records.Add(@{name=$name; address=[string]$answer.IPAddress; source='dns-query'})
+$queryScript = {
+    param([string]$name)
+    foreach ($recordType in @('A', 'AAAA')) {
+        try {
+            $arguments = @{Name=$name; Type=$recordType; DnsOnly=$true; NoHostsFile=$true;
+                           QuickTimeout=$true; ErrorAction='Stop'}
+            foreach ($answer in @(Resolve-DnsName @arguments)) {
+                if ($answer.IPAddress) {
+                    [PSCustomObject]@{
+                        name=$name; address=[string]$answer.IPAddress; source='dns-query'
+                    }
+                }
             }
+        } catch {
+            # Failed queries must not discard cached addresses of existing flows.
         }
-    } catch {
-        # Failed queries must not discard cached addresses of existing flows.
     }
 }
+$pool = [RunspaceFactory]::CreateRunspacePool(1, 8)
+$jobs = [System.Collections.Generic.List[object]]::new()
+try {
+    $pool.Open()
+    foreach ($name in $names) {
+        $shell = [PowerShell]::Create()
+        $shell.RunspacePool = $pool
+        [void]$shell.AddScript($queryScript.ToString()).AddArgument($name)
+        $jobs.Add(@{shell=$shell; result=$shell.BeginInvoke()})
+    }
+    foreach ($job in $jobs) {
+        foreach ($record in $job.shell.EndInvoke($job.result)) {
+            $records.Add($record)
+        }
+    }
+} finally {
+    foreach ($job in $jobs) { $job.shell.Dispose() }
+    $pool.Dispose()
+}
+$queryRecords = $records.ToArray()
+"""
+    + DNS_CACHE_SCRIPT
+    + r"""
+foreach ($record in $queryRecords) { $records.Add($record) }
 ConvertTo-Json -InputObject @($records.ToArray()) -Compress
 """
 )
@@ -98,7 +131,7 @@ class WindowsDomainResolver:
         self,
         *,
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-        timeout_seconds: float = 8.0,
+        timeout_seconds: float = DNS_DISCOVERY_TIMEOUT_SECONDS,
         observe_cache: bool = False,
         observe_interval_seconds: float = 0.0,
         history_seconds: float = 3600.0,
@@ -131,7 +164,7 @@ class WindowsDomainResolver:
             and now - self._last_observe < self._observe_interval_seconds
         ):
             return
-        self._remember(self._snapshot(DNS_OBSERVE_SCRIPT, None, min(3.0, self._timeout)))
+        self._remember(self._snapshot(DNS_OBSERVE_SCRIPT, None, min(10.0, self._timeout)))
         self._last_observe = now
 
     def resolve(self, domains: Iterable[str]) -> dict[str, tuple[str, ...]]:
@@ -175,9 +208,18 @@ class WindowsDomainResolver:
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
-            raise OSError("domain traffic DNS discovery timed out") from exc
+            domain_count = len(payload.get("domains", ())) if payload else 0
+            operation = "discovery" if payload else "cache observation"
+            raise OSError(
+                f"domain traffic DNS {operation} timed out after {timeout:g}s "
+                f"({domain_count} policy domains)"
+            ) from exc
         if result.returncode != 0:
-            raise OSError("cannot discover domain traffic addresses from Windows DNS")
+            detail = " ".join((result.stderr or "").split())[:400]
+            raise OSError(
+                "cannot discover domain traffic addresses from Windows DNS"
+                + (f": {detail}" if detail else "")
+            )
         try:
             raw_records = json.loads(result.stdout)
         except (TypeError, json.JSONDecodeError) as exc:

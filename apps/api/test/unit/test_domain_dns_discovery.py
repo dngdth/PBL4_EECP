@@ -162,15 +162,23 @@ def test_cached_refresh_failure_preserves_previous_state_and_rules(tmp_path):
 def test_powershell_handles_numeric_and_named_types_and_queries_cached_subdomains():
     def runner(args, **kwargs):
         args = list(args)
+        query_mock = (
+            "function Resolve-DnsName { param($Name)\n"
+            " if($Name -eq 'api.custom.example') { [pscustomobject]@{IPAddress='203.0.113.9'} }\n"
+            "}\n"
+        )
+        # Query runspaces have their own session state. Stub their cmdlet at
+        # the same boundary as the parent runspace's cache provider.
+        args[-1] = args[-1].replace(
+            "param([string]$name)", "param([string]$name)\n" + query_mock
+        )
         args[-1] = (
             "function Get-DnsClientCache {\n"
             " [pscustomobject]@{Name='api.custom.example';Type=5;Data='edge.cdn.example'}\n"
             " [pscustomobject]@{Name='edge.cdn.example';Type=28;Data='2001:db8::8'}\n"
             " [pscustomobject]@{RecordName='custom.example';RecordType='A';Data='203.0.113.8'}\n"
             "}\n"
-            "function Resolve-DnsName { param($Name)\n"
-            " if($Name -eq 'api.custom.example') { [pscustomobject]@{IPAddress='203.0.113.9'} }\n"
-            "}\n" + args[-1]
+            + args[-1]
         )
         return subprocess.run(args, **kwargs)
 
@@ -249,4 +257,68 @@ def test_domain_resolver_throttles_passive_cache_observation():
     resolver.observe()
 
     assert len(runner.calls) == 2
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell runspaces")
+def test_parallel_dns_queries_fit_budget_for_a_slow_provider():
+    query_mock = r"""
+function Resolve-DnsName {
+    param($Name, $Type)
+    Start-Sleep -Milliseconds 400
+    if ($Type -eq 'A') { [pscustomobject]@{IPAddress='203.0.113.10'} }
+    elseif ($Type -eq 'AAAA') { [pscustomobject]@{IPAddress='2001:db8::10'} }
+    else { throw 'A and AAAA must be requested separately' }
+}
+"""
+
+    def runner(args, **options):
+        args = list(args)
+        args[-1] = "function Get-DnsClientCache {}\n" + args[-1].replace(
+            "param([string]$name)", "param([string]$name)\n" + query_mock
+        )
+        return subprocess.run(args, **options)
+
+    domains = [f"domain{index}.example" for index in range(12)]
+    # 24 sequential hostname lookups exceed the old eight-second budget.
+    result = WindowsDomainResolver(runner=runner, timeout_seconds=8).resolve(domains)
+    assert result == {domain: ("2001:db8::10", "203.0.113.10") for domain in domains}
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell cache snapshot")
+def test_postquery_cache_preserves_new_forward_cname_addresses():
+    cache_mock = r"""
+$script:cacheReads = 0
+function Get-DnsClientCache {
+    $script:cacheReads++
+    [pscustomobject]@{Name='custom.example';Type=5;Data='edge.cdn.example'}
+    if ($script:cacheReads -gt 1) {
+        [pscustomobject]@{Name='edge.cdn.example';Type=1;Data='203.0.113.21'}
+    }
+}
+"""
+
+    def runner(args, **options):
+        args = list(args)
+        args[-1] = cache_mock + args[-1].replace(
+            "param([string]$name)",
+            "param([string]$name)\nfunction Resolve-DnsName { throw 'query failed' }\n",
+        )
+        return subprocess.run(args, **options)
+
+    resolver = WindowsDomainResolver(runner=runner)
+    assert resolver.resolve(["custom.example"]) == {"custom.example": ("203.0.113.21",)}
+    assert resolver.last_evidence["custom.example"][0]["cname_chain"] == [
+        "custom.example", "edge.cdn.example"
+    ]
+
+
+def test_dns_timeout_names_operation_budget_and_domain_count():
+    def timeout(args, **options):
+        raise subprocess.TimeoutExpired(args, options["timeout"])
+
+    resolver = WindowsDomainResolver(runner=timeout, observe_cache=True)
+    with pytest.raises(OSError, match=r"discovery timed out after 45s \(2 policy domains\)"):
+        resolver.resolve(["one.example", "two.example"])
+    with pytest.raises(OSError, match="cache observation timed out after 10s"):
+        resolver.observe()
 

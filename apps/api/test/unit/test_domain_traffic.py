@@ -327,46 +327,40 @@ def test_domain_rules_use_all_protocols_and_correct_direction():
 
     def runner(args, **kwargs):
         script = args[4]
+        payload = json.loads(kwargs["input"])
         if "New-NetFirewallRule" in script:
             additions.append((args, kwargs))
-            payload = json.loads(kwargs["input"])
-            name = payload["name"]
-            display_name = payload["display_name"]
-            group = payload["group"]
-            direction = payload["direction"]
-            installed[name] = (
-                {
+            for item in payload["upsert"]:
+                name = item["name"]
+                installed[name] = {
                     "Name": name,
-                    "DisplayName": display_name,
-                    "Group": group,
+                    "DisplayName": item["display_name"],
+                    "Group": item["group"],
                     "Enabled": "True",
-                    "Direction": direction,
+                    "Direction": item["direction"],
                     "Action": "Block",
                     "Profile": "Any",
                     "Protocol": "Any",
                     "LocalAddress": ["Any"],
-                    "RemoteAddress": payload["remote_addresses"],
+                    "RemoteAddress": item["remote_addresses"],
                 }
-            )
+            for name in payload["remove"]:
+                installed.pop(name, None)
             return subprocess.CompletedProcess(args, 0, "", "")
-        if "Remove-NetFirewallRule" in script:
-            existed = installed.pop(args[-1], None) is not None
-            return subprocess.CompletedProcess(args, 0 if existed else 3, "", "")
-        rule = installed.get(args[-1])
-        if rule is None:
-            return subprocess.CompletedProcess(args, 3, "", "")
-        return subprocess.CompletedProcess(args, 0, json.dumps(rule), "")
+        found = [installed[name] for name in payload["names"] if name in installed]
+        return subprocess.CompletedProcess(args, 0, json.dumps(found), "")
 
     adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
     rules = domain_traffic_rules(adapter.plan("SES-TRAFFIC", ["203.0.113.10"], []))
     adapter.reconcile(rules, ())
-    assert len(additions) == 2
+    assert len(additions) == 1
     assert all(
         "-Protocol Any" in args[4] and "-Profile Any" in args[4]
         for args, _kwargs in additions
     )
     assert {
-        json.loads(kwargs["input"])["direction"] for _args, kwargs in additions
+        item["direction"] for _args, kwargs in additions
+        for item in json.loads(kwargs["input"])["upsert"]
     } == {"Inbound", "Outbound"}
     # Direction verification must not accept an inbound rule as outbound.
     installed[rules[0].name]["Direction"] = "Inbound"
@@ -407,7 +401,7 @@ def test_verification_rejects_rules_that_do_not_block_all_required_traffic(field
     }
 
     def runner(args, **kwargs):
-        return subprocess.CompletedProcess(args, 0, json.dumps(fields), "")
+        return subprocess.CompletedProcess(args, 0, json.dumps([fields]), "")
 
     adapter = WindowsFirewallEnforcer(runner=runner, platform="win32")
     assert adapter.verify_rules((rule,))

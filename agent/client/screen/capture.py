@@ -150,7 +150,7 @@ class WindowsScreenCapture:
 
 @dataclass(frozen=True, slots=True)
 class ScreenSettings:
-    interval_seconds: float = 2.0
+    interval_seconds: float = 3.0
     pre_seconds: float = 30.0
     post_seconds: float = 15.0
     retention_seconds: float = 900.0
@@ -182,7 +182,7 @@ class ScreenSettings:
     @classmethod
     def from_env(cls) -> ScreenSettings:
         return cls(
-            interval_seconds=float(os.getenv("EECP_SCREEN_INTERVAL_SECONDS", "2")),
+            interval_seconds=float(os.getenv("EECP_SCREEN_INTERVAL_SECONDS", "3")),
             pre_seconds=float(os.getenv("EECP_SCREEN_PRE_SECONDS", "30")),
             post_seconds=float(os.getenv("EECP_SCREEN_POST_SECONDS", "15")),
             retention_seconds=float(os.getenv("EECP_SCREEN_RETENTION_SECONDS", "900")),

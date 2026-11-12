@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from contracts.v2.screen import ScreenFrame, ScreenRequest, ScreenResponse
+from contracts.v2.screen import AUTOMATIC_FRAME_LIMITS, ScreenFrame, ScreenRequest, ScreenResponse
 
 
 class ScreenStore:
@@ -176,13 +176,16 @@ class ScreenStore:
         with self.lock, self.connection() as connection:
             # Enforce the automatic-image limit inside the storage lock as well as
             # at the HTTP boundary: concurrent ingests can pass the route check.
-            if frame.request_id is None and frame.kind in {"trigger", "event_context"}:
+            if frame.request_id is None and frame.kind in AUTOMATIC_FRAME_LIMITS:
+                same_kind_count = 0
                 for row in connection.execute(
                     "SELECT metadata FROM screen_frames WHERE evidence_id=?", (frame.evidence_id,)
                 ).fetchall():
                     existing = ScreenFrame.model_validate_json(row["metadata"])
                     if existing.kind == frame.kind and existing.frame_id != frame.frame_id:
-                        raise ValueError("representative screenshot is already stored")
+                        same_kind_count += 1
+                if same_kind_count >= AUTOMATIC_FRAME_LIMITS[frame.kind]:
+                    raise ValueError("representative screenshot limit reached")
             key = self.frame_key(frame.evidence_id, frame.frame_id)
             old = connection.execute("SELECT * FROM screen_frames WHERE id=?", (key,)).fetchone()
             if old is not None:

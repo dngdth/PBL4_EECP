@@ -106,9 +106,17 @@ def test_pre_event_representative_is_bounded_and_does_not_enable_bulk_context_up
     response = ingest(backend, historical)
     assert response.status_code == 200, response.text
     assert ingest(backend, historical).json()["server_stored"]
-    extra = historical.model_copy(update={"frame_id": "extra-before"})
+    for index in range(3):
+        extra = historical.model_copy(update={"frame_id": f"extra-before-{index}"})
+        assert ingest(backend, extra).status_code == 200
+    extra = historical.model_copy(update={"frame_id": "fifth-before"})
     assert ingest(backend, extra).status_code == 409
     assert ingest(backend, value).status_code == 200  # Separate post-detection trigger.
+    second_trigger = value.model_copy(update={"frame_id": "second-trigger"})
+    assert ingest(backend, second_trigger).status_code == 409
+    values = backend.get(f"/api/v1/sessions/{value.session_id}/screen/evidence").json()
+    assert len(values[0]["frames"]) == 5
+    assert ingest(backend, historical).json()["server_stored"]  # Retry at the five-frame limit.
     assert ingest(backend, value.model_copy(update={"kind": "context"})).status_code == 403
     for offset in (-31, 1):
         invalid = historical.model_copy(update={
@@ -148,13 +156,16 @@ def test_gateway_reloads_old_manifests_without_optional_timing_field(tmp_path):
     assert receipt["gateway_received"] and not receipt["server_stored"]
 
 
-def test_storage_atomically_limits_concurrent_automatic_representatives(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("kind", "limit"), [("trigger", 1), ("event_context", 4)])
+def test_storage_atomically_limits_concurrent_automatic_representatives(
+    tmp_path, monkeypatch, kind, limit
+):
     from concurrent.futures import ThreadPoolExecutor
 
     app, _backend, _session_id, value = setup_backend(tmp_path, monkeypatch)
 
     def store(index):
-        candidate = value.model_copy(update={"frame_id": f"concurrent-{index}"})
+        candidate = value.model_copy(update={"frame_id": f"concurrent-{index}", "kind": kind})
         try:
             return app.state.screen_store.store_frame(candidate, image_bytes())["server_stored"]
         except ValueError as exc:
@@ -162,9 +173,9 @@ def test_storage_atomically_limits_concurrent_automatic_representatives(tmp_path
             return False
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(store, range(4)))
-    assert results.count(True) == 1
-    assert len(app.state.screen_store.frames(value.evidence_id)) == 1
+        results = list(pool.map(store, range(8)))
+    assert results.count(True) == limit
+    assert len(app.state.screen_store.frames(value.evidence_id)) == limit
 
 
 def test_session_finish_during_wan_outage_drains_existing_images_after_recovery(

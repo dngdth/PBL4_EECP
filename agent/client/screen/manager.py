@@ -15,6 +15,7 @@ from agent.client.screen.buffer import RingBuffer
 from agent.client.screen.capture import CapturedFrame, ScreenSettings, WindowsScreenCapture
 from contracts.v2 import Event
 from contracts.v2.screen import (
+    AUTOMATIC_FRAME_LIMITS,
     MAX_EVENT_CONTEXT_SECONDS,
     ScreenFrame,
     ScreenMode,
@@ -63,7 +64,7 @@ class EvidenceManager:
     """Bounded RAM ownership with independent capture and upload workers.
 
     Immutable compressed frame objects are shared by ring/evidence/jobs, not copied.
-    One pre-event representative and one trigger upload automatically. Full context
+    Four pre-event representatives and one trigger upload automatically. Full context
     uploads require a scoped request. Stopped sessions retain only queued frames.
     """
 
@@ -293,9 +294,11 @@ class EvidenceManager:
                 min(now, event.occurred_at),
             )
             if historical:
-                representative = historical[-1]
-                if self._append(item, representative, "event_context"):
-                    self._schedule(item, representative, "event_context")
+                for representative in reversed(
+                    historical[-AUTOMATIC_FRAME_LIMITS["event_context"]:]
+                ):
+                    if self._append(item, representative, "event_context"):
+                        self._schedule(item, representative, "event_context")
             else:
                 item.reason = "no pre-event image remains in the capture buffer"
             for frame in self.ring.between(

@@ -16,6 +16,7 @@ from app.infrastructure.security import MachineCredentialRegistry
 from app.presentation.api.deps import authorize
 from contracts.v2 import GatewayEnvelope, GatewayMessageType
 from contracts.v2.screen import (
+    AUTOMATIC_FRAME_LIMITS,
     MAX_FRAME_BYTES,
     ScreenFrame,
     ScreenMode,
@@ -320,15 +321,15 @@ async def ingest_frame(gateway_id: str, request: Request) -> dict:
             control.end_at and frame.captured_at > control.end_at
         ):
             raise HTTPException(403, "screenshot is outside requested replay window")
-    elif frame.kind not in {"trigger", "event_context"} or frame.event_id is None:
+    elif frame.kind not in AUTOMATIC_FRAME_LIMITS or frame.event_id is None:
         raise HTTPException(403, "context images require an examiner replay request")
     else:
         existing = store.frames(frame.evidence_id)
-        if any(
+        if sum(
             value["kind"] == frame.kind and value["frame_id"] != frame.frame_id
             for value in existing
-        ):
-            raise HTTPException(409, "representative screenshot is already stored")
+        ) >= AUTOMATIC_FRAME_LIMITS[frame.kind]:
+            raise HTTPException(409, "representative screenshot limit reached")
     if frame.event_id:
         with request.app.state.container.database.unit_of_work() as uow:
             event = uow.telemetry.find(frame.event_id)

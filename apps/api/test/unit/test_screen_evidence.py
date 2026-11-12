@@ -100,6 +100,51 @@ def test_pin_survives_ring_rotation_and_only_representatives_upload_automaticall
     assert not manager.upload_once()
 
 
+def test_default_capture_interval_is_three_seconds_and_env_can_override(monkeypatch):
+    monkeypatch.delenv("EECP_SCREEN_INTERVAL_SECONDS", raising=False)
+    assert ScreenSettings().interval_seconds == 3
+    assert ScreenSettings.from_env().interval_seconds == 3
+    monkeypatch.setenv("EECP_SCREEN_INTERVAL_SECONDS", "4")
+    assert ScreenSettings.from_env().interval_seconds == 4
+
+
+def test_periodic_capture_waits_three_seconds(monkeypatch):
+    monotonic = [100.0]
+    monkeypatch.setattr("agent.client.screen.manager.time.monotonic", lambda: monotonic[0])
+    manager, now, captures, _ = make_manager()
+    manager.capture_once()
+    monotonic[0] += 2.9
+    now[0] += timedelta(seconds=2.9)
+    manager.capture_once()
+    assert captures == [False]
+    monotonic[0] += 0.1
+    now[0] += timedelta(seconds=0.1)
+    manager.capture_once()
+    assert captures == [False, False]
+
+
+def test_event_automatically_uploads_four_closest_history_frames_and_one_trigger():
+    sent = []
+    manager, now, _, _ = make_manager(upload=lambda meta, _: sent.append(meta) or True)
+    for offset in (-15, -12, -9, -6, -3):
+        manager.ring.add(frame(offset))
+    evidence_id = manager.on_event(event())
+    manager.capture_once()
+    while manager.upload_once():
+        pass
+    assert len(sent) == 5
+    assert {value.frame_id for value in sent if value.kind == "event_context"} == {
+        "frame_-12", "frame_-9", "frame_-6", "frame_-3"
+    }
+    assert sum(value.kind == "trigger" for value in sent) == 1
+    assert all(value.evidence_id == evidence_id for value in sent)
+    # Uploading or capturing later must not send the rest of the ring automatically.
+    now[0] += timedelta(seconds=3)
+    manager._next_capture = 0
+    manager.capture_once()
+    assert not manager.upload_once()
+
+
 def test_post_window_and_replay_respect_frame_and_byte_limits():
     manager, now, _, notices = make_manager()
     manager.capture_once()

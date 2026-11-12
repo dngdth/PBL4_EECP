@@ -13,6 +13,7 @@ ScreenId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,160}$")]
 MAX_FRAME_BYTES = 2 * 1024 * 1024
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_EVENT_CONTEXT_SECONDS = 30
+AUTOMATIC_FRAME_LIMITS = {"event_context": 4, "trigger": 1}
 
 
 class ScreenMode(StrEnum):

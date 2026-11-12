@@ -17,7 +17,7 @@ Older Clients do not advertise the capability and do not receive the new message
 
 ## Data flow
 
-1. While an Agent has a verified active policy in a RUNNING exam, capture every 2 seconds, resize to a
+1. While an Agent has a verified active policy in a RUNNING exam, capture every 3 seconds, resize to a
    maximum dimension of 960 pixels, encode JPEG quality 40 and retain at most 15
    frames / 30 seconds / 8 MiB of compressed context in RAM.
 2. A relevant sensor event allocates an `evidence_id`. Its event payload includes
@@ -28,14 +28,14 @@ Older Clients do not advertise the capability and do not receive the new message
    most 64 event IDs. The primary event ID remains stable, and the evidence listing
    exposes every linked event ID from persisted telemetry.
 3. Pin available context from 30 seconds before through 15 seconds after the event.
-   Queue the closest available frame at/before the event as `event_context`, limited
+   Queue the four closest available frames at/before the event as `event_context`, limited
    to the preceding 30 seconds. Also capture a JPEG at maximum dimension 2560 /
    quality 85 as `trigger` while the event's 15-second post window remains open.
    `captured_at`, `event_occurred_at` and `event_received_at` distinguish historical
    context, event time and delayed Agent receipt. A late event/worker does not take
    a current trigger after that window. Missing history is reported explicitly;
    low-resolution history cannot be reconstructed at higher resolution.
-4. Upload at most one `event_context` and one `trigger` image automatically over
+4. Upload at most four `event_context` and one `trigger` image automatically over
    HTTP(S) to `/screen/frames` on the Gateway. Backend validates the historical
    window/event identity and enforces each representative limit under its storage
    lock, including concurrent ingests. Do not stream the entire ring. Full context/
@@ -68,7 +68,7 @@ one current high-quality image.
 | Component / setting | Default |
 | --- | --- |
 | Client `EECP_SCREEN_ENABLED` | `true` (Gateway mode only) |
-| `EECP_SCREEN_INTERVAL_SECONDS` | `2` |
+| `EECP_SCREEN_INTERVAL_SECONDS` | `3` |
 | `EECP_SCREEN_LOW_WIDTH` / `EECP_SCREEN_HIGH_WIDTH` | `960` / `2560` |
 | `EECP_SCREEN_PRE_SECONDS` / `EECP_SCREEN_POST_SECONDS` | `30` / `15` |
 | `EECP_SCREEN_RING_MAX_FRAMES` / `EECP_SCREEN_RING_MAX_BYTES` | `15` / `8388608` |

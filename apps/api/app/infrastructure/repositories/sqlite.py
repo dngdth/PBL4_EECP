@@ -579,22 +579,39 @@ class SqliteTelemetryRepository:
             "SELECT * FROM telemetry_events WHERE session_id = ? ORDER BY occurred_at, id",
             (session_id,),
         ).fetchall()
-        return [
-            TelemetryEvent(
-                id=row["id"],
-                session_id=row["session_id"],
-                workstation_id=row["workstation_id"],
-                event_type=row["event_type"],
-                severity=Severity(row["severity"]),
-                category=row["category"],
-                action=row["action"],
-                destination=row["destination"],
-                correlation_id=row["correlation_id"],
-                payload=json.loads(row["payload"]),
-                occurred_at=datetime.fromisoformat(row["occurred_at"]),
-            )
-            for row in rows
-        ]
+        return [self._from_row(row) for row in rows]
+
+    def latest_violations_for_session(
+        self, session_id: str, limit: int = 10
+    ) -> list[TelemetryEvent]:
+        rows = self._connection.execute(
+            """
+            SELECT * FROM telemetry_events
+             WHERE session_id = ?
+               AND event_type = 'POLICY_VIOLATION'
+               AND action IN ('BLOCKED', 'OBSERVED')
+             ORDER BY occurred_at DESC, id DESC
+             LIMIT ?
+            """,
+            (session_id, limit),
+        ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> TelemetryEvent:
+        return TelemetryEvent(
+            id=row["id"],
+            session_id=row["session_id"],
+            workstation_id=row["workstation_id"],
+            event_type=row["event_type"],
+            severity=Severity(row["severity"]),
+            category=row["category"],
+            action=row["action"],
+            destination=row["destination"],
+            correlation_id=row["correlation_id"],
+            payload=json.loads(row["payload"]),
+            occurred_at=datetime.fromisoformat(row["occurred_at"]),
+        )
 
 
 class SqliteIncidentRepository:

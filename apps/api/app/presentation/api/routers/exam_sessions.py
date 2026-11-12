@@ -304,10 +304,21 @@ def _optional_string(value: object) -> str | None:
 
 def _session_detail_view(details: ExamSessionDetails, request: Request) -> SessionDetailView:
     session = details.session
-    operational = {
-        agent.id: _agent_operational_view(request, agent.id)
-        for agent in details.agents
-    }
+    operational = {}
+    missing_gw = []
+    for agent in details.agents:
+        p = request.app.state.presence.get_agent(agent.id) or {}
+        if p.get("gateway_id"):
+            operational[agent.id] = p
+        else:
+            missing_gw.append((agent.id, p))
+
+    if missing_gw:
+        with request.app.state.container.database.unit_of_work() as uow:
+            for agent_id, p in missing_gw:
+                binding = uow.agent_gateway_bindings.find_for_agent(agent_id)
+                gw_id = binding.gateway_id if binding else None
+                operational[agent_id] = {**p, "gateway_id": gw_id} if gw_id else p
     return SessionDetailView.model_validate(
         {
             **session.to_dict(),
@@ -332,7 +343,11 @@ def _session_detail_view(details: ExamSessionDetails, request: Request) -> Sessi
                     service_health=operational[agent.id].get("service_health"),
                     active_policy_hash=(
                         operational[agent.id].get("active_policy_hash")
-                        or session.workstations[agent.id].actual_policy_hash
+                        or (
+                            session.workstations[agent.id].actual_policy_hash
+                            if agent.id in session.workstations
+                            else None
+                        )
                     ),
                     gateway_id=operational[agent.id].get("gateway_id"),
                 )

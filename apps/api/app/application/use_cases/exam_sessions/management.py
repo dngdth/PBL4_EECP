@@ -268,6 +268,15 @@ def _build_details(
         if refresh_at is not None and agent.refresh_liveness(refresh_at):
             uow.agents.save(agent)
         agents.append(_agent_details(session, agent, assigned_at))
+    if hasattr(uow.telemetry, "latest_violations_for_session"):
+        raw_events = uow.telemetry.latest_violations_for_session(session.id, limit=10)
+    else:
+        raw_events = [
+            event
+            for event in reversed(uow.telemetry.list_for_session(session.id))
+            if event.event_type == "POLICY_VIOLATION"
+            and event.action in {"BLOCKED", "OBSERVED"}
+        ][:10]
     violations = [
         PolicyViolationDetails(
             workstation_id=event.workstation_id,
@@ -276,10 +285,8 @@ def _build_details(
             action=event.action,
             occurred_at=event.occurred_at,
         )
-        for event in reversed(uow.telemetry.list_for_session(session.id))
-        if event.event_type == "POLICY_VIOLATION"
-        and event.action in {"BLOCKED", "OBSERVED"}
-    ][:10]
+        for event in raw_events
+    ]
     return ExamSessionDetails(session=session, agents=agents, violations=violations)
 
 
@@ -306,7 +313,9 @@ def _agent_details(
 
 
 def _policy_status(session: ExamSession, agent_id: str) -> str:
-    workstation = session.workstations[agent_id]
+    workstation = session.workstations.get(agent_id)
+    if workstation is None:
+        return "NOT_ASSIGNED"
     if workstation.restored and session.state == SessionState.FINISHED:
         return "RESTORED"
     if workstation.policy_compliant:

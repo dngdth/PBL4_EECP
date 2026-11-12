@@ -35,6 +35,7 @@ from contracts.v2 import (
     PresenceHealth,
     ServiceHealth,
 )
+from contracts.v2.screen import ScreenRequest, ScreenResponse, ScreenSessionState
 
 
 class SyncWebSocket(Protocol):
@@ -101,6 +102,17 @@ class GatewayControlClient:
         self._event_sequence = event_spool.max_sequence() if event_spool is not None else 0
         self._service_health = ServiceHealth.HEALTHY
         self._service_policy_hash: str | None = None
+        self.screen_event_handler: Callable[[Event], str | None] | None = None
+        self.screen_request_handler: Callable[[ScreenRequest], None] | None = None
+        self.screen_session_handler: Callable[[ScreenSessionState], None] | None = None
+        self._screen_session_observed_at: datetime | None = None
+
+    def send_screen_response(self, response: ScreenResponse) -> None:
+        self._queue(
+            GatewayMessageType.SCREEN_RESPONSE, response.request_id,
+            response.model_dump(mode="json", exclude_none=True),
+            correlation_id=response.request_id,
+        )
 
     def register(self, identity: WorkstationIdentity) -> None:
         self._identity = identity
@@ -121,6 +133,7 @@ class GatewayControlClient:
         if not self._connected.is_set():
             raise OSError("Local Gateway connection is unavailable")
         presence = Presence(
+            screen_capture_supported=self.screen_session_handler is not None,
             protocol_version=2,
             agent_id=agent_id,
             last_seen=datetime.now(UTC),
@@ -255,6 +268,16 @@ class GatewayControlClient:
             payload=payload,
             correlation_id=correlation_id or f"event_{session_id}",
         )
+        if self.screen_event_handler is not None:
+            try:
+                evidence_id = self.screen_event_handler(event)
+                if evidence_id:
+                    event = Event.model_validate({
+                        **event.model_dump(),
+                        "payload": {**event.payload, "evidence_id": evidence_id},
+                    })
+            except Exception as exc:
+                self._log(f"event=SCREEN_EVIDENCE_ERROR error_type={type(exc).__name__}")
         envelope = GatewayEnvelope(
             protocol_version=2,
             message_type=GatewayMessageType.EVENT,
@@ -381,6 +404,33 @@ class GatewayControlClient:
 
     def _receive(self, raw: str | bytes) -> None:
         envelope = GatewayEnvelope.model_validate_json(raw)
+        if envelope.message_type == GatewayMessageType.SCREEN_SESSION_STATE:
+            state = ScreenSessionState.model_validate(envelope.payload)
+            if (
+                self._identity is None or envelope.source_id != "backend"
+                or envelope.target_id != self._identity.agent_id
+                or state.agent_id != self._identity.agent_id
+            ):
+                raise ValueError("screen session state identity mismatch")
+            if self._screen_session_observed_at is None or (
+                state.observed_at >= self._screen_session_observed_at
+            ):
+                self._screen_session_observed_at = state.observed_at
+                if self.screen_session_handler is not None:
+                    self.screen_session_handler(state)
+            return
+        if envelope.message_type == GatewayMessageType.SCREEN_REQUEST:
+            request = ScreenRequest.model_validate(envelope.payload)
+            if (
+                self._identity is None or envelope.source_id != "backend"
+                or envelope.target_id != self._identity.agent_id
+                or request.agent_id != self._identity.agent_id
+                or envelope.correlation_id != request.request_id
+            ):
+                raise ValueError("screen request identity mismatch")
+            if self.screen_request_handler is not None:
+                self.screen_request_handler(request)
+            return
         if envelope.message_type == GatewayMessageType.AGENT_SESSION_STATE:
             state = AgentSessionState.model_validate(envelope.payload)
             if (

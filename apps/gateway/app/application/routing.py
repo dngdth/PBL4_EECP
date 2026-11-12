@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 from apps.gateway.app.application.ports import (
@@ -23,6 +24,7 @@ from contracts.v2 import (
     Presence,
     PresenceHealth,
 )
+from contracts.v2.screen import ScreenRequest, ScreenResponse, ScreenSessionState
 
 
 class GatewayRouter:
@@ -68,6 +70,13 @@ class GatewayRouter:
     async def route_agent(self, bound_agent_id: str, envelope: GatewayEnvelope) -> None:
         if envelope.source_id != bound_agent_id:
             raise ValueError("connection identity does not match message source_id")
+        if envelope.message_type == GatewayMessageType.SCREEN_RESPONSE:
+            response = ScreenResponse.model_validate(envelope.payload)
+            if (response.agent_id != bound_agent_id
+                    or envelope.correlation_id != response.request_id):
+                raise ValueError("screenshot response identity mismatch")
+            await self._backend.send(envelope)
+            return
         if envelope.message_type == GatewayMessageType.ACK:
             ack = Ack.model_validate(envelope.payload)
             if envelope.correlation_id != ack.correlation_id:
@@ -79,7 +88,7 @@ class GatewayRouter:
             if event.correlation_id and envelope.correlation_id != event.correlation_id:
                 raise ValueError("Event correlation does not match envelope")
             if self._event_buffer is not None:
-                inserted = self._event_buffer.put(envelope)
+                inserted = await asyncio.to_thread(self._event_buffer.put, envelope)
                 if self._event_flusher is not None:
                     self._event_flusher.note_buffered(inserted)
                     self._event_flusher.wake()
@@ -139,6 +148,19 @@ class GatewayRouter:
         await self._backend.send(envelope)
 
     async def route_backend(self, envelope: GatewayEnvelope) -> None:
+        if envelope.message_type == GatewayMessageType.SCREEN_SESSION_STATE:
+            state = ScreenSessionState.model_validate(envelope.payload)
+            if envelope.source_id != "backend" or envelope.target_id != state.agent_id:
+                raise ValueError("screen session state identity mismatch")
+            await self._connections.send(state.agent_id, envelope.to_json())
+            return
+        if envelope.message_type == GatewayMessageType.SCREEN_REQUEST:
+            request = ScreenRequest.model_validate(envelope.payload)
+            if (envelope.source_id != "backend" or envelope.target_id != request.agent_id
+                    or envelope.correlation_id != request.request_id):
+                raise ValueError("screenshot request identity mismatch")
+            await self._connections.send(request.agent_id, envelope.to_json())
+            return
         if envelope.message_type == GatewayMessageType.ERROR:
             # Backend validation errors are control feedback, not reconnect requests.
             return

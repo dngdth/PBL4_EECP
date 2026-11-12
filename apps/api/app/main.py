@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -11,6 +13,7 @@ from app.config import Settings
 from app.infrastructure.di.container import build_container
 from app.infrastructure.gateway_connections import GatewayConnectionRegistry
 from app.infrastructure.presence import MemoryPresenceStore, RedisPresenceStore
+from app.infrastructure.screen_store import ScreenStore
 from app.infrastructure.security import TokenService
 from app.presentation.api.exceptions import register_exception_handlers
 from app.presentation.api.routers.agents import router as agents_router
@@ -18,6 +21,7 @@ from app.presentation.api.routers.auth import router as auth_router
 from app.presentation.api.routers.exam_sessions import router
 from app.presentation.api.routers.gateways import router as gateways_router
 from app.presentation.api.routers.policies import router as policies_router
+from app.presentation.api.routers.screen import router as screen_router
 from app.presentation.realtime import (
     RealtimeHub,
     realtime_notification_middleware,
@@ -36,14 +40,39 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
             environment="test",
         )
     container = build_container(settings)
+    screen_store = ScreenStore(
+        container.database,
+        Path(os.getenv("EECP_SCREEN_STORAGE_PATH", str(settings.database_path.parent / "screens"))),
+        retention_days=int(os.getenv("EECP_SCREEN_SERVER_RETENTION_DAYS", "14")),
+        max_bytes=int(os.getenv("EECP_SCREEN_SERVER_MAX_BYTES", str(10 * 1024 * 1024 * 1024))),
+    )
+
+    async def screen_cleanup():
+        while True:
+            with suppress(OSError):
+                await asyncio.to_thread(screen_store.expire)
+            await asyncio.sleep(60)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        task = asyncio.create_task(screen_cleanup(), name="screen-retention-cleanup")
+        try:
+            yield
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     app = FastAPI(
         title="Exam Environment Control Platform",
         version="0.1.0",
         description="Clean Architecture vertical pipeline for policy-based exam control.",
+        lifespan=lifespan,
     )
     app.state.container = container
     app.state.settings = settings
+    app.state.screen_store = screen_store
+    ingest_concurrency = max(1, int(os.getenv("EECP_SCREEN_INGEST_CONCURRENCY", "8")))
+    app.state.screen_ingest_slots = asyncio.Semaphore(ingest_concurrency)
     app.state.realtime_hub = RealtimeHub()
     app.state.gateway_connections = GatewayConnectionRegistry()
     app.state.presence = (
@@ -60,6 +89,7 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
     app.state.authorization = AuthorizationService()
     app.include_router(router)
     app.include_router(policies_router)
+    app.include_router(screen_router)
     app.include_router(agents_router)
     app.include_router(gateways_router)
     app.include_router(auth_router)

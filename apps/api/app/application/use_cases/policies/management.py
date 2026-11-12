@@ -12,6 +12,7 @@ from app.application.dtos.policies import (
 from app.domain.entities.exam_session import ExamSession
 from app.domain.entities.operations import Command
 from app.domain.exceptions.errors import (
+    ConcurrencyError,
     InvalidStateTransitionError,
     PolicyInUseError,
     PolicyValidationError,
@@ -132,6 +133,18 @@ class AcknowledgeCommand:
         self._clock = clock
 
     def __call__(self, data: AcknowledgeCommandInput) -> ExamSession:
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            try:
+                return self._acknowledge_once(data)
+            except ConcurrencyError:
+                if attempt == max_attempts - 1:
+                    raise
+                import time
+                time.sleep(0.01 * (attempt + 1))
+        raise InvalidStateTransitionError("command acknowledgement concurrency retry exhausted")
+
+    def _acknowledge_once(self, data: AcknowledgeCommandInput) -> ExamSession:
         at = self._clock()
         timed_out = False
         with self._uow_factory() as uow:
@@ -198,7 +211,7 @@ class AcknowledgeCommand:
 
         if timed_out:
             raise InvalidStateTransitionError("command acknowledgement timed out")
-        raise RuntimeError("unreachable command acknowledgement state")
+        raise InvalidStateTransitionError("unreachable command acknowledgement state")
 
     @staticmethod
     def _record_failure(

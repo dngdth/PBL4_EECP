@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import tempfile
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -18,6 +19,8 @@ from apps.gateway.app.config import GatewaySettings
 from apps.gateway.app.connections import AgentConnectionManager
 from apps.gateway.app.event_buffer import EventBuffer
 from apps.gateway.app.presence import PresenceStore
+from apps.gateway.app.screen import ScreenForwarder, ScreenSpool
+from apps.gateway.app.screen import router as screen_router
 from contracts.v2 import GatewayHealth, PresenceHealth
 
 
@@ -27,6 +30,15 @@ def create_app(
     event_buffer: EventBuffer | None = None,
 ) -> FastAPI:
     connections = AgentConnectionManager()
+    screen_temporary = tempfile.TemporaryDirectory(prefix="eecp-screen-") if not (
+        settings.screen_spool_path
+    ) else None
+    screen_spool = ScreenSpool(
+        settings.screen_spool_path or screen_temporary.name,
+        max_bytes=settings.screen_spool_max_bytes,
+        per_agent_bytes=settings.screen_spool_per_agent_bytes,
+        ttl_seconds=settings.screen_spool_ttl_seconds,
+    )
     presence = PresenceStore()
     router_holder: dict[str, GatewayRouter] = {}
     flusher_holder: dict[str, EventFlusher] = {}
@@ -94,6 +106,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        screen_task = asyncio.create_task(
+            ScreenForwarder(settings, screen_spool).run(), name="gateway-screen-forwarder"
+        )
         await actual_uplink.start()
         if event_flusher is not None:
             await event_flusher.start()
@@ -108,6 +123,8 @@ def create_app(
         try:
             yield
         finally:
+            screen_task.cancel()
+            await asyncio.gather(screen_task, return_exceptions=True)
             presence_task.cancel()
             await asyncio.gather(presence_task, return_exceptions=True)
             if event_flusher is not None:
@@ -122,7 +139,11 @@ def create_app(
     app.state.router = gateway_router
     app.state.event_buffer = actual_buffer
     app.state.event_flusher = event_flusher
+    app.state.screen_spool = screen_spool
+    app.state.screen_temporary = screen_temporary
+    app.state.screen_upload_slots = asyncio.Semaphore(4)
     app.include_router(agent_router)
+    app.include_router(screen_router)
 
     @app.get("/health")
     async def health() -> dict:

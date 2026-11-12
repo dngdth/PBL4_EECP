@@ -773,3 +773,54 @@ def test_event_contract_rejects_payload_over_64_kib() -> None:
             occurred_at=NOW,
             payload={"value": "x" * (64 * 1024)},
         )
+
+
+def test_process_renaming_evasion_is_detected_via_original_filename(tmp_path: Path) -> None:
+    renamed_process = ProcessIdentity(
+        name="vscode.exe",
+        pid=1337,
+        creation_time="created-fake",
+        username="LAB\\student",
+        original_filename="zalo.exe",
+    )
+    inventories = iter(((renamed_process,), (renamed_process,), ()))
+    calls = []
+    events: list[dict] = []
+
+    def runner(args, **_kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    enforcer = _enforcer(tmp_path, lambda: next(inventories), runner, events)
+    results = enforcer._terminate_denied(["zalo.exe"], session_id="SES-REDTEAM")
+
+    assert len(results) == 1
+    assert results[0].outcome == "TERMINATED"
+    assert calls == [["taskkill", "/F", "/PID", "1337"]]
+    assert len(events) == 2
+    assert events[0]["details"]["process_name"] == "vscode.exe (orig: zalo.exe)"
+    assert events[0]["details"]["original_filename"] == "zalo.exe"
+    assert events[1]["action"] == "BLOCKED"
+
+
+def test_browser_policy_enforcement_configures_doh_and_proxy(tmp_path: Path) -> None:
+    calls = []
+
+    def runner(args, **_kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    enforcer = WindowsPolicyEnforcer(tmp_path / "state.json", runner=runner)
+    enforcer._enforce_browser_policies()
+
+    doh_calls = [c for c in calls if "DnsOverHttpsMode" in c]
+    proxy_calls = [c for c in calls if "ProxyMode" in c]
+    assert len(doh_calls) == 2
+    assert all("off" in c for c in doh_calls)
+    assert len(proxy_calls) == 2
+    assert all("direct" in c for c in proxy_calls)
+
+    calls.clear()
+    enforcer._restore_browser_policies()
+    assert len(calls) == 4
+    assert all(c[1] == "delete" for c in calls)

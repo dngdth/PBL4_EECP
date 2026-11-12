@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from collections.abc import Sequence
 from functools import partial
@@ -20,11 +21,14 @@ from agent.config import (
     SECURITY_EVENT_JOURNAL_MAX_ROWS,
     SECURITY_EVENT_JOURNAL_PATH,
     SECURITY_EVENT_RETENTION_DAYS,
+    SERVER_URL,
+    SERVICE_DATA_ROOT,
     SERVICE_MAINTENANCE_INTERVAL_SECONDS,
     load_agent_id,
     load_local_security_event_token,
 )
 from agent.infrastructure.policy_enforcement import WindowsPolicyEnforcer
+from agent.infrastructure.windows.domain_resolver import WindowsDomainResolver
 from agent.infrastructure.windows.firewall_enforcer import (
     WindowsFirewallEnforcer,
     resolve_gateway_addresses,
@@ -40,6 +44,8 @@ from agent.service.security_event_journal import (
 
 
 def build_service_runtime() -> AgentServiceRuntime:
+    if REQUIRE_SIGNED_POLICY:
+        protect_service_data_directory(SERVICE_DATA_ROOT)
     protect_service_data_directory(SECURITY_EVENT_JOURNAL_PATH.parent)
     security_journal = SecurityEventJournal(
         SECURITY_EVENT_JOURNAL_PATH,
@@ -48,10 +54,18 @@ def build_service_runtime() -> AgentServiceRuntime:
     )
     windows_factory = WindowsPolicyEnforcer
     if POLICY_MODE == "enforce":
-        protected_endpoints = resolve_gateway_addresses(GATEWAY_URL)
+        protected_endpoints = tuple(sorted(set(
+            resolve_gateway_addresses(GATEWAY_URL) + resolve_gateway_addresses(SERVER_URL)
+        )))
         windows_factory = partial(
             WindowsPolicyEnforcer,
             firewall=WindowsFirewallEnforcer(protected_endpoints),
+            domain_resolver=WindowsDomainResolver(
+                observe_cache=True,
+                observe_interval_seconds=max(
+                    0.0, float(os.getenv("EECP_DNS_OBSERVE_INTERVAL_SECONDS", "15"))
+                ),
+            ),
         )
     return AgentServiceRuntime.build(
         policy_mode=POLICY_MODE,
@@ -67,6 +81,9 @@ def build_service_runtime() -> AgentServiceRuntime:
         command_target_id=load_agent_id() if REQUIRE_AUTHORIZED_COMMANDS else "",
         replay_path=COMMAND_REPLAY_PATH,
         security_journal=security_journal,
+        state_guard_path=(
+            SERVICE_DATA_ROOT / "protected-policy.json" if REQUIRE_SIGNED_POLICY else None
+        ),
     )
 
 

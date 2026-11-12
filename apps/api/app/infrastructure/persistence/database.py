@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from app.domain.services.policy_profiles import BUILT_IN_POLICY_PROFILES
 from app.domain.value_objects.primitives import canonical_json
+from app.infrastructure.persistence.screen_schema import SCREEN_SCHEMA
 
 if TYPE_CHECKING:
     from app.infrastructure.repositories.sqlite import SqliteUnitOfWork
@@ -145,6 +146,7 @@ class SqliteDatabase:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            connection.executescript(SCREEN_SCHEMA)
             self._migrate_commands(connection)
             self._migrate_gateways(connection)
             self._migrate_audit_events(connection)

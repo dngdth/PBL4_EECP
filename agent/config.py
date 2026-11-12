@@ -5,8 +5,22 @@ from pathlib import Path
 def load_agent_id() -> str:
     agent_id = os.getenv("EECP_AGENT_ID", "").strip()
     if not agent_id:
+        fallback = (
+            os.getenv("COMPUTERNAME", "").strip()
+            or os.getenv("HOSTNAME", "").strip()
+        )
+        if not fallback:
+            try:
+                import socket
+
+                fallback = socket.gethostname().split(".")[0].strip()
+            except Exception:
+                fallback = ""
+        agent_id = fallback
+    if not agent_id:
         raise RuntimeError(
-            "EECP_AGENT_ID is required. Example: $env:EECP_AGENT_ID='PC02'"
+            "EECP_AGENT_ID is required and computer hostname could not be determined. "
+            "Example: $env:EECP_AGENT_ID='PC02'"
         )
     return agent_id
 

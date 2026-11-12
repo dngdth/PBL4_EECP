@@ -82,6 +82,16 @@ class ExecutionService(PrivilegedExecutionPort):
                 self._processed.move_to_end(request.command_id)
             if previous_fingerprint == fingerprint:
                 if (
+                    self._require_signed_policy
+                    and result.status == AckStatus.SUCCEEDED
+                    and request.operation == CommandType.APPLY_POLICY
+                    and request.policy_hash != self._active_policy_hash
+                ):
+                    return self._failure(
+                        request, ErrorCode.INVALID_POLICY,
+                        "replayed policy is no longer the active policy", rejected=True,
+                    )
+                if (
                     self._require_authorized_commands
                     and request.operation == CommandType.RESTORE_BASELINE
                     and self._active_session_id is not None

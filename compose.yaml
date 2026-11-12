@@ -50,6 +50,11 @@ services:
       EECP_GATEWAY_BOOTSTRAP_TOKEN: ${EECP_GATEWAY_BOOTSTRAP_TOKEN:?set EECP_GATEWAY_BOOTSTRAP_TOKEN}
       EECP_POLICY_SIGNING_KEY: ${EECP_POLICY_SIGNING_KEY:?set EECP_POLICY_SIGNING_KEY}
       EECP_COMMAND_SIGNING_KEY: ${EECP_COMMAND_SIGNING_KEY:?set EECP_COMMAND_SIGNING_KEY}
+      EECP_SCREEN_STORAGE_PATH: /service/screens
+      EECP_SCREEN_SERVER_RETENTION_DAYS: ${EECP_SCREEN_SERVER_RETENTION_DAYS:-14}
+      EECP_SCREEN_SERVER_MAX_BYTES: ${EECP_SCREEN_SERVER_MAX_BYTES:-10737418240}
+    volumes:
+      - screen-evidence:/service/screens
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -81,6 +86,7 @@ services:
       EECP_GATEWAY_TLS_CERTFILE: /run/secrets/gateway.crt
       EECP_GATEWAY_TLS_KEYFILE: /run/secrets/gateway.key
       EECP_GATEWAY_EVENT_BUFFER_PATH: /service/data/gateway-events.db
+      EECP_GATEWAY_SCREEN_SPOOL_PATH: /service/data/screens
       EECP_GATEWAY_BACKEND_QUEUE_MAX_MESSAGES: ${EECP_GATEWAY_BACKEND_QUEUE_MAX_MESSAGES:-4096}
     volumes:
       - gateway-buffer:/service/data
@@ -93,6 +99,7 @@ services:
 volumes:
   postgres-data:
   gateway-buffer:
+  screen-evidence:
 
 secrets:
   gateway_tls_cert:

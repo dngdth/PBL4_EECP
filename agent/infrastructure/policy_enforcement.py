@@ -7,7 +7,7 @@ import re
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -35,6 +35,8 @@ from contracts.v2.policy import validate_hostname
 POLICY_MARKER_START = "# BEGIN EECP MANAGED POLICY"
 POLICY_MARKER_END = "# END EECP MANAGED POLICY"
 USBSTOR_KEY = r"HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR"
+CHROME_POLICY_KEY = r"HKLM\SOFTWARE\Policies\Google\Chrome"
+EDGE_POLICY_KEY = r"HKLM\SOFTWARE\Policies\Microsoft\Edge"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +47,7 @@ class ProcessIdentity:
     pid: int
     creation_time: str
     username: str | None = None
+    original_filename: str | None = None
 
 
 class ProcessIdentityStatus(StrEnum):
@@ -126,7 +129,7 @@ class WindowsPolicyEnforcer:
         self._seen_processes: set[tuple[int, str]] = set()
         self._process_outcomes: dict[tuple[int, str], str] = {}
         self._degraded_error: str | None = None
-        self._domain_resolver = domain_resolver or WindowsDomainResolver(runner=runner)
+        self._domain_resolver = domain_resolver or WindowsDomainResolver(runner=runner, clock=clock)
         self._domain_refresh_seconds = domain_refresh_seconds
         self._clock = clock
         self._next_domain_refresh = 0.0
@@ -190,6 +193,8 @@ class WindowsPolicyEnforcer:
             # rules cover existing responses as well as subsequent requests.
             self._firewall.reconcile(desired_rules, current_names)
             self._write_blocked_domains(state["blocked_domains"])
+            if state["blocked_domains"]:
+                self._enforce_browser_policies()
             if specification.usb_deny and not previous_usb_deny:
                 self._set_usb_start(4)
             elif previous_usb_deny and not specification.usb_deny:
@@ -210,6 +215,8 @@ class WindowsPolicyEnforcer:
         except (OSError, ValueError) as exc:
             with suppress(OSError, ValueError):
                 self._write_hosts(previous_hosts)
+            with suppress(OSError, ValueError):
+                self._restore_browser_policies()
             with suppress(OSError, ValueError):
                 self._firewall.reconcile(
                     previous_rules,
@@ -237,6 +244,7 @@ class WindowsPolicyEnforcer:
             self._state_path.unlink(missing_ok=True)
             return
         self._write_blocked_domains([])
+        self._restore_browser_policies()
         if state and state.get("usb_deny"):
             previous = state.get("usb_previous")
             self._set_usb_start(previous if isinstance(previous, int) else 3)
@@ -252,6 +260,16 @@ class WindowsPolicyEnforcer:
 
     def _maintain_locked(self) -> None:
         self._degraded_error = None
+        # The real Service observes even before a policy exists, so expired DNS
+        # entries used by an open tab can still be attributed when Apply arrives.
+        observation_error = None
+        observer = getattr(self._domain_resolver, "observe", None)
+        if observer is not None:
+            try:
+                observer()
+            except (OSError, ValueError) as exc:
+                observation_error = f"DNS cache observation failed: {exc}"
+                LOGGER.warning("domain_observation result=failed error=%s", str(exc)[:500])
         state = self._load_state()
         if state:
             if state.get("mode") != "enforce":
@@ -291,6 +309,8 @@ class WindowsPolicyEnforcer:
             expected_domains = _state_string_list(state, "blocked_domains")
             if not self._hosts_match(expected_domains):
                 self._recover_hosts(session_id, expected_domains)
+            if expected_domains:
+                self._enforce_browser_policies()
             if bool(state.get("usb_deny")) and self._read_usb_start() != 4:
                 self._recover_usb(session_id)
             denied = state.get("denied_applications", [])
@@ -298,13 +318,26 @@ class WindowsPolicyEnforcer:
                 self._terminate_denied(denied, session_id=session_id)
                 self._store_process_observations(state)
                 _write_state(self._state_path, state)
-            if state.get("blocked_domains") and self._clock() >= self._next_domain_refresh:
+            domains = _state_string_list(state, "blocked_domains")
+            full_refresh = bool(domains) and self._clock() >= self._next_domain_refresh
+            cached = None
+            cache_reader = getattr(self._domain_resolver, "cached_addresses", None)
+            if domains and not full_refresh and cache_reader is not None:
+                cached = cache_reader(domains)
+            known = _domain_addresses(state)
+            newly_observed = cached is not None and any(
+                set(values) - set(known.get(domain, ())) for domain, values in cached.items()
+            )
+            if full_refresh or newly_observed:
                 # Rate-limit retries too. Existing rules remain installed on DNS
                 # failure; the Service reports maintenance_error instead of
                 # silently declaring full coverage.
-                self._next_domain_refresh = self._clock() + self._domain_refresh_seconds
+                if full_refresh:
+                    self._next_domain_refresh = self._clock() + self._domain_refresh_seconds
                 refreshed = dict(state)
-                refreshed["domain_addresses"] = self._discover_domain_addresses(state, state)
+                refreshed["domain_addresses"] = self._discover_domain_addresses(
+                    refreshed, state, resolved=None if full_refresh else cached,
+                )
                 desired = self._rules_from_state(refreshed)
                 refreshed["managed_firewall_rules"] = [rule.name for rule in desired]
                 try:
@@ -314,6 +347,8 @@ class WindowsPolicyEnforcer:
                     with suppress(OSError, ValueError):
                         self._firewall.reconcile(rules, tuple(rule.name for rule in desired))
                     raise
+        if observation_error:
+            self._degraded_error = self._degraded_error or observation_error
 
     def _load_state(self) -> dict[str, Any] | None:
         try:
@@ -363,7 +398,8 @@ class WindowsPolicyEnforcer:
         return (*explicit, *domain_traffic_rules(domain_rules))
 
     def _discover_domain_addresses(
-        self, state: dict[str, Any], previous: dict[str, Any] | None
+        self, state: dict[str, Any], previous: dict[str, Any] | None,
+        *, resolved: Mapping[str, Iterable[str]] | None = None,
     ) -> dict[str, list[str]]:
         domains = _state_string_list(state, "blocked_domains")
         if not domains:
@@ -372,8 +408,12 @@ class WindowsPolicyEnforcer:
         # Keep addresses until this policy is removed, including DNS answers no
         # longer advertised but still used by persistent browser connections.
         previous_is_enforced = previous and previous.get("mode") == "enforce"
-        resolved = self._domain_resolver.resolve(domains)
+        if resolved is None:
+            resolved = self._domain_resolver.resolve(domains)
+        resolved = {domain: tuple(values) for domain, values in resolved.items()}
         discovered: dict[str, list[str]] = {}
+        diagnostics = {}
+        evidence = getattr(self._domain_resolver, "last_evidence", {})
         for domain in domains:
             known = {
                 address
@@ -389,6 +429,20 @@ class WindowsPolicyEnforcer:
             if not known:
                 raise OSError(f"cannot enforce domain traffic policy: no real IP for {domain}")
             discovered[domain] = sorted(known)
+            retained_addresses = sorted(known - set(resolved.get(domain, ())))
+            diagnostics[domain] = {
+                "observations": evidence.get(domain, []),
+                "retained_addresses": retained_addresses,
+            }
+            LOGGER.info(
+                "domain_discovery domain=%s addresses=%s retained=%s coverage=best-effort",
+                domain, ",".join(discovered[domain]), ",".join(retained_addresses),
+            )
+        state["domain_resolution"] = diagnostics
+        state["network_enforcement"] = {
+            "method": "destination-ip", "coverage": "best-effort",
+            "packet_enforcement": "not-verified",
+        }
         return discovered
 
     def _write_blocked_domains(self, domains: list[str]) -> None:
@@ -445,6 +499,38 @@ class WindowsPolicyEnforcer:
         if result.returncode != 0:
             raise OSError("cannot update USB storage policy; run the Agent as Administrator")
 
+    def _enforce_browser_policies(self) -> None:
+        """Lock down browser policies (disable DoH, force direct proxy) to prevent tunnel/bypass."""
+        for key in (CHROME_POLICY_KEY, EDGE_POLICY_KEY):
+            self._runner(
+                ["reg", "add", key, "/v", "DnsOverHttpsMode", "/t", "REG_SZ", "/d", "off", "/f"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self._runner(
+                ["reg", "add", key, "/v", "ProxyMode", "/t", "REG_SZ", "/d", "direct", "/f"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+    def _restore_browser_policies(self) -> None:
+        """Remove EECP-enforced browser policies when session ends."""
+        for key in (CHROME_POLICY_KEY, EDGE_POLICY_KEY):
+            self._runner(
+                ["reg", "delete", key, "/v", "DnsOverHttpsMode", "/f"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self._runner(
+                ["reg", "delete", key, "/v", "ProxyMode", "/f"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
     def _terminate_denied(
         self, applications: list[str], *, session_id: str | None = None
     ) -> tuple[ProcessEnforcementResult, ...]:
@@ -463,7 +549,9 @@ class WindowsPolicyEnforcer:
             session_id = str(state.get("session_id", "")) if state else ""
         for process in running:
             identity = (process.pid, process.creation_time)
-            if process.name.casefold() not in denied:
+            orig = process.original_filename.casefold() if process.original_filename else None
+            is_denied = (process.name.casefold() in denied) or (orig is not None and orig in denied)
+            if not is_denied:
                 continue
             if process.username is None:
                 process = ProcessIdentity(
@@ -471,7 +559,17 @@ class WindowsPolicyEnforcer:
                     pid=process.pid,
                     creation_time=process.creation_time,
                     username=self._process_owner_provider(process.pid),
+                    original_filename=process.original_filename,
                 )
+            orig_renamed = (
+                process.original_filename
+                and process.original_filename.casefold() != process.name.casefold()
+            )
+            reported_name = (
+                f"{process.name} (orig: {process.original_filename})"
+                if orig_renamed
+                else process.name
+            )
             is_new = identity not in self._seen_processes
             if is_new:
                 self._seen_processes.add(identity)
@@ -481,10 +579,11 @@ class WindowsPolicyEnforcer:
                     "FORBIDDEN_PROCESS",
                     "DETECTED",
                     "WARNING",
-                    process_name=process.name,
+                    process_name=reported_name,
                     pid=process.pid,
                     username=process.username,
                     process_creation_time=process.creation_time,
+                    original_filename=process.original_filename,
                 )
             before = self._identity_status(process)
             if before == ProcessIdentityStatus.QUERY_FAILED:
@@ -503,11 +602,12 @@ class WindowsPolicyEnforcer:
                         "FORBIDDEN_PROCESS",
                         "QUERY_FAILED",
                         "CRITICAL",
-                        process_name=process.name,
+                        process_name=reported_name,
                         pid=process.pid,
                         username=process.username,
                         process_creation_time=process.creation_time,
                         enforcement_result="QUERY_FAILED",
+                        original_filename=process.original_filename,
                         error=enforcement.error,
                     )
                 self._process_outcomes[identity] = "QUERY_FAILED"
@@ -528,10 +628,11 @@ class WindowsPolicyEnforcer:
                         "FORBIDDEN_PROCESS",
                         "ALREADY_EXITED",
                         "WARNING",
-                        process_name=process.name,
+                        process_name=reported_name,
                         pid=process.pid,
                         username=process.username,
                         process_creation_time=process.creation_time,
+                        original_filename=process.original_filename,
                         enforcement_result="ALREADY_EXITED",
                     )
                 self._process_outcomes[identity] = "ALREADY_EXITED"
@@ -567,10 +668,11 @@ class WindowsPolicyEnforcer:
                     "FORBIDDEN_PROCESS",
                     "BLOCKED" if outcome == "TERMINATED" else outcome,
                     "CRITICAL" if outcome in {"FAILED", "QUERY_FAILED"} else "WARNING",
-                    process_name=process.name,
+                    process_name=reported_name,
                     pid=process.pid,
                     username=process.username,
                     process_creation_time=process.creation_time,
+                    original_filename=process.original_filename,
                     enforcement_result=outcome,
                 )
             self._process_outcomes[identity] = outcome
@@ -615,9 +717,27 @@ class WindowsPolicyEnforcer:
 
     def _windows_processes(self) -> tuple[ProcessIdentity, ...]:
         script = (
-            "@(Get-CimInstance Win32_Process | ForEach-Object { "
-            "[PSCustomObject]@{Name=$_.Name;Pid=$_.ProcessId;"
-            "CreationTime=$_.CreationDate} }) | ConvertTo-Json -Compress"
+            "$procs = try { Get-CimInstance Win32_Process -ErrorAction Stop } catch { $null }; "
+            "if ($procs) { "
+            "  @($procs | ForEach-Object { "
+            "    $orig = $null; "
+            "    if ($_.ExecutablePath) { "
+            "      try { "
+            "        $orig = [System.Diagnostics.FileVersionInfo]::"
+            "GetVersionInfo($_.ExecutablePath).OriginalFilename "
+            "      } catch {} "
+            "    }; "
+            "    [PSCustomObject]@{Name=$_.Name;Pid=$_.ProcessId;"
+            "CreationTime=$_.CreationDate;OriginalFilename=$orig} "
+            "  }) | ConvertTo-Json -Compress "
+            "} else { "
+            "  @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object { "
+            "    $orig = $null; "
+            "    try { $orig = $_.MainModule.FileVersionInfo.OriginalFilename } catch {}; "
+            "    [PSCustomObject]@{Name=($_.ProcessName + '.exe');Pid=$_.Id;"
+            "CreationTime=([string]$_.StartTime);OriginalFilename=$orig} "
+            "  }) | ConvertTo-Json -Compress "
+            "}"
         )
         result = self._runner(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
@@ -638,12 +758,17 @@ class WindowsPolicyEnforcer:
                 pid=int(item["Pid"]),
                 creation_time=str(item["CreationTime"]),
                 username=None,
+                original_filename=(
+                    str(item["OriginalFilename"]).lower()
+                    if item.get("OriginalFilename")
+                    else None
+                ),
             )
             for item in values
             if isinstance(item, dict)
             and item.get("Name")
             and item.get("Pid") is not None
-            and item.get("CreationTime")
+            and item.get("CreationTime") is not None
         )
 
     def _windows_process_identity_exists(

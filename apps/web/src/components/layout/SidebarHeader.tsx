@@ -22,7 +22,7 @@ export const SidebarHeader: React.FC<SidebarHeaderProps> = ({ collapsed, onToggl
           'flex items-center gap-2.5 min-w-0 group',
           collapsed ? 'justify-center' : ''
         )}
-        title="PBL4 Ops Center"
+        title="EECP Exam Control"
       >
         <div className="w-8 h-8 rounded-sm bg-primary text-surface flex items-center justify-center font-bold shrink-0 shadow-2xs group-hover:bg-primary-dark transition-colors">
           <Shield className="w-5 h-5" />
@@ -30,7 +30,7 @@ export const SidebarHeader: React.FC<SidebarHeaderProps> = ({ collapsed, onToggl
         {!collapsed && (
           <div className="flex flex-col min-w-0">
             <span className="font-bold font-sans text-sm tracking-tight text-text truncate group-hover:text-primary transition-colors">
-              PBL4 Ops Center
+              EECP Exam Control
             </span>
             <span className="text-[10px] uppercase font-sans font-semibold tracking-wider text-text-muted">
               Hệ thống giám sát thi

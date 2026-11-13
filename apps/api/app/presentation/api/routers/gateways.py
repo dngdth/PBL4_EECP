@@ -23,7 +23,7 @@ from app.domain.entities.operations import Command as DomainCommand
 from app.domain.exceptions.errors import DomainError
 from app.domain.value_objects.enums import SessionState, Severity
 from app.infrastructure.security import MachineCredentialRegistry
-from app.presentation.api.deps import authorize
+from app.presentation.api.deps import authorize, deny_scope, scoped_resources
 from contracts.v2 import (
     Ack,
     AckStatus,
@@ -58,8 +58,19 @@ logger = logging.getLogger(__name__)
 @router.get("")
 def list_gateways(request: Request) -> list[dict]:
     authorize(request, Permission.VIEW_AGENT)
+    scope = scoped_resources(request)
     values = []
     for gateway in request.app.state.container.list_gateways():
+        if scope is not None:
+            allowed_agents, allowed_gateways = scope
+            bound_ids = {
+                binding.agent_id
+                for binding in request.app.state.container.list_agents_for_gateway(
+                    gateway.id
+                )
+            }
+            if gateway.id not in allowed_gateways and not (bound_ids & allowed_agents):
+                continue
         presence = request.app.state.presence.get_gateway(gateway.id) or {}
         values.append(
             {
@@ -85,6 +96,15 @@ def resolve_agent_gateway(
     agent_id: str, request: Request
 ) -> dict | None:
     authorize(request, Permission.VIEW_AGENT)
+    scope = scoped_resources(request)
+    if scope is not None and agent_id.strip() not in scope[0]:
+        deny_scope(
+            request,
+            "AGENT_GATEWAY_BINDING",
+            agent_id,
+            "agent is outside examiner session scope",
+            "AGENT_OUTSIDE_SESSION_SCOPE",
+        )
     binding = request.app.state.container.resolve_gateway_for_agent(agent_id)
     if binding is None:
         return None

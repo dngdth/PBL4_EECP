@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { 
   PlusCircle, 
+  LayoutDashboard,
   Layers, 
   Monitor, 
   CheckCircle2, 
@@ -24,8 +25,11 @@ import { formatDateTime, formatRelativeTime } from '@/src/shared/lib/formatters'
 import { UI_LABELS } from '@/src/shared/config/labels';
 import { useRealtimeRefresh } from '@/src/shared/api/realtime';
 import { cn } from '@/src/shared/lib/cn';
+import { useAuth } from '@/src/features/auth';
 
 export const OverviewPage: React.FC = () => {
+  const { user } = useAuth();
+  const isAdmin = !user || user.role === 'ADMIN';
   const [sessions, setSessions] = useState<ExamSession[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
@@ -93,9 +97,13 @@ export const OverviewPage: React.FC = () => {
         <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-3.5 sm:py-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
             <div>
-              <h1 className="text-lg sm:text-xl font-bold font-sans tracking-tight text-text">
-                Bảng điều khiển trung tâm
+              <h1 className="text-lg sm:text-xl font-bold font-sans tracking-tight text-text flex items-center gap-2.5">
+                <LayoutDashboard className="w-5 h-5 text-primary" />
+                <span>{UI_LABELS.nav.dashboard}</span>
               </h1>
+              <p className="text-xs text-text-muted mt-0.5 font-sans">
+                Theo dõi tổng thể các ca thi đang diễn ra, trạng thái máy trạm và cảnh báo hệ thống.
+              </p>
             </div>
 
             <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
@@ -108,16 +116,18 @@ export const OverviewPage: React.FC = () => {
               >
                 Làm mới
               </Button>
-              <Link to="/sessions/new">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  leftIcon={<PlusCircle className="w-3.5 h-3.5" />}
-                  className="font-bold shadow-2xs"
-                >
-                  Tạo ca thi mới
-                </Button>
-              </Link>
+              {isAdmin && (
+                <Link to="/sessions/new">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    leftIcon={<PlusCircle className="w-3.5 h-3.5" />}
+                    className="font-bold shadow-2xs"
+                  >
+                    Tạo ca thi mới
+                  </Button>
+                </Link>
+              )}
             </div>
           </div>
         </div>
@@ -212,7 +222,7 @@ export const OverviewPage: React.FC = () => {
               <div className="flex items-center gap-2">
                 <Layers className="w-4 h-4 text-primary" />
                 <h2 className="font-sans font-bold text-xs uppercase tracking-wider text-text">
-                  Danh sách ca thi đang hoạt động ({sessions.length})
+                  Danh sách ca thi gần đây ({sessions.length})
                 </h2>
               </div>
               <Link
@@ -265,7 +275,7 @@ export const OverviewPage: React.FC = () => {
 
                           <span className="flex items-center gap-1 font-mono">
                             <Router className={cn('w-3.5 h-3.5', isCompleted ? 'text-text-subtle' : 'text-primary')} />
-                            <span>{sess.gateway_id || 'Direct'}</span>
+                            <span>{sess.gateway_id || 'Trực tiếp'}</span>
                           </span>
 
                           <span>• Cập nhật {formatRelativeTime(sess.updated_at)}</span>

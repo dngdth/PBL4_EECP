@@ -67,15 +67,35 @@ function connect(): void {
     }
   };
   socket.onerror = () => socket?.close();
-  socket.onclose = () => {
+  socket.onclose = (event) => {
     socket = null;
     window.clearInterval(heartbeatTimer);
+    if (event.code === 1008) {
+      sessionStorage.removeItem('eecp_access_token');
+      window.dispatchEvent(new CustomEvent('eecp:unauthorized'));
+      return;
+    }
     if (listeners.size > 0) {
       const delay = Math.min(1000 * 2 ** reconnectAttempt, 15_000);
       reconnectAttempt += 1;
       reconnectTimer = window.setTimeout(connect, delay);
     }
   };
+}
+
+export function disconnectRealtime(): void {
+  window.clearTimeout(reconnectTimer);
+  window.clearInterval(heartbeatTimer);
+  reconnectAttempt = 0;
+  socket?.close();
+  socket = null;
+}
+
+export function reconnectRealtime(): void {
+  disconnectRealtime();
+  if (listeners.size > 0) {
+    connect();
+  }
 }
 
 function subscribe(listener: Listener): () => void {

@@ -7,7 +7,7 @@ import { Badge } from '@/src/shared/ui/badge';
 import { Modal } from '@/src/shared/ui/modal';
 import { Spinner } from '@/src/shared/ui/spinner';
 import { formatDateTime } from '@/src/shared/lib/formatters';
-import { GATEWAY_STATUS_LABELS } from '@/src/shared/config/labels';
+import { GATEWAY_STATUS_LABELS, UI_LABELS } from '@/src/shared/config/labels';
 import { useRealtimeRefresh } from '@/src/shared/api/realtime';
 
 const formatValue = (item: unknown) =>
@@ -91,7 +91,7 @@ export const GatewaysPage: React.FC = () => {
             <div>
               <h1 className="text-lg sm:text-xl font-bold font-sans tracking-tight text-text flex items-center gap-2.5">
                 <Server className="w-5 h-5 text-primary" />
-                <span>Cổng kết nối Gateway</span>
+                <span>{UI_LABELS.nav.gateways}</span>
               </h1>
               <p className="text-xs text-text-muted mt-0.5 font-sans">
                 Giám sát trạng thái hoạt động và lưu lượng đồng bộ của các Gateway quản trị phòng máy.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -15,6 +16,8 @@ class Permission(StrEnum):
     VIEW_INCIDENT = "VIEW_INCIDENT"
     CONTROL_AGENT = "CONTROL_AGENT"
     MANAGE_POLICY = "MANAGE_POLICY"
+    CREATE_SESSION = "CREATE_SESSION"
+    MANAGE_USERS = "MANAGE_USERS"
 
 
 ROLE_PERMISSIONS = {
@@ -35,6 +38,10 @@ class Principal:
     subject: str
     role: Role
     session_scope: frozenset[str]
+    user_id: str | None = field(default=None, compare=False)
+    full_name: str | None = field(default=None, compare=False)
+    jti: str | None = field(default=None, compare=False)
+    expires_at: datetime | None = field(default=None, compare=False)
 
 
 class AuthorizationDeniedError(PermissionError):

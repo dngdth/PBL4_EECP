@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from app.application.security import Principal, Role
 
@@ -36,13 +37,18 @@ class TokenService:
 
     def issue(self, principal: Principal, now: datetime | None = None) -> str:
         issued = now or datetime.now(UTC)
-        payload = {
+        payload: dict[str, object] = {
             "sub": principal.subject,
             "role": principal.role.value,
             "sessions": sorted(principal.session_scope),
+            "jti": principal.jti or uuid4().hex,
             "iat": int(issued.timestamp()),
             "exp": int((issued + timedelta(seconds=self._lifetime)).timestamp()),
         }
+        if principal.user_id is not None:
+            payload["uid"] = principal.user_id
+        if principal.full_name is not None:
+            payload["name"] = principal.full_name
         encoded = _b64(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
         signature = _b64(hmac.new(self._key, encoded.encode(), hashlib.sha256).digest())
         return f"{encoded}.{signature}"
@@ -55,12 +61,17 @@ class TokenService:
                 raise ValueError("invalid token signature")
             payload = json.loads(_unb64(encoded))
             current = int((now or datetime.now(UTC)).timestamp())
-            if current >= int(payload["exp"]):
+            exp_ts = int(payload["exp"])
+            if current >= exp_ts:
                 raise ValueError("token expired")
             return Principal(
                 str(payload["sub"]),
                 Role(payload["role"]),
                 frozenset(str(item) for item in payload.get("sessions", [])),
+                user_id=str(payload["uid"]) if payload.get("uid") is not None else None,
+                full_name=str(payload["name"]) if payload.get("name") is not None else None,
+                jti=str(payload["jti"]) if payload.get("jti") is not None else None,
+                expires_at=datetime.fromtimestamp(exp_ts, tz=UTC),
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError("invalid or expired authentication token") from exc

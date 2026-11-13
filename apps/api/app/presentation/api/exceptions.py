@@ -4,12 +4,14 @@ from fastapi.responses import JSONResponse
 from app.domain.exceptions.errors import (
     ConcurrencyError,
     DomainError,
+    DomainValidationError,
     EntityNotFoundError,
     InvalidStateTransitionError,
     PolicyInUseError,
     PolicyValidationError,
     ReadinessGateError,
     SessionConflictError,
+    UserConflictError,
 )
 
 
@@ -44,8 +46,20 @@ def register_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         return _error(status.HTTP_409_CONFLICT, "POLICY_IN_USE", str(exc))
 
+    @app.exception_handler(UserConflictError)
+    async def user_conflict_handler(
+        _request: Request, exc: UserConflictError
+    ) -> JSONResponse:
+        return _error(status.HTTP_409_CONFLICT, "USER_CONFLICT", str(exc))
+
     @app.exception_handler(PolicyValidationError)
     async def validation_handler(_request: Request, exc: PolicyValidationError) -> JSONResponse:
+        return _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "DOMAIN_VALIDATION", str(exc))
+
+    @app.exception_handler(DomainValidationError)
+    async def domain_validation_handler(
+        _request: Request, exc: DomainValidationError
+    ) -> JSONResponse:
         return _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "DOMAIN_VALIDATION", str(exc))
 
     @app.exception_handler(DomainError)

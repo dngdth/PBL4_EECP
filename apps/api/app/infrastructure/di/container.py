@@ -33,9 +33,17 @@ from app.application.use_cases.policies.management import (
     ListTargetCommands,
     UpdatePolicyProfile,
 )
+from app.application.use_cases.users.management import (
+    AssignSessionExaminers,
+    CreateUser,
+    ListUsers,
+    UpdateUser,
+    ensure_bootstrap_user,
+)
 from app.config import Settings
 from app.infrastructure.persistence.database import SqliteDatabase
 from app.infrastructure.persistence.postgres import PostgresDatabase
+from app.infrastructure.security import hash_password
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +72,10 @@ class Container:
     list_gateways: ListGateways
     security_audit: SecurityAuditService
     record_gateway_delivery_failure: RecordGatewayDeliveryFailure
+    create_user: CreateUser
+    list_users: ListUsers
+    update_user: UpdateUser
+    assign_session_examiners: AssignSessionExaminers
 
 
 def build_container(settings: Settings) -> Container:
@@ -73,6 +85,12 @@ def build_container(settings: Settings) -> Container:
     else:
         database = SqliteDatabase(settings.database_path)
         database.initialize()
+    ensure_bootstrap_user(
+        database.unit_of_work,
+        username=settings.examiner_username,
+        password_hash=settings.examiner_password_hash,
+        role=settings.examiner_role,
+    )
     return Container(
         database=database,
         pipeline_service=ExamPipelineService(database.unit_of_work),
@@ -98,4 +116,8 @@ def build_container(settings: Settings) -> Container:
         list_gateways=ListGateways(database.unit_of_work),
         security_audit=SecurityAuditService(database.unit_of_work),
         record_gateway_delivery_failure=RecordGatewayDeliveryFailure(database.unit_of_work),
+        create_user=CreateUser(database.unit_of_work, hash_password),
+        list_users=ListUsers(database.unit_of_work),
+        update_user=UpdateUser(database.unit_of_work, hash_password),
+        assign_session_examiners=AssignSessionExaminers(database.unit_of_work),
     )

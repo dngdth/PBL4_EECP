@@ -13,6 +13,14 @@ export type SessionStatus =
   | 'RESTORING'
   | 'NORMAL';
 
+export interface AssignedExaminer {
+  id: string;
+  username: string;
+  full_name: string;
+  role: string;
+  is_active: boolean;
+}
+
 export interface CreateSessionRequest {
   name: string;
   room?: string;
@@ -22,6 +30,7 @@ export interface CreateSessionRequest {
   workstation_ids?: string[];
   policy_name?: string;
   policy_profile?: string;
+  examiner_ids?: string[];
 }
 
 export interface DeployPolicyRequest {
@@ -49,6 +58,7 @@ export interface ExamSession {
   workstations: Workstation[];
   agents?: Agent[];
   agent_count?: number;
+  examiners?: AssignedExaminer[];
   policy?: PolicyConfig;
   created_at: string;
   updated_at: string;

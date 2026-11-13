@@ -77,6 +77,10 @@ export async function apiClient<T>(endpoint: string, options: RequestOptions = {
           errorMessage = data.error;
         }
       }
+      if (response.status === 401 && !endpoint.includes('/auth/login')) {
+        sessionStorage.removeItem('eecp_access_token');
+        window.dispatchEvent(new CustomEvent('eecp:unauthorized'));
+      }
       throw new ApiError(errorMessage, response.status, data);
     }
 

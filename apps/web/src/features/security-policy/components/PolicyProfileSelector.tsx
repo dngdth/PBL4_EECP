@@ -29,7 +29,7 @@ export const PolicyProfileSelector: React.FC<PolicyProfileSelectorProps> = ({
       <div className="flex items-center justify-between">
         <label className="text-xs font-sans font-bold uppercase tracking-wider text-text flex items-center gap-1.5">
           <ShieldCheck className="w-4 h-4 text-primary" />
-          <span>Chính sách bảo mật (Policy Profile) *</span>
+          <span>Chính sách bảo mật *</span>
         </label>
         {onOpenCreateModal && (
           <button
@@ -38,7 +38,7 @@ export const PolicyProfileSelector: React.FC<PolicyProfileSelectorProps> = ({
             className="text-xs text-primary hover:text-primary-dark font-medium flex items-center gap-1 cursor-pointer transition-colors"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>Tạo profile mới</span>
+            <span>Tạo chính sách mới</span>
           </button>
         )}
       </div>
@@ -78,11 +78,11 @@ export const PolicyProfileSelector: React.FC<PolicyProfileSelectorProps> = ({
                       <span className="font-bold text-sm text-text font-sans">{profile.label}</span>
                       {profile.is_builtin ? (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-surface-subtle text-text-muted border border-border">
-                          MẶC ĐỊNH
+                          Mặc định
                         </span>
                       ) : (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-primary-soft text-primary border border-primary/20">
-                          TÙY BIẾN
+                          Tùy chỉnh
                         </span>
                       )}
                     </div>
@@ -102,7 +102,7 @@ export const PolicyProfileSelector: React.FC<PolicyProfileSelectorProps> = ({
                     {allowedApps.length > 0 && (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-success-soft text-success-dark border border-success/20">
                         <Check className="w-3 h-3" />
-                        <span>{allowedApps.length} app cho phép</span>
+                        <span>{allowedApps.length} ứng dụng cho phép</span>
                       </span>
                     )}
 
@@ -134,7 +134,7 @@ export const PolicyProfileSelector: React.FC<PolicyProfileSelectorProps> = ({
                       className="text-text-muted hover:text-text flex items-center gap-1 cursor-pointer transition-colors"
                     >
                       <FileCode className="w-3.5 h-3.5 text-primary" />
-                      <span>{isYamlOpen ? 'Ẩn cấu hình YAML' : 'Xem cấu hình YAML'}</span>
+                      <span>{isYamlOpen ? 'Ẩn cấu hình chi tiết' : 'Xem cấu hình chi tiết'}</span>
                       {isYamlOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                     </button>
                     <span className="font-mono text-[10px] text-text-subtle font-semibold">{profile.id}</span>

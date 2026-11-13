@@ -105,10 +105,10 @@ export const WorkstationsPage: React.FC = () => {
             <div>
               <h1 className="text-lg sm:text-xl font-bold font-sans tracking-tight text-text flex items-center gap-2.5">
                 <Monitor className="w-5 h-5 text-primary" />
-                <span>Giám sát Máy trạm & Agent</span>
+                <span>{UI_LABELS.nav.workstations}</span>
               </h1>
               <p className="text-xs text-text-muted mt-0.5 font-sans">
-                Quản lý và giám sát trạng thái nhịp tim thời gian thực của các máy trạm trong phòng máy.
+                Quản lý và giám sát trạng thái kết nối thời gian thực của các máy trạm trong phòng máy.
               </p>
             </div>
 
@@ -144,7 +144,7 @@ export const WorkstationsPage: React.FC = () => {
 
         <div className="bg-surface border border-border rounded-sm p-4 shadow-2xs flex items-center justify-between">
           <div>
-            <div className="text-xs font-mono text-text-muted uppercase tracking-wider">Trực tuyến (Online)</div>
+            <div className="text-xs font-mono text-text-muted uppercase tracking-wider">Trực tuyến</div>
             <div className="text-2xl font-bold font-mono text-success mt-1">{onlineCount}</div>
           </div>
           <div className="w-10 h-10 rounded-full bg-success-soft border border-success/30 flex items-center justify-center text-success-dark">
@@ -154,7 +154,7 @@ export const WorkstationsPage: React.FC = () => {
 
         <div className="bg-surface border border-border rounded-sm p-4 shadow-2xs flex items-center justify-between">
           <div>
-            <div className="text-xs font-mono text-text-muted uppercase tracking-wider">Ngoại tuyến (Offline)</div>
+            <div className="text-xs font-mono text-text-muted uppercase tracking-wider">Ngoại tuyến</div>
             <div className="text-2xl font-bold font-mono text-error mt-1">{offlineCount}</div>
           </div>
           <div className="w-10 h-10 rounded-full bg-error-soft border border-error/30 flex items-center justify-center text-error-dark">

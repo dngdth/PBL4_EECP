@@ -16,7 +16,10 @@ from app.presentation.api.deps import (
     ListPolicyProfilesUseCase,
     ListTargetCommandsUseCase,
     UpdatePolicyProfileUseCase,
+    actor_name,
     authorize,
+    deny_scope,
+    scoped_resources,
 )
 from app.presentation.schemas.exam_pipeline import SessionView
 from app.presentation.schemas.policies import (
@@ -39,6 +42,21 @@ def policy_profiles(
     return [_policy_profile_view(profile) for profile in use_case()]
 
 
+def _record_policy_profile_audit(
+    request: Request, action: str, profile_id: str, reason_code: str
+) -> None:
+    principal = getattr(request.state, "principal", None)
+    request.app.state.container.security_audit.record(
+        action=action,
+        actor=actor_name(request, "admin"),
+        actor_type=principal.role.value if principal is not None else "ADMIN",
+        resource_type="POLICY_PROFILE",
+        resource_id=profile_id,
+        reason_code=reason_code,
+        correlation_id=request.headers.get("x-correlation-id"),
+    )
+
+
 @router.post(
     "/policy-profiles",
     response_model=PolicyProfileView,
@@ -51,6 +69,9 @@ def create_policy_profile(
 ) -> PolicyProfileView:
     authorize(request, Permission.MANAGE_POLICY)
     profile = use_case(CreatePolicyProfileInput(**body.model_dump()))
+    _record_policy_profile_audit(
+        request, "POLICY_PROFILE_CREATED", profile.id, "CREATED"
+    )
     return _policy_profile_view(profile)
 
 
@@ -64,6 +85,9 @@ def update_policy_profile(
     authorize(request, Permission.MANAGE_POLICY)
     profile = use_case(
         UpdatePolicyProfileInput(id=profile_id, **body.model_dump())
+    )
+    _record_policy_profile_audit(
+        request, "POLICY_PROFILE_UPDATED", profile.id, "UPDATED"
     )
     return _policy_profile_view(profile)
 
@@ -79,6 +103,9 @@ def delete_policy_profile(
 ) -> Response:
     authorize(request, Permission.MANAGE_POLICY)
     use_case(profile_id)
+    _record_policy_profile_audit(
+        request, "POLICY_PROFILE_DELETED", profile_id.strip().upper(), "DELETED"
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -87,7 +114,29 @@ def pending_commands(
     target_id: str, use_case: ListTargetCommandsUseCase, request: Request
 ) -> list[CommandView]:
     authorize(request, Permission.CONTROL_AGENT)
-    return [_command_view(command) for command in use_case(target_id)]
+    normalized_target = target_id.strip()
+    scope = scoped_resources(request)
+    principal = getattr(request.state, "principal", None)
+    commands = use_case(normalized_target)
+    if scope is not None and principal is not None:
+        allowed_agents, allowed_gateways = scope
+        if (
+            normalized_target not in allowed_agents
+            and normalized_target not in allowed_gateways
+        ):
+            deny_scope(
+                request,
+                "COMMAND_TARGET",
+                normalized_target,
+                "target is outside examiner session scope",
+                "TARGET_OUTSIDE_SESSION_SCOPE",
+            )
+        commands = [
+            command
+            for command in commands
+            if command.session_id in principal.session_scope
+        ]
+    return [_command_view(command) for command in commands]
 
 
 @router.post("/commands/{command_id}/acknowledge", response_model=SessionView)

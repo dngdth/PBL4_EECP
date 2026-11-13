@@ -19,11 +19,16 @@ class Settings:
     examiner_password_hash: str | None = None
     gateway_credentials_json: str | None = None
     examiner_role: str = "EXAMINER"
+    enforce_auth: bool = False
+    token_lifetime_seconds: int = 3600
 
     @classmethod
     def from_env(cls) -> Settings:
         token = os.getenv("EECP_GATEWAY_BOOTSTRAP_TOKEN", "").strip()
         environment = os.getenv("EECP_ENVIRONMENT", "development").strip().lower()
+        enforce_auth_raw = os.getenv("EECP_ENFORCE_AUTH", "").strip().lower()
+        enforce_auth = enforce_auth_raw in {"1", "true", "yes", "on"}
+        token_lifetime_seconds = int(os.getenv("EECP_TOKEN_LIFETIME_SECONDS", "3600"))
         settings = cls(
             database_path=Path(os.getenv("EECP_DATABASE_PATH", "./data/eecp.db")).resolve(),
             gateway_bootstrap_token=token or None,
@@ -38,6 +43,8 @@ class Settings:
                 os.getenv("EECP_GATEWAY_CREDENTIALS_JSON", "").strip() or None
             ),
             examiner_role=os.getenv("EECP_EXAMINER_ROLE", "EXAMINER").strip().upper(),
+            enforce_auth=enforce_auth or environment == "production-like",
+            token_lifetime_seconds=token_lifetime_seconds,
         )
         if environment == "production-like":
             if not settings.database_url:
@@ -78,6 +85,10 @@ class Settings:
                     raise ValueError(f"{name} contains an insecure development value")
         if settings.presence_ttl_seconds <= 0:
             raise ValueError("presence TTL must be positive")
+        if settings.token_lifetime_seconds <= 0:
+            raise ValueError("token lifetime must be positive")
+        if enforce_auth and environment != "production-like" and not settings.auth_signing_key:
+            raise ValueError("EECP_AUTH_SIGNING_KEY is required when EECP_ENFORCE_AUTH is enabled")
         if settings.examiner_role not in {"ADMIN", "EXAMINER"}:
             raise ValueError("EECP_EXAMINER_ROLE must be ADMIN or EXAMINER")
         return settings

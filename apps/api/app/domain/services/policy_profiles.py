@@ -206,8 +206,8 @@ BUILT_IN_POLICY_PROFILES = PolicyProfileCatalog(
             id=DEFAULT_POLICY_PROFILE,
             label="Internet + No AI",
             description=(
-                "Allow programming tools and general Internet access while blocking "
-                "generative AI, social networks, remote-control software, and USB storage."
+                "Cho phép công cụ lập trình và truy cập Internet thông thường; "
+                "chặn công cụ AI, mạng xã hội, phần mềm điều khiển từ xa và khóa USB."
             ),
             rules={
                 "applications": {
@@ -223,8 +223,8 @@ BUILT_IN_POLICY_PROFILES = PolicyProfileCatalog(
             id="OFFLINE_PROGRAMMING",
             label="Offline Programming",
             description=(
-                "Allow local programming tools while blocking Internet categories, "
-                "remote-control software, and USB storage."
+                "Chỉ cho phép công cụ lập trình ngoại tuyến; chặn trình duyệt, "
+                "các dịch vụ mạng bị cấm, phần mềm điều khiển từ xa và khóa USB."
             ),
             rules={
                 "applications": {

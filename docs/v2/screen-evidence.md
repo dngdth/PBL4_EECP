@@ -36,11 +36,12 @@ Older Clients do not advertise the capability and do not receive the new message
    a current trigger after that window. Missing history is reported explicitly;
    low-resolution history cannot be reconstructed at higher resolution.
 4. Upload at most four `event_context` and one `trigger` image automatically over
-   HTTP(S) to `/screen/frames` on the Gateway. Backend validates the historical
+   HTTP(S) to `/screen/frames` on the Local Gateway (forwarded upstream to Backend
+   `POST /api/v2/screen/ingest/{gateway_id}`). Backend validates the historical
    window/event identity and enforces each representative limit under its storage
    lock, including concurrent ingests. Do not stream the entire ring. Full context/
    replay uploads require a Backend-authorized `SCREEN_REQUEST` delivered over the
-   existing WSS control plane.
+   existing Protocol v2 WSS control plane.
 5. Gateway verifies the Agent credential against its claimed identity and validates
    size/hash. It atomically persists image + manifest before `gateway_received` ACK.
    Its independent forwarder retries the Backend HTTP(S) ingest route during WAN loss.
@@ -108,13 +109,18 @@ writer; a multi-replica deployment needs shared storage and coordinated cleanup.
 
 Run `uv sync --all-packages` for native processes. API Docker dependencies include
 Pillow for image validation. Run `python -m app.infrastructure.persistence.migrate`
-before starting the new PostgreSQL API. Migration 0002 adds metadata tables; the API
-rejects a PostgreSQL database still at schema version 1.
+before starting the PostgreSQL API. Migration `0002_screen.sql` adds screen
+metadata tables and `0003_users_and_auth.sql` adds multi-user RBAC, token
+revocation, and `session_examiners` scoping tables.
 
 ## Dashboard and access
 
-The session detail page and workstation inspection modal show stored evidence,
-capture timestamps, event IDs and current availability. Select an Agent to request
+The session detail page and workstation inspection modal in the Examiner Dashboard
+show stored evidence, capture timestamps, event IDs and current availability via
+`/api/v1/sessions/{session_id}/screen/evidence`,
+`POST /api/v1/sessions/{session_id}/agents/{agent_id}/screen/requests`,
+`GET /api/v1/screen/requests/{request_id}`, and
+`GET /api/v1/screen/evidence/{evidence_id}/frames/{frame_id}`. Select an Agent to request
 a snapshot, or request the selected evidence's available pre/post frames. The frame
 slider displays capture time and trigger/context distinction. Stored images remain
 viewable after exam completion; new captures are rejected once the session finishes.
@@ -159,6 +165,8 @@ active state without a protected journal is rejected rather than silently truste
 Keep the verification secret stable; key rotation needs an explicit journal migration.
 
 ## Verification
+
+Current automated suite on 2026-11-13 (`uv run pytest apps/api/test -q`, `npm run lint --prefix apps/web`, `npm run build --prefix apps/web`, and `uv run ruff check`) passes with 2 external Postgres/Redis tests skipped (`ss`) when no external DB/Redis is attached. Real multi-monitor/SCM/privileged Windows VM validation remains `PENDING`.
 
 The 2026-11-10 lifecycle/timing fix passed 593 Python tests (2 skipped), four
 frontend tests, production TypeScript/Vite build, and Ruff on all changed Python

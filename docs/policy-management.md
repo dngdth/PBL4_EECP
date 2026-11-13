@@ -1,3 +1,5 @@
+> **[DEPRECATED / SUPERSEDED by `docs/v2/final-security-model.md` and `docs/v2/screen-evidence.md`]** — This document is retained for historical phase context only. Refer to the current canonical docs and source code for up-to-date architecture, endpoints, and verification status.
+
 # Phase 3 Policy Management
 
 ## Flow

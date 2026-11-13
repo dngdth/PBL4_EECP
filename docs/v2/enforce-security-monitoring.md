@@ -2,24 +2,27 @@
 
 ## Architecture
 
-Security evidence created by the privileged Windows Service is written first to
-`%ProgramData%\EECP\security-events.db`. The Service data directory removes inherited
-ACLs and grants full control only to LocalSystem and Built-in Administrators.
+Security evidence created by the privileged Agent Service (`agent/service/security_event_journal.py`)
+is written first to `%ProgramData%\EECP\security-events.db`. The Agent Service data
+directory removes inherited ACLs and grants full control only to LocalSystem and
+Built-in Administrators.
 
-The normal-user Agent reads bounded batches over the existing local-only Named Pipe
+The normal-user Agent Client (`agent/client/sensors/security_event_sensor.py`)
+reads bounded batches over the existing local-only Named Pipe (`agent/ipc/security_events.py`)
 using `LIST_PENDING_SECURITY_SESSIONS` and `READ_SECURITY_EVENTS`. The listing is
 metadata-only and every request is bound to the configured Agent identity plus the
-machine-local token. This lets a reconnecting Client drain events after Session
+machine-local token. This lets a reconnecting Agent Client drain events after Session
 FINISHED without reactivating Enforce. After each event has been durably written to
-the AgentEventSpool, it sends `ACK_SECURITY_EVENTS`. None of these operations can
-execute SQL, access an arbitrary file, run a shell command, or mutate enforcement.
-The original event ID and occurrence time are preserved. A Backend permanent reject
-is quarantined rather than retried forever or silently deleted.
+the `AgentEventSpool` (`agent/client/infrastructure/event_spool.py`), it sends
+`ACK_SECURITY_EVENTS`. None of these operations can execute SQL, access an arbitrary
+file, run a shell command, or mutate enforcement. The original event ID and occurrence
+time are preserved. A Backend permanent reject is quarantined rather than retried
+forever or silently deleted.
 
 ```text
-Windows Service -> Service SQLite journal -> authenticated read/ack IPC
-  -> AgentEventSpool -> Gateway durable buffer -> Backend telemetry
-  -> scoped Realtime notification -> Dashboard security timeline
+Agent Service -> Service SQLite journal -> authenticated read/ack Named Pipe IPC
+  -> AgentEventSpool -> Local Gateway durable buffer -> Backend telemetry
+  -> scoped Realtime notification (/api/v1/ws) -> Examiner Dashboard security timeline
 ```
 
 Provision a machine-local secret for the Windows account that runs the Agent Client

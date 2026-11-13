@@ -6,15 +6,17 @@ on an administrator workstation carrying real network policy.
 
 1. Start PostgreSQL and verify its health check.
 2. Start Redis and verify `PING` plus Backend presence health.
-3. Run migrations, then start the Backend; `/health` must report dependencies.
+3. Run migrations (`0001_initial.sql`, `0002_screen.sql`, `0003_users_and_auth.sql`), then start the Backend; `/health` must report dependencies.
 4. Start the Local Gateway with WSS, its Gateway credential, Agent credential map,
    and writable SQLite buffer; verify uplink ONLINE.
-5. Start the Vite/Nginx Web image and open the Dashboard.
+5. Start the Vite/Nginx Web image and open the Examiner Dashboard.
 6. **Windows VM only:** install/start Agent Service under SCM LocalSystem with policy
    and command verification keys and a persistent state directory.
 7. Start Agent Client as a normal user with no signing key; verify Gateway presence.
-8. Log in as Examiner and demonstrate an unauthorized role receives 403.
-9. Create a Session and assign the Agent.
+8. Log in as `ADMIN`, create an `EXAMINER` account on `/users`, and demonstrate an
+   unauthorized role receives `403` on admin-only routes (`/api/v1/users`).
+9. Create a Session, assign the Agent and `EXAMINER` (`PUT /api/v1/sessions/{session_id}/examiners`),
+   and verify the `EXAMINER` only sees assigned sessions (and loses WS `/api/v1/ws` access with code `1008` if locked or logged out).
 10. Deploy policy; show its canonical expected hash.
 11. Trace command ID Backend → Gateway → Client → Named Pipe → Service.
 12. Show successful ACK and identical Service/ACK/Backend applied hash.
@@ -22,7 +24,7 @@ on an administrator workstation carrying real network policy.
 14. **Windows VM only:** verify deterministic outbound Firewall IP/CIDR rules and an
     unrelated Firewall rule remains.
 15. Start a forbidden test process; show sensor detection/Service enforcement.
-16. Show the persisted Incident and audit entry in the Dashboard.
+16. Show the persisted Incident, Screen Evidence context/trigger frames, and audit entry in the Examiner Dashboard.
 17. Disconnect the Gateway Backend uplink while keeping Agent LAN connectivity.
 18. Emit Events and show the Gateway SQLite pending/backlog health.
 19. Restore WAN/uplink and wait for backlog zero.

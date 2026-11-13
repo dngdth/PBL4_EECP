@@ -2,18 +2,18 @@
 
 ## 1. Topology
 
-Một máy server chạy Backend, Web, PostgreSQL, Redis và Local Gateway. Mỗi máy
-thi chạy Agent Client bằng tài khoản thường và Agent Service riêng dưới LocalSystem.
-Không cần dành một máy thi để chạy Gateway.
+Một máy server chạy Backend, Examiner Dashboard, PostgreSQL, Redis và Local Gateway.
+Mỗi máy thi chạy Agent Client bằng tài khoản thường và Agent Service riêng dưới
+LocalSystem. Không cần dành một máy thi để chạy Local Gateway.
 
 ```text
 30 Agent Client ── WSS :8443 ── Local Gateway
                                      │
-                              WSS, mạng nội bộ Docker
+                              WSS + HTTPS ingest (/api/v2/screen/ingest/{gateway_id}), mạng nội bộ Docker
                                      │
                          gateway-backend-tls :9443
                                      │ HTTP nội bộ Docker
-                                API :8000
+                                Backend API :8000
                                      │
                               PostgreSQL / Redis
 ```

@@ -10,6 +10,7 @@ from app.domain.entities.exam_session import ExamSession
 from app.domain.entities.gateway import AgentGatewayBinding, Gateway, GatewayStatus
 from app.domain.entities.operations import AuditEvent, Command, Incident, TelemetryEvent
 from app.domain.entities.session_workstation import SessionWorkstation
+from app.domain.entities.user import User, UserRole
 from app.domain.exceptions.errors import ConcurrencyError, EntityNotFoundError
 from app.domain.services.policies import compute_audit_hash
 from app.domain.services.policy_profiles import PolicyProfileDefinition
@@ -588,8 +589,10 @@ class SqliteTelemetryRepository:
             """
             SELECT * FROM telemetry_events
              WHERE session_id = ?
-               AND event_type = 'POLICY_VIOLATION'
-               AND action IN ('BLOCKED', 'OBSERVED')
+               AND (
+                   (event_type = 'POLICY_VIOLATION' AND action IN ('BLOCKED', 'OBSERVED'))
+                   OR event_type = 'FORBIDDEN_PROCESS_DETECTED'
+               )
              ORDER BY occurred_at DESC, id DESC
              LIMIT ?
             """,
@@ -775,6 +778,143 @@ class SqliteAuditRepository:
         ).fetchone()
 
 
+class SqliteUserRepository:
+    def __init__(self, connection: sqlite3.Connection):
+        self._connection = connection
+
+    def add(self, user: User) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO users(
+                id, username, password_hash, full_name, role, is_active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user.id,
+                user.username,
+                user.password_hash,
+                user.full_name,
+                user.role.value,
+                int(user.is_active),
+                user.created_at.isoformat(),
+                user.updated_at.isoformat(),
+            ),
+        )
+
+    def get(self, user_id: str) -> User:
+        user = self.find(user_id)
+        if user is None:
+            raise EntityNotFoundError(f"user not found: {user_id}")
+        return user
+
+    def find(self, user_id: str) -> User | None:
+        row = self._connection.execute(
+            "SELECT * FROM users WHERE id = ?",
+            (user_id.strip(),),
+        ).fetchone()
+        return self._from_row(row) if row is not None else None
+
+    def find_by_username(self, username: str) -> User | None:
+        row = self._connection.execute(
+            "SELECT * FROM users WHERE username = ?",
+            (username.strip().lower(),),
+        ).fetchone()
+        return self._from_row(row) if row is not None else None
+
+    def save(self, user: User) -> None:
+        cursor = self._connection.execute(
+            """
+            UPDATE users
+               SET username = ?,
+                   password_hash = ?,
+                   full_name = ?,
+                   role = ?,
+                   is_active = ?,
+                   updated_at = ?
+             WHERE id = ?
+            """,
+            (
+                user.username,
+                user.password_hash,
+                user.full_name,
+                user.role.value,
+                int(user.is_active),
+                user.updated_at.isoformat(),
+                user.id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise EntityNotFoundError(f"user not found: {user.id}")
+
+    def list_all(
+        self, *, role: UserRole | None = None, active_only: bool = False
+    ) -> list[User]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if role is not None:
+            clauses.append("role = ?")
+            params.append(role.value)
+        if active_only:
+            clauses.append("is_active = 1")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._connection.execute(
+            f"SELECT * FROM users {where} ORDER BY created_at DESC, username ASC",
+            tuple(params),
+        ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    def assign_session_examiners(
+        self, session_id: str, user_ids: Sequence[str], assigned_at: datetime
+    ) -> None:
+        self._connection.execute(
+            "DELETE FROM session_examiners WHERE session_id = ?",
+            (session_id,),
+        )
+        deduped = list(dict.fromkeys(uid.strip() for uid in user_ids if uid.strip()))
+        for user_id in deduped:
+            self._connection.execute(
+                """
+                INSERT INTO session_examiners(session_id, user_id, assigned_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT (session_id, user_id) DO NOTHING
+                """,
+                (session_id, user_id, assigned_at.isoformat()),
+            )
+
+    def list_session_examiners(self, session_id: str) -> list[User]:
+        rows = self._connection.execute(
+            """
+            SELECT u.*
+              FROM users u
+              JOIN session_examiners se ON se.user_id = u.id
+             WHERE se.session_id = ?
+             ORDER BY u.full_name ASC, u.username ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    def list_session_ids_for_user(self, user_id: str) -> frozenset[str]:
+        rows = self._connection.execute(
+            "SELECT session_id FROM session_examiners WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        return frozenset(row["session_id"] for row in rows)
+
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> User:
+        return User(
+            id=row["id"],
+            username=row["username"],
+            password_hash=row["password_hash"],
+            full_name=row["full_name"],
+            role=UserRole(row["role"]),
+            is_active=bool(row["is_active"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+
 class SqliteUnitOfWork:
     def __init__(self, database: SqliteDatabase):
         self._database = database
@@ -795,6 +935,7 @@ class SqliteUnitOfWork:
         self.telemetry = SqliteTelemetryRepository(self._connection)
         self.incidents = SqliteIncidentRepository(self._connection)
         self.audits = SqliteAuditRepository(self._connection)
+        self.users = SqliteUserRepository(self._connection)
         return self
 
     def commit(self) -> None:

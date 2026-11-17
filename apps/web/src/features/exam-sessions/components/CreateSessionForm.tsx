@@ -7,13 +7,16 @@ import {
   ShieldAlert, 
   Check, 
   Plus, 
+  PlusCircle,
   Layers, 
   ArrowLeft,
   ChevronRight,
-  ShieldCheck
+  ShieldCheck,
+  Users
 } from 'lucide-react';
 import { Button } from '@/src/shared/ui/button';
 import { Input } from '@/src/shared/ui/input';
+import { UI_LABELS } from '@/src/shared/config/labels';
 import { createSession } from '../services/sessionApi';
 import { CreateSessionRequest, PolicyProfile, Agent } from '@/src/domain';
 import { 
@@ -22,6 +25,7 @@ import {
   listPolicyProfiles 
 } from '@/src/features/security-policy';
 import { AgentSelector, listAgents } from '@/src/features/workstations';
+import { listUsers, UserAccount } from '@/src/features/auth';
 
 const DEFAULT_WORKSTATIONS = [
   'PC01', 'PC02', 'PC03', 'PC04', 'PC05', 'PC06',
@@ -34,7 +38,6 @@ export const CreateSessionForm: React.FC = () => {
   // Basic Info
   const [name, setName] = useState<string>('');
   const [roomId, setRoomId] = useState<string>('A101');
-  const [gatewayId, setGatewayId] = useState<string>('gw-f301');
 
   // Policy Profile State
   const [policyProfiles, setPolicyProfiles] = useState<PolicyProfile[]>([]);
@@ -46,6 +49,10 @@ export const CreateSessionForm: React.FC = () => {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [isAgentsLoading, setIsAgentsLoading] = useState<boolean>(true);
   const [selectedWorkstations, setSelectedWorkstations] = useState<string[]>(DEFAULT_WORKSTATIONS);
+
+  // Examiners Assignment State
+  const [examiners, setExaminers] = useState<UserAccount[]>([]);
+  const [selectedExaminerIds, setSelectedExaminerIds] = useState<string[]>([]);
 
   // Form State
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -96,7 +103,16 @@ export const CreateSessionForm: React.FC = () => {
   useEffect(() => {
     fetchProfiles();
     fetchAgents();
+    listUsers({ role: 'EXAMINER', active_only: true })
+      .then((list) => setExaminers(list))
+      .catch(() => setExaminers([]));
   }, []);
+
+  const toggleExaminer = (userId: string) => {
+    setSelectedExaminerIds((prev) =>
+      prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId],
+    );
+  };
 
   const handleProfileCreated = (newProfile: PolicyProfile) => {
     setPolicyProfiles((prev) => [newProfile, ...prev]);
@@ -113,10 +129,6 @@ export const CreateSessionForm: React.FC = () => {
       setErrorMsg('Vui lòng nhập phòng thi.');
       return;
     }
-    if (!gatewayId.trim()) {
-      setErrorMsg('Vui lòng chỉ định Gateway quản trị.');
-      return;
-    }
     if (selectedWorkstations.length === 0) {
       setErrorMsg('Vui lòng thêm ít nhất một máy trạm cho ca thi.');
       return;
@@ -128,9 +140,9 @@ export const CreateSessionForm: React.FC = () => {
     const payload: CreateSessionRequest = {
       name: name.trim(),
       room_id: roomId.trim(),
-      gateway_id: gatewayId.trim(),
       workstation_ids: selectedWorkstations,
       policy_name: selectedProfileId || undefined,
+      examiner_ids: selectedExaminerIds,
     };
 
     try {
@@ -143,6 +155,15 @@ export const CreateSessionForm: React.FC = () => {
   };
 
   const selectedProfile = policyProfiles.find((p) => p.id === selectedProfileId);
+  const detectedGateways = Array.from(
+    new Set(
+      agents
+        .filter((a) => selectedWorkstations.includes(a.id) && a.gateway_id)
+        .map((a) => a.gateway_id as string),
+    ),
+  );
+  const detectedGatewayLabel =
+    detectedGateways.length > 0 ? detectedGateways.join(', ') : 'Theo máy trạm';
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col min-h-full w-full overflow-x-hidden">
@@ -152,17 +173,21 @@ export const CreateSessionForm: React.FC = () => {
           {/* Breadcrumb Navigation */}
           <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-xs text-text-muted select-none mb-1 font-sans">
             <Link to="/sessions" className="text-text-muted hover:text-primary font-medium hover:underline transition-colors">
-              Ca thi
+              {UI_LABELS.nav.liveSessions}
             </Link>
             <span className="text-text-subtle">/</span>
-            <span className="text-text font-medium truncate">Tạo ca thi mới</span>
+            <span className="text-text font-medium truncate">{UI_LABELS.nav.newSession}</span>
           </nav>
 
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
             <div>
-              <h1 className="text-lg sm:text-xl font-bold font-sans tracking-tight text-text">
-                Tạo ca thi mới
+              <h1 className="text-lg sm:text-xl font-bold font-sans tracking-tight text-text flex items-center gap-2.5">
+                <PlusCircle className="w-5 h-5 text-primary" />
+                <span>{UI_LABELS.nav.newSession}</span>
               </h1>
+              <p className="text-xs text-text-muted mt-0.5 font-sans">
+                Thiết lập thông tin ca thi, phân công giám thị và chọn máy trạm tham gia.
+              </p>
             </div>
 
             <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
@@ -205,7 +230,7 @@ export const CreateSessionForm: React.FC = () => {
               </h2>
 
               <Input
-                label="Tên ca thi *"
+                label="Tên ca thi"
                 placeholder="VD: Thi giữa kỳ Hệ điều hành 2026 - Ca 1"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -214,19 +239,20 @@ export const CreateSessionForm: React.FC = () => {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Input
-                  label="Phòng thi *"
+                  label="Phòng thi"
                   placeholder="VD: A101"
                   value={roomId}
                   onChange={(e) => setRoomId(e.target.value)}
                   required
                 />
-                <Input
-                  label="Gateway quản trị (Phòng) *"
-                  placeholder="VD: gw-f301"
-                  value={gatewayId}
-                  onChange={(e) => setGatewayId(e.target.value)}
-                  required
-                />
+                <div className="space-y-1">
+                  <label className="block text-xs font-semibold text-text-muted font-sans">
+                    Gateway định tuyến (tự động)
+                  </label>
+                  <div className="h-9 px-3 rounded border border-border bg-surface-subtle flex items-center text-xs font-mono text-text truncate">
+                    {detectedGatewayLabel}
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -249,6 +275,44 @@ export const CreateSessionForm: React.FC = () => {
                 onChange={(ids) => setSelectedWorkstations(ids)}
                 isLoading={isAgentsLoading}
               />
+            </div>
+
+            {/* Section 4: Phân công Giám thị */}
+            <div className="bg-surface border border-border rounded p-5 sm:p-6 space-y-3 shadow-2xs">
+              <h2 className="text-sm uppercase tracking-wider font-bold text-text-muted flex items-center gap-2">
+                <Users className="w-4 h-4 text-primary" />
+                <span>Phân công Giám thị phụ trách (tùy chọn)</span>
+              </h2>
+              {examiners.length === 0 ? (
+                <p className="text-xs text-text-muted">
+                  Chưa có tài khoản giám thị nào đang hoạt động. Bạn có thể tạo tài khoản tại mục Quản lý giám thị.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {examiners.map((examiner) => {
+                    const checked = selectedExaminerIds.includes(examiner.id);
+                    return (
+                      <label
+                        key={examiner.id}
+                        className="flex items-center gap-2.5 p-2.5 rounded border border-border hover:bg-surface-subtle cursor-pointer text-xs"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleExaminer(examiner.id)}
+                          className="rounded border-border"
+                        />
+                        <div className="min-w-0">
+                          <div className="font-semibold text-text truncate">{examiner.full_name}</div>
+                          <div className="font-mono text-[11px] text-text-muted truncate">
+                            @{examiner.username}
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
 
@@ -275,9 +339,11 @@ export const CreateSessionForm: React.FC = () => {
                   <span className="font-semibold text-text">{roomId || '—'}</span>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <span className="text-text-muted">Gateway:</span>
-                  <span className="font-mono font-semibold text-text">{gatewayId || '—'}</span>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-text-muted whitespace-nowrap">Định tuyến Gateway:</span>
+                  <span className="font-mono font-semibold text-text text-right truncate">
+                    {detectedGatewayLabel}
+                  </span>
                 </div>
 
                 <div className="flex items-center justify-between">

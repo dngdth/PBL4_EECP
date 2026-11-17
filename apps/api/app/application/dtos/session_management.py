@@ -1,7 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.domain.entities.exam_session import ExamSession
+from app.domain.entities.user import User
 from app.domain.value_objects.enums import AgentStatus, SessionState
 
 
@@ -12,6 +13,7 @@ class CreateExamSessionInput:
     agent_ids: list[str]
     actor: str = "teacher"
     policy_profile: str = "INTERNET_NO_AI"
+    examiner_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +49,7 @@ class ExamSessionDetails:
     session: ExamSession
     agents: list[AssignedAgentDetails]
     violations: list[PolicyViolationDetails]
+    examiners: list[User] = field(default_factory=list)
 
     @property
     def agent_count(self) -> int:

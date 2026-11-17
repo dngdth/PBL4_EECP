@@ -1,8 +1,9 @@
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 
-from app.application.security import AuthorizationDeniedError, Permission
+from app.application.security import AuthorizationDeniedError, Permission, Principal, Role
 from app.application.use_cases.agents.management import (
     HeartbeatAgent,
     ListAgents,
@@ -24,6 +25,13 @@ from app.application.use_cases.policies.management import (
     ListTargetCommands,
     UpdatePolicyProfile,
 )
+from app.application.use_cases.users.management import (
+    AssignSessionExaminers,
+    CreateUser,
+    ListUsers,
+    UpdateUser,
+)
+from app.domain.entities.user import UserRole
 
 
 def get_pipeline_service(request: Request) -> ExamPipelineService:
@@ -126,6 +134,74 @@ AcknowledgeCommandUseCase = Annotated[
 ]
 
 
+def get_create_user(request: Request) -> CreateUser:
+    return request.app.state.container.create_user
+
+
+def get_list_users(request: Request) -> ListUsers:
+    return request.app.state.container.list_users
+
+
+def get_update_user(request: Request) -> UpdateUser:
+    return request.app.state.container.update_user
+
+
+def get_assign_session_examiners(request: Request) -> AssignSessionExaminers:
+    return request.app.state.container.assign_session_examiners
+
+
+CreateUserUseCase = Annotated[CreateUser, Depends(get_create_user)]
+ListUsersUseCase = Annotated[ListUsers, Depends(get_list_users)]
+UpdateUserUseCase = Annotated[UpdateUser, Depends(get_update_user)]
+AssignSessionExaminersUseCase = Annotated[
+    AssignSessionExaminers, Depends(get_assign_session_examiners)
+]
+
+
+def auth_enforced(settings: object) -> bool:
+    return bool(
+        getattr(settings, "enforce_auth", False)
+        or getattr(settings, "environment", "") == "production-like"
+    )
+
+
+def actor_name(request: Request, fallback: str) -> str:
+    principal = getattr(request.state, "principal", None)
+    if principal is not None and principal.subject:
+        return principal.subject
+    return fallback
+
+
+def hydrate_principal(app: object, principal: Principal) -> Principal:
+    if principal.expires_at is not None and datetime.now(UTC) >= principal.expires_at:
+        raise ValueError("token expired")
+    revocation = getattr(app.state, "token_revocation", None)  # type: ignore[attr-defined]
+    if revocation is not None and principal.jti and revocation.is_revoked(principal.jti):
+        raise ValueError("token revoked")
+    if principal.user_id is None:
+        return principal
+    container = app.state.container  # type: ignore[attr-defined]
+    with container.database.unit_of_work() as uow:
+        user = uow.users.find(principal.user_id)
+        if user is None or not user.is_active:
+            raise ValueError("account is inactive or removed")
+        scope = (
+            frozenset()
+            if user.role == UserRole.ADMIN
+            else uow.users.list_session_ids_for_user(user.id)
+        )
+        uow.commit()
+    return Principal(
+        subject=user.username,
+        role=Role(user.role.value),
+        session_scope=scope,
+        user_id=user.id,
+        full_name=user.full_name,
+        jti=principal.jti,
+        expires_at=principal.expires_at,
+    )
+
+
 def authorize(
     request: Request,
     permission: Permission,
@@ -133,7 +209,7 @@ def authorize(
     session_id: str | None = None,
     session_state: str | None = None,
 ) -> None:
-    if request.app.state.settings.environment != "production-like":
+    if not auth_enforced(request.app.state.settings):
         return
     principal = getattr(request.state, "principal", None)
     if principal is None:
@@ -159,3 +235,44 @@ def authorize(
             correlation_id=request.headers.get("x-correlation-id"),
         )
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+
+
+def scoped_resources(
+    request: Request,
+) -> tuple[frozenset[str], frozenset[str]] | None:
+    """Return `(agent_ids, gateway_ids)` visible to a scoped principal, or `None`."""
+    if not auth_enforced(request.app.state.settings):
+        return None
+    principal = getattr(request.state, "principal", None)
+    if principal is None or principal.role == Role.ADMIN:
+        return None
+    agent_ids: set[str] = set()
+    gateway_ids: set[str] = set()
+    with request.app.state.container.database.unit_of_work() as uow:
+        for session in uow.sessions.list_all():
+            if session.id in principal.session_scope:
+                agent_ids.update(session.workstations.keys())
+                if session.gateway_id:
+                    gateway_ids.add(session.gateway_id)
+        uow.commit()
+    return frozenset(agent_ids), frozenset(gateway_ids)
+
+
+def deny_scope(
+    request: Request,
+    resource_type: str,
+    resource_id: str,
+    detail: str,
+    reason_code: str,
+) -> None:
+    principal = getattr(request.state, "principal", None)
+    request.app.state.container.security_audit.record(
+        action="AUTHORIZATION_DENIED",
+        actor=principal.subject if principal is not None else "anonymous",
+        actor_type=principal.role.value if principal is not None else "ANONYMOUS",
+        resource_type=resource_type,
+        resource_id=resource_id,
+        reason_code=reason_code[:128],
+        correlation_id=request.headers.get("x-correlation-id"),
+    )
+    raise HTTPException(status.HTTP_403_FORBIDDEN, detail)

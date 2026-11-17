@@ -14,6 +14,14 @@ class PolicyValidationError(DomainError, ValueError):
     pass
 
 
+class DomainValidationError(DomainError, ValueError):
+    pass
+
+
+class UserConflictError(DomainError):
+    pass
+
+
 class ReadinessGateError(DomainError):
     pass
 

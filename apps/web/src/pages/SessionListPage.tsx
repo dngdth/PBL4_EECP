@@ -8,8 +8,11 @@ import { Spinner } from '@/src/shared/ui/spinner';
 import { formatDateTime, formatRelativeTime } from '@/src/shared/lib/formatters';
 import { useRealtimeRefresh } from '@/src/shared/api/realtime';
 import { cn } from '@/src/shared/lib/cn';
+import { useAuth } from '@/src/features/auth';
+import { UI_LABELS } from '@/src/shared/config/labels';
 
 export const SessionListPage: React.FC = () => {
+  const { isAdmin } = useAuth();
   const [sessions, setSessions] = useState<ExamSession[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
@@ -75,9 +78,13 @@ export const SessionListPage: React.FC = () => {
         <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-3.5 sm:py-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
             <div>
-              <h1 className="text-lg sm:text-xl font-bold font-sans tracking-tight text-text">
-                Danh mục ca thi
+              <h1 className="text-lg sm:text-xl font-bold font-sans tracking-tight text-text flex items-center gap-2.5">
+                <Layers className="w-5 h-5 text-primary" />
+                <span>{UI_LABELS.nav.liveSessions}</span>
               </h1>
+              <p className="text-xs text-text-muted mt-0.5 font-sans">
+                Xem, tìm kiếm và điều phối các ca thi đang mở hoặc đã kết thúc.
+              </p>
             </div>
 
             <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
@@ -91,11 +98,13 @@ export const SessionListPage: React.FC = () => {
                 Làm mới
               </Button>
 
-              <Link to="/sessions/new">
-                <Button variant="primary" size="sm" leftIcon={<Plus className="w-4 h-4" />} className="font-bold shadow-2xs">
-                  Tạo ca thi mới
-                </Button>
-              </Link>
+              {isAdmin && (
+                <Link to="/sessions/new">
+                  <Button variant="primary" size="sm" leftIcon={<Plus className="w-4 h-4" />} className="font-bold shadow-2xs">
+                    Tạo ca thi mới
+                  </Button>
+                </Link>
+              )}
             </div>
           </div>
         </div>
@@ -111,8 +120,8 @@ export const SessionListPage: React.FC = () => {
 
         {/* Filter & Search Bar */}
         <div className="bg-surface border border-border rounded-sm p-3.5 sm:p-4 space-y-3 shadow-2xs">
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-            <div className="relative flex-1 w-full">
+          <div className="flex flex-col xl:flex-row items-stretch xl:items-center gap-3">
+            <div className="relative flex-1 min-w-[260px]">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle" />
               <input
                 type="text"
@@ -123,7 +132,7 @@ export const SessionListPage: React.FC = () => {
               />
             </div>
 
-            <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0 no-scrollbar">
+            <div className="flex items-center flex-wrap gap-1.5 w-full xl:w-auto">
               {statuses.map((st) => (
                 <button
                   key={st.key}

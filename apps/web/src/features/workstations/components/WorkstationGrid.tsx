@@ -78,7 +78,7 @@ export const WorkstationGrid: React.FC<WorkstationGridProps> = ({
         <div className="flex items-center gap-2">
           <Monitor className="w-4 h-4 text-primary shrink-0" />
           <h2 className="font-sans font-bold text-sm uppercase tracking-wider text-text">
-            {UI_LABELS.workstation.title}
+            {UI_LABELS.workstations.title}
           </h2>
           <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-surface-subtle border border-border text-text-muted">
             {totalCount} máy

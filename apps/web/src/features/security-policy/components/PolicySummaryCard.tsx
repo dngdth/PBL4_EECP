@@ -115,7 +115,7 @@ export const PolicySummaryCard: React.FC<PolicySummaryCardProps> = ({
                     ? 'bg-success-soft border-success/30 text-success-dark'
                     : 'bg-warning-soft border-warning/30 text-warning-dark'
                 )}
-                title={policy.network_lockdown ? 'Đang chặn danh mục AI, MXH, VPN qua file hosts' : 'Cảnh báo: Danh mục web cấm chưa bị chặn'}
+                title={policy.network_lockdown ? 'Đang chặn danh mục AI, mạng xã hội, VPN' : 'Cảnh báo: Danh mục web cấm chưa bị chặn'}
               >
                 {policy.network_lockdown ? (
                   <Check className="w-3 h-3 text-success stroke-[2.5]" />

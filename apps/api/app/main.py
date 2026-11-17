@@ -12,9 +12,15 @@ from app.application.security import AuthorizationService
 from app.config import Settings
 from app.infrastructure.di.container import build_container
 from app.infrastructure.gateway_connections import GatewayConnectionRegistry
-from app.infrastructure.presence import MemoryPresenceStore, RedisPresenceStore
+from app.infrastructure.presence import (
+    MemoryPresenceStore,
+    MemoryTokenRevocationStore,
+    RedisPresenceStore,
+    RedisTokenRevocationStore,
+)
 from app.infrastructure.screen_store import ScreenStore
 from app.infrastructure.security import TokenService
+from app.presentation.api.deps import auth_enforced, hydrate_principal
 from app.presentation.api.exceptions import register_exception_handlers
 from app.presentation.api.routers.agents import router as agents_router
 from app.presentation.api.routers.auth import router as auth_router
@@ -22,6 +28,7 @@ from app.presentation.api.routers.exam_sessions import router
 from app.presentation.api.routers.gateways import router as gateways_router
 from app.presentation.api.routers.policies import router as policies_router
 from app.presentation.api.routers.screen import router as screen_router
+from app.presentation.api.routers.users import router as users_router
 from app.presentation.realtime import (
     RealtimeHub,
     realtime_notification_middleware,
@@ -82,9 +89,17 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
     )
     app.state.examiner_session_scope = os.getenv("EECP_EXAMINER_SESSION_SCOPE", "")
     app.state.token_service = (
-        TokenService(settings.auth_signing_key)
+        TokenService(
+            settings.auth_signing_key,
+            lifetime_seconds=settings.token_lifetime_seconds,
+        )
         if settings.auth_signing_key
         else None
+    )
+    app.state.token_revocation = (
+        RedisTokenRevocationStore(settings.redis_url)
+        if settings.redis_url
+        else MemoryTokenRevocationStore()
     )
     app.state.authorization = AuthorizationService()
     app.include_router(router)
@@ -93,6 +108,7 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
     app.include_router(agents_router)
     app.include_router(gateways_router)
     app.include_router(auth_router)
+    app.include_router(users_router)
     app.include_router(realtime_router)
     app.middleware("http")(realtime_notification_middleware)
     register_exception_handlers(app)
@@ -103,13 +119,14 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
             ("/api/v1", "/api/v2/gateways")
         )
         if (
-            request.app.state.settings.environment != "production-like"
+            not auth_enforced(request.app.state.settings)
             or not examiner_api
             or request.url.path == "/api/v1/auth/login"
         ):
             return await call_next(request)
         authorization = request.headers.get("authorization", "")
-        if not authorization.startswith("Bearer ") or app.state.token_service is None:
+        token_service = request.app.state.token_service
+        if not authorization.startswith("Bearer ") or token_service is None:
             container.security_audit.record(
                 action="AUTHENTICATION_DENIED",
                 actor="anonymous",
@@ -121,15 +138,22 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
             )
             return JSONResponse({"detail": "authentication required"}, status_code=401)
         try:
-            request.state.principal = app.state.token_service.verify(authorization[7:])
-        except ValueError:
+            verified = token_service.verify(authorization[7:])
+            request.state.principal = hydrate_principal(request.app, verified)
+        except ValueError as exc:
+            err_msg = str(exc)
+            reason = (
+                "REVOKED_OR_INACTIVE_TOKEN"
+                if "revoked" in err_msg or "inactive" in err_msg
+                else "INVALID_OR_EXPIRED_TOKEN"
+            )
             container.security_audit.record(
                 action="AUTHENTICATION_DENIED",
                 actor="unknown-token-subject",
                 actor_type="EXAMINER",
                 resource_type="HTTP_API",
                 resource_id=request.url.path,
-                reason_code="INVALID_OR_EXPIRED_TOKEN",
+                reason_code=reason,
                 correlation_id=request.headers.get("x-correlation-id"),
             )
             return JSONResponse({"detail": "invalid or expired token"}, status_code=401)

@@ -14,7 +14,9 @@ from app.domain.entities.agent import Agent
 from app.domain.entities.exam_session import ExamSession
 from app.domain.entities.operations import Command
 from app.domain.entities.session_workstation import SessionWorkstation
+from app.domain.entities.user import User, UserRole
 from app.domain.exceptions.errors import (
+    DomainValidationError,
     PolicyValidationError,
     ReadinessGateError,
     SessionConflictError,
@@ -65,10 +67,28 @@ class CreateExamSession:
             if offline_ids:
                 uow.commit()
             else:
+                deduped_examiner_ids = list(
+                    dict.fromkeys(uid.strip() for uid in data.examiner_ids if uid.strip())
+                )
+                examiners: list[User] = []
+                if deduped_examiner_ids:
+                    for user_id in deduped_examiner_ids:
+                        user = uow.users.get(user_id)
+                        if user.role != UserRole.EXAMINER:
+                            raise DomainValidationError(
+                                f"user {user.username} is not an EXAMINER account"
+                            )
+                        if not user.is_active:
+                            raise DomainValidationError(
+                                f"examiner {user.username} is inactive and cannot be assigned"
+                            )
+                        examiners.append(user)
                 uow.sessions.add(session)
                 uow.session_workstations.assign_many(
                     [SessionWorkstation.assign(session.id, agent.id, at) for agent in agents]
                 )
+                if deduped_examiner_ids:
+                    uow.users.assign_session_examiners(session.id, deduped_examiner_ids, at)
                 uow.commands.add_many(
                     [
                         Command(
@@ -97,6 +117,7 @@ class CreateExamSession:
                         "workstations": sorted(session.workstations),
                         "policy_profile": policy.profile,
                         "policy_hash": policy.policy_hash,
+                        "examiner_ids": deduped_examiner_ids,
                     },
                 )
                 uow.commit()
@@ -116,6 +137,7 @@ class CreateExamSession:
                         for agent in agents
                     ],
                     violations=[],
+                    examiners=examiners,
                 )
 
         raise ReadinessGateError(f"offline agents cannot be assigned: {', '.join(offline_ids)}")
@@ -287,20 +309,26 @@ def _build_details(
         raw_events = [
             event
             for event in reversed(uow.telemetry.list_for_session(session.id))
-            if event.event_type == "POLICY_VIOLATION"
-            and event.action in {"BLOCKED", "OBSERVED"}
+            if (
+                event.event_type == "POLICY_VIOLATION"
+                and event.action in {"BLOCKED", "OBSERVED"}
+            )
+            or event.event_type == "FORBIDDEN_PROCESS_DETECTED"
         ][:10]
     violations = [
         PolicyViolationDetails(
             workstation_id=event.workstation_id,
-            destination=event.destination,
+            destination=event.destination or event.payload.get("process_name"),
             category=event.category,
             action=event.action,
             occurred_at=event.occurred_at,
         )
         for event in raw_events
     ]
-    return ExamSessionDetails(session=session, agents=agents, violations=violations)
+    examiners = uow.users.list_session_examiners(session.id) if hasattr(uow, "users") else []
+    return ExamSessionDetails(
+        session=session, agents=agents, violations=violations, examiners=examiners
+    )
 
 
 def _assignment_targets(uow: UnitOfWork, session: ExamSession) -> list[tuple[str, datetime | None]]:

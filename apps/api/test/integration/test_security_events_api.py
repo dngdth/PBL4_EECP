@@ -75,7 +75,7 @@ def _post_event(
 def test_security_event_api_filters_orders_and_paginates(tmp_path: Path) -> None:
     with TestClient(create_app(tmp_path / "events-api.db")) as client:
         session_id = _running_session(client)
-        base = datetime.now(UTC) - timedelta(minutes=1)
+        base = datetime.now(UTC) + timedelta(seconds=1)
         assert _post_event(
             client,
             session_id,
@@ -187,7 +187,7 @@ def test_security_events_reject_non_running_and_finished_sessions(tmp_path: Path
             event_type="ENFORCEMENT_ACTION",
             severity="WARNING",
             action="BLOCKED",
-            occurred_at=datetime.now(UTC) - timedelta(seconds=5),
+            occurred_at=datetime.now(UTC) + timedelta(seconds=5),
         )
 
         assert late.status_code == 422

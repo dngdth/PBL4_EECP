@@ -136,9 +136,9 @@ export const DeployPolicyModal: React.FC<DeployPolicyModalProps> = ({
                 className="w-4 h-4 mt-0.5 rounded text-primary focus:ring-primary"
               />
               <div>
-                <span className="block font-semibold">Tự động tắt ứng dụng gian lận (taskkill)</span>
+                <span className="block font-semibold">Tự động tắt ứng dụng gian lận</span>
                 <span className="text-[11px] text-text-muted font-normal block">
-                  Agent sẽ định kỳ rà soát và cưỡng chế tắt các tiến trình trong danh sách cấm (AnyDesk, ChatGPT...).
+                  Agent sẽ định kỳ rà soát và tự động đóng các ứng dụng trong danh sách cấm (AnyDesk, ChatGPT...).
                 </span>
               </div>
             </label>
@@ -153,7 +153,7 @@ export const DeployPolicyModal: React.FC<DeployPolicyModalProps> = ({
               <div>
                 <span className="block font-semibold">Chặn danh mục web cấm (AI, Mạng xã hội, VPN/Proxy)</span>
                 <span className="text-[11px] text-text-muted font-normal block">
-                  Điều hướng các tên miền bị cấm về 127.0.0.1 qua file hosts trên máy trạm.
+                  Ngăn truy cập các tên miền bị cấm trực tiếp trên máy trạm trong thời gian thi.
                 </span>
               </div>
             </label>
@@ -168,7 +168,7 @@ export const DeployPolicyModal: React.FC<DeployPolicyModalProps> = ({
               <div>
                 <span className="block font-semibold">Vô hiệu hóa bộ nhớ ngoài USB & thiết bị lưu trữ thứ cấp</span>
                 <span className="text-[11px] text-text-muted font-normal block">
-                  Khóa registry dịch vụ USBSTOR trên hệ điều hành Windows của máy trạm.
+                  Khóa quyền truy cập thiết bị lưu trữ USB trên máy trạm Windows.
                 </span>
               </div>
             </label>
@@ -181,7 +181,7 @@ export const DeployPolicyModal: React.FC<DeployPolicyModalProps> = ({
             value={deniedProcesses}
             onChange={(e) => setDeniedProcesses(e.target.value)}
             placeholder="chatgpt.exe, anydesk.exe, teamviewer.exe, ultraviewer.exe"
-            helperText="Tên file thực thi (.exe) mà Agent sẽ tự động taskkill nếu phát hiện đang chạy."
+            helperText="Tên file thực thi (.exe) mà Agent sẽ tự động đóng nếu phát hiện đang chạy."
           />
         )}
 

@@ -1,7 +1,13 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { AlertCircle, ArrowLeft } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Users, X } from 'lucide-react';
 import { ExamSession, Workstation, ActivityItem } from '@/src/domain';
+import {
+  assignSessionExaminers,
+  listUsers,
+  useAuth,
+  UserAccount,
+} from '@/src/features/auth';
 import {
   getSession,
   updateSessionStatus,
@@ -29,8 +35,13 @@ import { Button } from '@/src/shared/ui/button';
 
 export const SessionDetailPage: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const { isAdmin } = useAuth();
 
   const [session, setSession] = useState<ExamSession | null>(null);
+  const [isAssignExaminersOpen, setIsAssignExaminersOpen] = useState(false);
+  const [availableExaminers, setAvailableExaminers] = useState<UserAccount[]>([]);
+  const [draftExaminerIds, setDraftExaminerIds] = useState<string[]>([]);
+  const [isSavingExaminers, setIsSavingExaminers] = useState(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -140,6 +151,33 @@ export const SessionDetailPage: React.FC = () => {
     }
   };
 
+  const openAssignExaminers = async () => {
+    if (!session) return;
+    setDraftExaminerIds((session.examiners || []).map((ex) => ex.id));
+    setIsAssignExaminersOpen(true);
+    try {
+      const users = await listUsers({ role: 'EXAMINER', active_only: true });
+      setAvailableExaminers(users);
+    } catch {
+      setAvailableExaminers([]);
+    }
+  };
+
+  const handleSaveExaminers = async () => {
+    if (!session) return;
+    setIsSavingExaminers(true);
+    setActionError(null);
+    try {
+      await assignSessionExaminers(session.id, draftExaminerIds);
+      await fetchSessionData(true);
+      setIsAssignExaminersOpen(false);
+    } catch (err: any) {
+      setActionError(err.message || 'Không thể cập nhật danh sách giám thị.');
+    } finally {
+      setIsSavingExaminers(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center p-8 min-h-[400px]">
@@ -235,6 +273,40 @@ export const SessionDetailPage: React.FC = () => {
               workstationCount={session.workstations.length}
               onOpenCommandQueue={(gwId) => setCommandQueueTarget({ id: gwId, type: 'GATEWAY' })}
             />
+
+            {/* Giám thị phụ trách */}
+            <div className="bg-surface border border-border rounded shadow-2xs p-4 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs uppercase tracking-wider font-bold text-text-muted flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5 text-primary" />
+                  <span>Giám thị phụ trách</span>
+                </h3>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={openAssignExaminers}
+                    className="text-xs font-semibold text-primary hover:underline cursor-pointer"
+                  >
+                    Phân công
+                  </button>
+                )}
+              </div>
+              {session.examiners && session.examiners.length > 0 ? (
+                <ul className="space-y-1.5">
+                  {session.examiners.map((examiner) => (
+                    <li
+                      key={examiner.id}
+                      className="flex items-center justify-between text-xs bg-surface-subtle px-2.5 py-1.5 rounded border border-border-subtle"
+                    >
+                      <span className="font-semibold text-text truncate">{examiner.full_name}</span>
+                      <span className="font-mono text-[11px] text-text-muted">@{examiner.username}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-text-muted">Chưa phân công giám thị riêng.</p>
+              )}
+            </div>
 
             {/* 2. Chính sách bảo mật */}
             <PolicySummaryCard
@@ -378,6 +450,64 @@ export const SessionDetailPage: React.FC = () => {
         onClose={() => setIsInterveneModalOpen(false)}
         onSuccess={handleSessionUpdated}
       />
+
+      {isAssignExaminersOpen && (
+        <div className="fixed inset-0 z-50 bg-text/40 backdrop-blur-xs grid place-items-center p-4">
+          <div className="w-full max-w-md bg-surface border border-border rounded shadow-lg p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-border-subtle pb-3">
+              <h2 className="text-base font-bold text-text">Phân công Giám thị ca thi</h2>
+              <button
+                type="button"
+                onClick={() => setIsAssignExaminersOpen(false)}
+                className="p-1 text-text-muted hover:text-text"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="max-h-64 overflow-y-auto space-y-2">
+              {availableExaminers.length === 0 ? (
+                <p className="text-xs text-text-muted">Chưa có tài khoản giám thị nào đang hoạt động.</p>
+              ) : (
+                availableExaminers.map((examiner) => {
+                  const checked = draftExaminerIds.includes(examiner.id);
+                  return (
+                    <label
+                      key={examiner.id}
+                      className="flex items-center gap-2.5 p-2.5 rounded border border-border hover:bg-surface-subtle cursor-pointer text-xs"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          setDraftExaminerIds((prev) =>
+                            prev.includes(examiner.id)
+                              ? prev.filter((id) => id !== examiner.id)
+                              : [...prev, examiner.id],
+                          )
+                        }
+                      />
+                      <div>
+                        <div className="font-semibold text-text">{examiner.full_name}</div>
+                        <div className="font-mono text-[11px] text-text-muted">
+                          @{examiner.username}
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })
+              )}
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="secondary" onClick={() => setIsAssignExaminersOpen(false)}>
+                Hủy
+              </Button>
+              <Button onClick={handleSaveExaminers} isLoading={isSavingExaminers}>
+                Lưu phân công
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

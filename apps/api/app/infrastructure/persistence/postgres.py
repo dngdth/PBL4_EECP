@@ -78,18 +78,41 @@ class PostgresDatabase:
             ) from exc
         if row is None:
             raise RuntimeError("PostgreSQL schema has no applied migration")
-        if int(row["version"]) < 2:
+        if int(row["version"]) < 3:
             raise RuntimeError(
-                "PostgreSQL screenshot schema is not migrated; run database migrations"
+                "PostgreSQL users/auth schema is not migrated; run database migrations"
             )
 
     def migrate(self) -> None:
-        migration = Path(__file__).with_name("migrations") / "0001_initial.sql"
+        migrations_dir = Path(__file__).with_name("migrations")
+        migration_files = sorted(
+            migrations_dir.glob("*.sql"),
+            key=lambda path: int(path.name.split("_", 1)[0]),
+        )
         with self._pool.connection() as connection:
-            connection.execute(migration.read_text(encoding="utf-8"))
-            connection.execute(
-                migration.with_name("0002_screen.sql").read_text(encoding="utf-8")
-            )
+            has_migrations_table = (
+                connection.execute(
+                    "SELECT to_regclass('public.schema_migrations') AS table_name"
+                ).fetchone()
+                or {}
+            ).get("table_name") is not None
+            applied_versions: set[int] = set()
+            if has_migrations_table:
+                applied_versions = {
+                    int(row["version"])
+                    for row in connection.execute(
+                        "SELECT version FROM schema_migrations"
+                    ).fetchall()
+                }
+            for migration_file in migration_files:
+                version = int(migration_file.name.split("_", 1)[0])
+                if version in applied_versions:
+                    continue
+                connection.execute(migration_file.read_text(encoding="utf-8"))
+                connection.execute(
+                    "INSERT INTO schema_migrations(version) VALUES (%s) ON CONFLICT DO NOTHING",
+                    (version,),
+                )
             for profile in BUILT_IN_POLICY_PROFILES.list_all():
                 connection.execute(
                     """
@@ -138,6 +161,7 @@ class PostgresUnitOfWork:
             SqliteSessionRepository,
             SqliteSessionWorkstationRepository,
             SqliteTelemetryRepository,
+            SqliteUserRepository,
         )
 
         self._connection = self._database.connect()
@@ -152,6 +176,7 @@ class PostgresUnitOfWork:
         self.telemetry = SqliteTelemetryRepository(connection)
         self.incidents = SqliteIncidentRepository(connection)
         self.audits = SqliteAuditRepository(connection)
+        self.users = SqliteUserRepository(connection)
         return self
 
     def commit(self) -> None:

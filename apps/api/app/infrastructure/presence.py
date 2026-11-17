@@ -87,3 +87,62 @@ class RedisPresenceStore:
             return bool(self._redis.ping())
         except Exception:
             return False
+
+
+class TokenRevocationStore(Protocol):
+    def revoke(self, jti: str, expires_at: datetime | None = None) -> None: ...
+    def is_revoked(self, jti: str) -> bool: ...
+
+
+@dataclass(slots=True)
+class MemoryTokenRevocationStore:
+    _revoked: dict[str, datetime] = field(init=False, default_factory=dict)
+
+    def _prune(self, now: datetime) -> None:
+        expired = [key for key, exp in self._revoked.items() if exp <= now]
+        for key in expired:
+            self._revoked.pop(key, None)
+
+    def revoke(self, jti: str, expires_at: datetime | None = None) -> None:
+        if not jti:
+            return
+        now = datetime.now(UTC)
+        self._prune(now)
+        target_exp = expires_at if expires_at and expires_at > now else now
+        if target_exp > now:
+            self._revoked[jti] = target_exp
+
+    def is_revoked(self, jti: str) -> bool:
+        if not jti:
+            return False
+        now = datetime.now(UTC)
+        exp = self._revoked.get(jti)
+        if exp is None:
+            return False
+        if exp <= now:
+            self._revoked.pop(jti, None)
+            return False
+        return True
+
+
+class RedisTokenRevocationStore:
+    def __init__(self, redis_url: str):
+        try:
+            from redis import Redis
+        except ImportError as exc:  # pragma: no cover - deployment dependency guard
+            raise RuntimeError("Redis revocation store requires the redis package") from exc
+        self._redis = Redis.from_url(redis_url, decode_responses=True)
+
+    def revoke(self, jti: str, expires_at: datetime | None = None) -> None:
+        if not jti:
+            return
+        now = datetime.now(UTC)
+        ttl = 3600 if expires_at is None else int((expires_at - now).total_seconds())
+        if ttl <= 0:
+            return
+        self._redis.set(f"revoked:token:{jti}", "1", ex=ttl)
+
+    def is_revoked(self, jti: str) -> bool:
+        if not jti:
+            return False
+        return bool(self._redis.exists(f"revoked:token:{jti}"))

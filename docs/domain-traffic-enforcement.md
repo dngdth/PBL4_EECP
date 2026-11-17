@@ -1,3 +1,5 @@
+> **[DEPRECATED / SUPERSEDED by `docs/v2/enforce-security-monitoring.md`]** — This document is retained for historical phase context only. Refer to the current canonical docs and source code for up-to-date architecture, endpoints, and verification status.
+
 # Domain traffic enforcement
 
 Domain policies now install Windows Firewall blocks as well as the existing

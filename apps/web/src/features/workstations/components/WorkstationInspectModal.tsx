@@ -90,11 +90,11 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
             <div className="font-mono mt-1">{workstation.gateway_id || 'Không có dữ liệu'}</div>
           </div>
           <div className="border border-border rounded-sm p-2">
-            <span className="text-text-muted">Agent Service</span>
+            <span className="text-text-muted">Dịch vụ Agent</span>
             <div className="font-mono mt-1">{workstation.service_health || 'Không có dữ liệu'}</div>
           </div>
           <div className="border border-border rounded-sm p-2 min-w-0">
-            <span className="text-text-muted">Policy hash</span>
+            <span className="text-text-muted">Mã chính sách (Hash)</span>
             <div className="font-mono mt-1 truncate" title={workstation.active_policy_hash || ''}>
               {workstation.active_policy_hash || 'Không có dữ liệu'}
             </div>
@@ -102,7 +102,7 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
         </div>
 
         <div className="border border-border rounded-sm p-3 text-xs">
-          <span className="text-text-muted">Latest incident</span>
+          <span className="text-text-muted">Sự cố gần nhất</span>
           {workstation.latest_incident ? (
             <div className="mt-1 space-y-1">
               <div className="font-mono">{workstation.latest_incident.category} / {workstation.latest_incident.severity}</div>
@@ -166,8 +166,8 @@ export const WorkstationInspectModal: React.FC<WorkstationInspectModalProps> = (
               <div className="flex items-center gap-2.5">
                 <Cpu className="w-4 h-4 text-primary shrink-0" />
                 <div>
-                  <span className="font-bold text-text">Tình trạng Agent Daemon</span>
-                  <p className="text-xs text-text-muted font-sans mt-0.5">Nhịp tim Agent và giám sát tiến trình</p>
+                  <span className="font-bold text-text">Tình trạng dịch vụ Agent</span>
+                  <p className="text-xs text-text-muted font-sans mt-0.5">Tín hiệu kết nối Agent và giám sát tiến trình</p>
                 </div>
               </div>
               {workstation.status === 'OFFLINE' || workstation.service_health === 'UNAVAILABLE' ? (

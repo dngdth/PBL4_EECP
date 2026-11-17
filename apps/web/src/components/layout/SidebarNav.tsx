@@ -1,8 +1,17 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Layers, PlusCircle, ShieldCheck, Monitor, Server } from 'lucide-react';
+import {
+  LayoutDashboard,
+  Layers,
+  PlusCircle,
+  ShieldCheck,
+  Monitor,
+  Server,
+  Users,
+} from 'lucide-react';
 import { cn } from '@/src/shared/lib/cn';
 import { UI_LABELS } from '@/src/shared/config/labels';
+import { useAuth } from '@/src/features/auth';
 
 export interface SidebarNavProps {
   collapsed?: boolean;
@@ -10,44 +19,58 @@ export interface SidebarNavProps {
 }
 
 export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed, onItemClick }) => {
+  const { isAdmin } = useAuth();
   const navItems = [
     {
       to: '/',
       label: UI_LABELS.nav.dashboard,
       icon: LayoutDashboard,
       end: true,
+      adminOnly: false,
     },
     {
       to: '/sessions',
       label: UI_LABELS.nav.liveSessions,
       icon: Layers,
       end: true,
+      adminOnly: false,
     },
     {
       to: '/sessions/create',
       label: UI_LABELS.nav.newSession,
       icon: PlusCircle,
       end: true,
+      adminOnly: true,
     },
     {
       to: '/gateways',
-      label: 'Gateways',
+      label: UI_LABELS.nav.gateways,
       icon: Server,
       end: true,
+      adminOnly: false,
     },
     {
       to: '/workstations',
       label: UI_LABELS.nav.workstations,
       icon: Monitor,
       end: true,
+      adminOnly: false,
     },
     {
       to: '/policies',
       label: UI_LABELS.nav.policies,
       icon: ShieldCheck,
       end: true,
+      adminOnly: false,
     },
-  ];
+    {
+      to: '/users',
+      label: UI_LABELS.nav.users,
+      icon: Users,
+      end: true,
+      adminOnly: true,
+    },
+  ].filter((item) => !item.adminOnly || isAdmin);
 
   return (
     <nav className={cn('space-y-1', collapsed ? 'p-2' : 'p-3')}>
@@ -62,12 +85,10 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed, onItemClick }
             className={({ isActive }) =>
               cn(
                 'flex items-center rounded text-xs sm:text-sm font-sans font-medium transition-colors select-none group',
-                collapsed
-                  ? 'justify-center p-2.5'
-                  : 'gap-3 px-3 py-2',
+                collapsed ? 'justify-center p-2.5' : 'gap-3 px-3 py-2',
                 isActive
                   ? 'bg-surface-subtle text-primary font-bold shadow-2xs border border-border-subtle'
-                  : 'text-text-muted hover:text-text hover:bg-surface-subtle'
+                  : 'text-text-muted hover:text-text hover:bg-surface-subtle',
               )
             }
             title={collapsed ? item.label : undefined}
@@ -75,7 +96,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed, onItemClick }
             <Icon
               className={cn(
                 'shrink-0 transition-transform group-hover:scale-105',
-                collapsed ? 'w-5 h-5' : 'w-4 h-4'
+                collapsed ? 'w-5 h-5' : 'w-4 h-4',
               )}
             />
             {!collapsed && <span className="truncate">{item.label}</span>}
@@ -85,4 +106,3 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed, onItemClick }
     </nav>
   );
 };
-

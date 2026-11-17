@@ -23,6 +23,7 @@ class CreateManagementSessionRequest(ApiModel):
     agent_ids: list[str] = Field(min_length=1)
     actor: str = Field(default="teacher", min_length=1)
     policy_profile: str = Field(default="INTERNET_NO_AI", min_length=1)
+    examiner_ids: list[str] = Field(default_factory=list)
 
 
 class CreatePipelineSessionRequest(ApiModel):
@@ -31,6 +32,7 @@ class CreatePipelineSessionRequest(ApiModel):
     gateway_id: str = Field(min_length=1)
     workstation_ids: list[str] = Field(min_length=1)
     actor: str = Field(default="teacher", min_length=1)
+    examiner_ids: list[str] = Field(default_factory=list)
 
 
 class UpdateSessionStatusRequest(ApiModel):
@@ -176,6 +178,18 @@ class PolicyViolationView(ApiModel):
     occurred_at: datetime
 
 
+class AssignedExaminerView(ApiModel):
+    id: str
+    username: str
+    full_name: str
+    role: str
+    is_active: bool
+
+
+class AssignSessionExaminersRequest(ApiModel):
+    examiner_ids: list[str] = Field(default_factory=list)
+
+
 class SessionDetailView(SessionView):
     name: str
     room: str
@@ -183,6 +197,7 @@ class SessionDetailView(SessionView):
     agent_count: int
     agents: list[AssignedAgentView]
     violations: list[PolicyViolationView]
+    examiners: list[AssignedExaminerView] = Field(default_factory=list)
 
 
 class ErrorView(ApiModel):

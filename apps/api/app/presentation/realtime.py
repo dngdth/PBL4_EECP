@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -10,6 +11,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.application.security import Principal, Role
+from app.presentation.api.deps import auth_enforced, hydrate_principal
 
 
 class RealtimeHub:
@@ -28,6 +30,39 @@ class RealtimeHub:
     def disconnect(self, websocket: WebSocket) -> None:
         self._connections.pop(websocket, None)
 
+    def update_principal(
+        self, websocket: WebSocket, principal: Principal | None
+    ) -> None:
+        entry = self._connections.get(websocket)
+        if entry is not None:
+            lock, _ = entry
+            self._connections[websocket] = (lock, principal)
+
+    async def _revalidate_connection(
+        self,
+        websocket: WebSocket,
+        lock: asyncio.Lock,
+        principal: Principal | None,
+        app: Any,
+    ) -> tuple[bool, Principal | None]:
+        if principal is None or app is None:
+            return True, principal
+        settings = getattr(getattr(app, "state", None), "settings", None)
+        if settings is None or not auth_enforced(settings):
+            return True, principal
+        try:
+            refreshed = hydrate_principal(app, principal)
+            if refreshed.role != principal.role:
+                raise ValueError("account role changed")
+        except ValueError:
+            with contextlib.suppress(
+                OSError, RuntimeError, TimeoutError, WebSocketDisconnect
+            ):
+                await asyncio.wait_for(websocket.close(code=1008), timeout=1)
+            return False, None
+        self._connections[websocket] = (lock, refreshed)
+        return True, refreshed
+
     async def send(self, websocket: WebSocket, payload: dict[str, Any]) -> None:
         entry = self._connections.get(websocket)
         if entry is None:
@@ -45,6 +80,7 @@ class RealtimeHub:
         resource: str | None = None,
         resource_id: str | None = None,
         action: str | None = None,
+        app: Any = None,
     ) -> None:
         resolved_resource = resource or _resource_for(path)
         resolved_resource_id = resource_id or _resource_id_for(path)
@@ -62,7 +98,16 @@ class RealtimeHub:
             "occurred_at": _now(),
         }
         disconnected: list[WebSocket] = []
-        for websocket, (_, principal) in tuple(self._connections.items()):
+        for websocket, (lock, principal) in tuple(self._connections.items()):
+            alive, principal = await self._revalidate_connection(
+                websocket,
+                lock,
+                principal,
+                app or getattr(websocket, "app", None),
+            )
+            if not alive:
+                disconnected.append(websocket)
+                continue
             if (
                 principal is not None
                 and principal.role != Role.ADMIN
@@ -85,7 +130,7 @@ router = APIRouter(prefix="/api/v1", tags=["realtime"])
 async def websocket_events(websocket: WebSocket) -> None:
     settings = getattr(websocket.app.state, "settings", None)
     principal: Principal | None = None
-    if settings is not None and getattr(settings, "environment", "") == "production-like":
+    if settings is not None and auth_enforced(settings):
         token_service = getattr(websocket.app.state, "token_service", None)
         token = websocket.query_params.get("token")
         if not token:
@@ -96,7 +141,8 @@ async def websocket_events(websocket: WebSocket) -> None:
             await websocket.close(code=1008)
             return
         try:
-            principal = token_service.verify(token)
+            verified = token_service.verify(token)
+            principal = hydrate_principal(websocket.app, verified)
         except ValueError:
             await websocket.close(code=1008)
             return
@@ -111,6 +157,16 @@ async def websocket_events(websocket: WebSocket) -> None:
             except json.JSONDecodeError:
                 message = {}
             if message.get("type") == "ping":
+                if settings is not None and auth_enforced(settings) and principal is not None:
+                    try:
+                        refreshed = hydrate_principal(websocket.app, principal)
+                        if refreshed.role != principal.role:
+                            raise ValueError("account role changed")
+                    except ValueError:
+                        await websocket.close(code=1008)
+                        return
+                    principal = refreshed
+                    hub.update_principal(websocket, refreshed)
                 await hub.send(websocket, {"type": "pong", "occurred_at": _now()})
     except WebSocketDisconnect:
         pass
@@ -129,7 +185,11 @@ async def realtime_notification_middleware(
         and response.status_code < 400
     ):
         hub: RealtimeHub = request.app.state.realtime_hub
-        await hub.publish_change(method=request.method, path=request.url.path)
+        await hub.publish_change(
+            method=request.method,
+            path=request.url.path,
+            app=request.app,
+        )
     return response
 
 

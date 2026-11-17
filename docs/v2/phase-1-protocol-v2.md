@@ -1,3 +1,5 @@
+> **[DEPRECATED / SUPERSEDED by `README.md`, `docs/v2/final-implementation-matrix.md`, and `docs/v2/final-security-model.md`]** — This document is retained for historical phase context only. Refer to the current canonical docs and source code for up-to-date architecture, endpoints, and verification status.
+
 # EECP Protocol v2
 
 Protocol v2 is the shared, transport-independent message contract for future

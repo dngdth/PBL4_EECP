@@ -21,7 +21,9 @@ Windows OS rows remain PENDING until an isolated elevated VM run.
 | process enforcement | Yes | Partial | unit/process fake | target process PENDING | enforcement tests |
 | USB enforcement | Yes | Partial | fake registry/service | hardware optional/PENDING | enforcement tests |
 | Event retry/dedupe | Yes | Yes | integration/WAN benchmark | Agent→Gateway pre-persistence window | Phase 7 + WAN artifact |
-| RBAC/session scope | Yes | Yes | HTTP integration | configured role model | Phase 8/9 security tests |
+| RBAC/session scope | Yes | Yes | HTTP/WS integration | DB-backed `ADMIN`/`EXAMINER`, `session_examiners`, `/logout` `jti` revocation, WS `ping` re-validation | `test_auth_users_rbac.py`, Phase 8/9 security tests |
+| Policy profiles CRUD & audit | Yes | Yes | API/Web integration | built-in profiles read-only | policy management tests |
+| Screen evidence | Yes | Partial | Client/Gateway/Backend integration | RAM-only pre-Gateway; Windows multi-monitor/lock capture PENDING | `screen-evidence.md` tests |
 | Agent credential | Yes | Yes | WSS integration | configured rotation | auth tests |
 | Gateway credential | Yes | Yes | WSS integration | configured rotation | auth tests |
 | Policy signature | Yes | Yes | Service unit/integration | HMAC symmetric | Phase 8/9 tests |

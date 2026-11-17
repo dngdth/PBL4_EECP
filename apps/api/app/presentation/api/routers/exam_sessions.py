@@ -17,19 +17,24 @@ from app.application.dtos.session_management import (
     ExamSessionDetails,
     UpdateExamSessionStatusInput,
 )
+from app.application.dtos.users import AssignSessionExaminersInput
 from app.application.security import Permission
 from app.domain.entities.exam_session import ExamSession, PreflightCheck
 from app.domain.entities.operations import TelemetryEvent
 from app.presentation.api.deps import (
+    AssignSessionExaminersUseCase,
     CreateExamSessionUseCase,
     GetExamSessionUseCase,
     ListExamSessionsUseCase,
     Service,
     UpdateExamSessionStatusUseCase,
+    actor_name,
     authorize,
 )
 from app.presentation.schemas.exam_pipeline import (
     AssignedAgentView,
+    AssignedExaminerView,
+    AssignSessionExaminersRequest,
     CreateManagementSessionRequest,
     CreatePipelineSessionRequest,
     DeployPolicyRequest,
@@ -98,13 +103,35 @@ def create_session(
     get_management: GetExamSessionUseCase,
     request: Request,
 ) -> SessionDetailView:
-    authorize(request, Permission.CONTROL_AGENT)
+    authorize(request, Permission.CREATE_SESSION)
+    resolved_actor = actor_name(request, body.actor)
     if isinstance(body, CreatePipelineSessionRequest):
-        session = service.create_session(CreateSessionInput(**body.model_dump()))
+        payload = body.model_dump(exclude={"actor"})
+        session = service.create_session(CreateSessionInput(**payload, actor=resolved_actor))
     else:
-        details = create_management(CreateExamSessionInput(**body.model_dump()))
+        payload = body.model_dump(exclude={"actor"})
+        details = create_management(CreateExamSessionInput(**payload, actor=resolved_actor))
         session = details.session
     return _session_detail_view(get_management(session.id), request)
+
+
+@router.put("/sessions/{session_id}/examiners", response_model=SessionDetailView)
+def update_session_examiners(
+    session_id: str,
+    body: AssignSessionExaminersRequest,
+    assign_examiners: AssignSessionExaminersUseCase,
+    get_management: GetExamSessionUseCase,
+    request: Request,
+) -> SessionDetailView:
+    authorize(request, Permission.CREATE_SESSION, session_id=session_id)
+    assign_examiners(
+        AssignSessionExaminersInput(
+            session_id=session_id,
+            examiner_ids=body.examiner_ids,
+            actor=actor_name(request, "admin"),
+        )
+    )
+    return _session_detail_view(get_management(session_id), request)
 
 
 @router.get("/sessions", response_model=list[SessionDetailView])
@@ -127,7 +154,13 @@ def update_session_status(
     request: Request,
 ) -> SessionDetailView:
     authorize(request, Permission.CONTROL_AGENT, session_id=session_id)
-    details = use_case(UpdateExamSessionStatusInput(session_id=session_id, **body.model_dump()))
+    details = use_case(
+        UpdateExamSessionStatusInput(
+            session_id=session_id,
+            status=body.status,
+            actor=actor_name(request, body.actor),
+        )
+    )
     return _session_detail_view(details, request)
 
 
@@ -155,7 +188,14 @@ def deploy_policy(
         session_id=session_id,
         session_state=current.state.value,
     )
-    session = service.deploy_policy(DeployPolicyInput(session_id=session_id, **body.model_dump()))
+    payload = body.model_dump(exclude={"actor"})
+    session = service.deploy_policy(
+        DeployPolicyInput(
+            session_id=session_id,
+            **payload,
+            actor=actor_name(request, body.actor),
+        )
+    )
     return _session_view(session)
 
 
@@ -200,7 +240,7 @@ def request_preflight(
         RequestPreflightInput(
             session_id=session_id,
             workstation_id=workstation_id,
-            actor=body.actor,
+            actor=actor_name(request, body.actor),
         )
     )
     return PreflightHealthCheckView(
@@ -225,7 +265,14 @@ def start_session(
         session_id=session_id,
         session_state=current.state.value,
     )
-    session = service.start_session(StartSessionInput(session_id=session_id, **body.model_dump()))
+    payload = body.model_dump(exclude={"actor"})
+    session = service.start_session(
+        StartSessionInput(
+            session_id=session_id,
+            **payload,
+            actor=actor_name(request, body.actor),
+        )
+    )
     return _session_view(session)
 
 
@@ -261,7 +308,9 @@ def finish_session(
         session_id=session_id,
         session_state=current.state.value,
     )
-    return _session_view(service.finish_session(session_id, body.actor))
+    return _session_view(
+        service.finish_session(session_id, actor_name(request, body.actor))
+    )
 
 
 @router.get("/sessions/{session_id}/summary")
@@ -362,6 +411,16 @@ def _session_detail_view(details: ExamSessionDetails, request: Request) -> Sessi
                     occurred_at=violation.occurred_at,
                 )
                 for violation in details.violations
+            ],
+            "examiners": [
+                AssignedExaminerView(
+                    id=examiner.id,
+                    username=examiner.username,
+                    full_name=examiner.full_name,
+                    role=examiner.role.value,
+                    is_active=examiner.is_active,
+                )
+                for examiner in details.examiners
             ],
         }
     )

@@ -46,17 +46,20 @@ function connect(): void {
     return;
   }
 
-  socket = new WebSocket(websocketUrl());
-  socket.onopen = () => {
+  const connection = new WebSocket(websocketUrl());
+  socket = connection;
+  connection.onopen = () => {
+    if (socket !== connection) return;
     reconnectAttempt = 0;
     window.clearInterval(heartbeatTimer);
     heartbeatTimer = window.setInterval(() => {
-      if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: 'ping' }));
+      if (socket === connection && connection.readyState === WebSocket.OPEN) {
+        connection.send(JSON.stringify({ type: 'ping' }));
       }
     }, 25_000);
   };
-  socket.onmessage = (message) => {
+  connection.onmessage = (message) => {
+    if (socket !== connection) return;
     try {
       const event = JSON.parse(message.data) as Partial<RealtimeEvent>;
       if (event.type === 'change' && event.resource) {
@@ -66,10 +69,18 @@ function connect(): void {
       // Ignore malformed frames; the next valid server event remains usable.
     }
   };
-  socket.onerror = () => socket?.close();
-  socket.onclose = () => {
+  connection.onerror = () => {
+    if (socket === connection) connection.close();
+  };
+  connection.onclose = (event) => {
+    if (socket !== connection) return;
     socket = null;
     window.clearInterval(heartbeatTimer);
+    if (event.code === 1008) {
+      sessionStorage.removeItem('eecp_access_token');
+      window.dispatchEvent(new CustomEvent('eecp:unauthorized'));
+      return;
+    }
     if (listeners.size > 0) {
       const delay = Math.min(1000 * 2 ** reconnectAttempt, 15_000);
       reconnectAttempt += 1;
@@ -78,16 +89,29 @@ function connect(): void {
   };
 }
 
+export function disconnectRealtime(): void {
+  window.clearTimeout(reconnectTimer);
+  window.clearInterval(heartbeatTimer);
+  reconnectAttempt = 0;
+  const previous = socket;
+  socket = null;
+  previous?.close();
+}
+
+export function reconnectRealtime(): void {
+  disconnectRealtime();
+  if (listeners.size > 0) {
+    connect();
+  }
+}
+
 function subscribe(listener: Listener): () => void {
   listeners.add(listener);
   connect();
   return () => {
     listeners.delete(listener);
     if (listeners.size === 0) {
-      window.clearTimeout(reconnectTimer);
-      window.clearInterval(heartbeatTimer);
-      socket?.close();
-      socket = null;
+      disconnectRealtime();
     }
   };
 }

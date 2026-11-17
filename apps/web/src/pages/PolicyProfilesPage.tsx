@@ -24,8 +24,11 @@ import {
 import { Button } from '@/src/shared/ui/button';
 import { Spinner } from '@/src/shared/ui/spinner';
 import { cn } from '@/src/shared/lib/cn';
+import { useAuth } from '@/src/features/auth';
+import { UI_LABELS } from '@/src/shared/config/labels';
 
 export const PolicyProfilesPage: React.FC = () => {
+  const { isAdmin } = useAuth();
   const [profiles, setProfiles] = useState<PolicyProfile[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
@@ -93,7 +96,7 @@ export const PolicyProfilesPage: React.FC = () => {
             <div>
               <h1 className="text-lg sm:text-xl font-bold font-sans tracking-tight text-text flex items-center gap-2">
                 <ShieldCheck className="w-5 h-5 text-primary" />
-                <span>Hồ sơ chính sách bảo mật</span>
+                <span>{UI_LABELS.nav.policies}</span>
               </h1>
               <p className="text-xs text-text-muted mt-0.5 font-sans">
                 Quản lý các danh mục quy tắc cô lập mạng, ứng dụng và khóa ngoại vi máy trạm.
@@ -110,15 +113,17 @@ export const PolicyProfilesPage: React.FC = () => {
               >
                 Làm mới
               </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => setIsCreateModalOpen(true)}
-                leftIcon={<Plus className="w-4 h-4" />}
-                className="font-bold bg-primary hover:bg-primary-dark text-surface shadow-2xs"
-              >
-                Tạo chính sách mới
-              </Button>
+              {isAdmin && (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => setIsCreateModalOpen(true)}
+                  leftIcon={<Plus className="w-4 h-4" />}
+                  className="font-bold bg-primary hover:bg-primary-dark text-surface shadow-2xs"
+                >
+                  Tạo chính sách mới
+                </Button>
+              )}
             </div>
           </div>
         </div>
@@ -151,14 +156,16 @@ export const PolicyProfilesPage: React.FC = () => {
             <p className="text-xs text-text-muted mt-1 max-w-md mx-auto">
               Hãy tạo chính sách bảo mật đầu tiên để áp dụng cho các ca thi trên máy trạm.
             </p>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => setIsCreateModalOpen(true)}
-              className="mt-4 font-bold"
-            >
-              Tạo chính sách ngay
-            </Button>
+            {isAdmin && (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => setIsCreateModalOpen(true)}
+                className="mt-4 font-bold"
+              >
+                Tạo chính sách ngay
+              </Button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -182,18 +189,18 @@ export const PolicyProfilesPage: React.FC = () => {
                           <h3 className="font-bold text-base text-text font-sans">{profile.label}</h3>
                           {profile.is_builtin ? (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-surface-subtle text-text-muted border border-border">
-                              HỆ THỐNG (BUILT-IN)
+                              Mặc định hệ thống
                             </span>
                           ) : (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-primary-soft text-primary border border-primary/20">
-                              TÙY BIẾN (CUSTOM)
+                              Tùy chỉnh
                             </span>
                           )}
                         </div>
                         <span className="font-mono text-xs text-text-muted block mt-0.5">{profile.id}</span>
                       </div>
 
-                      {!profile.is_builtin && (
+                      {isAdmin && !profile.is_builtin && (
                         <div className="flex items-center gap-1">
                           <button
                             type="button"
@@ -280,7 +287,7 @@ export const PolicyProfilesPage: React.FC = () => {
                         className="text-xs text-primary hover:text-primary-dark font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
                       >
                         <FileCode className="w-3.5 h-3.5" />
-                        <span>{isYamlOpen ? 'Ẩn bản tin cấu hình YAML' : 'Xem bản tin cấu hình YAML'}</span>
+                        <span>{isYamlOpen ? 'Ẩn cấu hình chi tiết' : 'Xem cấu hình chi tiết'}</span>
                         {isYamlOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                       </button>
 

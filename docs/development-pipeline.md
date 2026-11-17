@@ -1,3 +1,5 @@
+> **[DEPRECATED / SUPERSEDED by `README.md` and `docs/v2/final-demo-guide.md`]** — This document is retained for historical phase context only. Refer to the current canonical docs and source code for up-to-date architecture, endpoints, and verification status.
+
 # Pipeline phát triển dự án EECP
 
 > Tài liệu làm việc cho nhóm 3 người, áp dụng từ lúc khởi tạo repository đến khi demo được sản phẩm **Exam Environment Control Platform (EECP)**.

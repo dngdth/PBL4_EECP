@@ -12,8 +12,11 @@ from app.application.dtos.exam_pipeline import (
     SubmitPreflightInput,
     TelemetryInput,
 )
+from app.application.dtos.users import AssignSessionExaminersInput
+from app.application.use_cases.users.management import AssignSessionExaminers
 from app.domain.entities.exam_session import ExamSession
 from app.domain.entities.operations import Command, TelemetryEvent
+from app.domain.entities.session_workstation import SessionWorkstation
 from app.domain.exceptions.errors import InvalidStateTransitionError, PolicyValidationError
 from app.domain.interfaces.unit_of_work import UnitOfWorkFactory
 from app.domain.services.policies import IncidentPolicy
@@ -62,6 +65,19 @@ class ExamPipelineService:
         )
         with self._uow_factory() as uow:
             uow.sessions.add(session)
+            workstation_ids = sorted(session.workstations)
+            if all(
+                uow.agents.find(workstation_id) is not None
+                for workstation_id in workstation_ids
+            ):
+                uow.session_workstations.assign_many(
+                    [
+                        SessionWorkstation.assign(
+                            session.id, workstation_id, session.created_at
+                        )
+                        for workstation_id in workstation_ids
+                    ]
+                )
             uow.audits.append(
                 session.id,
                 actor=data.actor,
@@ -73,6 +89,12 @@ class ExamPipelineService:
                     "workstations": sorted(session.workstations),
                 },
             )
+            if data.examiner_ids:
+                AssignSessionExaminers.assign_in_transaction(
+                    uow,
+                    AssignSessionExaminersInput(session.id, data.examiner_ids, data.actor),
+                    session.created_at,
+                )
             uow.commit()
         return session
 

@@ -1,3 +1,5 @@
+> **[DEPRECATED / SUPERSEDED by `README.md`]** — This document is retained for historical phase context only. Refer to the current canonical docs and source code for up-to-date architecture, endpoints, and verification status.
+
 # Cấu trúc Clean Architecture của EECP
 
 Tài liệu này là quy ước tổ chức code cho Exam Environment Control Platform. Cấu trúc được rút gọn theo đúng nhu cầu hiện tại; không tạo layer hoặc service trống chỉ để giống sơ đồ.

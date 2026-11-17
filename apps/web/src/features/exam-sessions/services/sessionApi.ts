@@ -36,6 +36,7 @@ export async function createSession(data: CreateSessionRequest): Promise<ExamSes
     room: data.room || data.room_id,
     agent_ids: data.agent_ids || data.workstation_ids,
     policy_profile: data.policy_profile || data.policy_name || 'INTERNET_NO_AI',
+    examiner_ids: data.examiner_ids || [],
     actor: 'teacher',
   };
   const raw = await apiClient<any>('/sessions', {

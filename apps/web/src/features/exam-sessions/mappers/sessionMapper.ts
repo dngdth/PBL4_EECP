@@ -263,6 +263,7 @@ export function normalizeSession(raw: any): ExamSession {
     workstations,
     agents: Array.isArray(raw.agents) ? raw.agents : undefined,
     agent_count: raw.agent_count ?? (Array.isArray(raw.agents) ? raw.agents.length : workstations.length),
+    examiners: Array.isArray(raw.examiners) ? raw.examiners : [],
     policy: mapPolicy(raw.policy),
     activity_log: mapActivityLog(raw),
     security_events: Array.isArray(raw.security_events) ? raw.security_events : [],

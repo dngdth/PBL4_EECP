@@ -55,6 +55,23 @@ class IncidentPolicy:
                     evidence={"event_ids": [current.id]},
                 )
 
+        if (
+            current.event_type == "FORBIDDEN_PROCESS_DETECTED"
+            and not is_open("FORBIDDEN_PROCESS", current.workstation_id)
+        ):
+            return Incident(
+                session_id=current.session_id,
+                workstation_id=current.workstation_id,
+                category="FORBIDDEN_PROCESS",
+                severity=current.severity,
+                evidence={
+                    "event_ids": [current.id],
+                    "process_name": current.payload.get("process_name")
+                    or current.destination,
+                    "action": current.action,
+                },
+            )
+
         if current.event_type == "DNS_FAILURE":
             dns_events = [event for event in session_events if event.event_type == "DNS_FAILURE"]
             affected = sorted({event.workstation_id for event in dns_events})

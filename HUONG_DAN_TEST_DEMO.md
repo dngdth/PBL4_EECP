@@ -1,3 +1,5 @@
+> **[DEPRECATED / SUPERSEDED by `docs/v2/final-demo-guide.md`]** — This document is retained for historical phase context only. Refer to the current canonical docs and source code for up-to-date architecture, endpoints, and verification status.
+
 # HƯỚNG DẪN TEST DEMO HỆ THỐNG EECP
 
 > **Luồng hiện tại: Gateway chạy trên chính máy server.** Xem

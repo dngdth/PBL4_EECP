@@ -38,4 +38,5 @@ class User:
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    auth_version: int = 0
 

@@ -87,11 +87,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       refreshTimerRef.current = window.setTimeout(async () => {
         try {
           const refreshed = await refreshApi();
+          if (sessionStorage.getItem(TOKEN_KEY) !== token) return;
           sessionStorage.setItem(TOKEN_KEY, refreshed.access_token);
           setUser(refreshed.user);
+          reconnectRealtime();
           scheduleRefresh(refreshed.access_token);
         } catch {
-          clearSessionState();
+          if (sessionStorage.getItem(TOKEN_KEY) === token) clearSessionState();
         }
       }, delayMs);
     },

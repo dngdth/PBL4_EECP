@@ -24,6 +24,17 @@ remains outside the anti-tamper guarantee.
 - `POST /api/v1/auth/logout` revokes the token `jti` in persistence. WebSocket
   `/api/v1/ws` re-hydrates the principal on `ping` and closes the socket with
   code `1008` if the token is revoked, expired, locked, or the account role changed.
+- Migration `0004_user_auth_version.sql` adds a persistent account authentication
+  version. Password resets, role changes, and lock/unlock updates increment it,
+  invalidating all previously issued account tokens for HTTP, refresh, and
+  WebSocket access. Display-name edits keep existing tokens valid. Successful
+  Dashboard refreshes reconnect WebSocket access using the new token and ignore
+  delayed callbacks from the previous connection.
+- Account updates preserve at least one active `ADMIN`, including concurrent
+  demotions. Pipeline session creation and examiner assignment commit together;
+  invalid assignments leave no session, workstation assignment, or session audit.
+- Agent-list incident metadata is selected only from the Examiner's assigned
+  sessions, even when another session later uses the same workstation.
 - Gateway and Agent WSS identities use separate configured machine credentials,
   including revocation checks. Machine credentials are not Examiner tokens.
 - Signed policy binds canonical policy content and session. Privileged command

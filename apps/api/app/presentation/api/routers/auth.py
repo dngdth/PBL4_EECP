@@ -79,6 +79,7 @@ def login(body: LoginRequest, request: Request) -> dict[str, object]:
                 session_scope=scope,
                 user_id=user.id,
                 full_name=user.full_name,
+                auth_version=user.auth_version,
             )
         else:
             uow.commit()
@@ -179,6 +180,7 @@ def refresh(request: Request) -> dict[str, object]:
         session_scope=principal.session_scope,
         user_id=principal.user_id,
         full_name=principal.full_name,
+        auth_version=principal.auth_version,
     )
     expires_in = getattr(request.app.state.settings, "token_lifetime_seconds", 3600)
     return {

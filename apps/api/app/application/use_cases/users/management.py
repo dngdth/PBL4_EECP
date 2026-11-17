@@ -17,7 +17,7 @@ from app.domain.entities.user import (
     normalize_username,
 )
 from app.domain.exceptions.errors import DomainValidationError, UserConflictError
-from app.domain.interfaces.unit_of_work import UnitOfWorkFactory
+from app.domain.interfaces.unit_of_work import UnitOfWork, UnitOfWorkFactory
 from app.domain.value_objects.primitives import utc_now
 
 Clock = Callable[[], datetime]
@@ -91,6 +91,7 @@ class UpdateUser:
     def __call__(self, data: UpdateUserInput) -> User:
         at = self._clock()
         with self._uow_factory() as uow:
+            uow.users.lock_for_update()
             current = uow.users.get(data.user_id)
             updated = current
             if data.full_name is not None:
@@ -104,10 +105,26 @@ class UpdateUser:
                 updated = replace(updated, is_active=data.is_active)
             if data.role is not None:
                 updated = replace(updated, role=data.role)
+            if (
+                current.is_active
+                and current.role == UserRole.ADMIN
+                and (not updated.is_active or updated.role != UserRole.ADMIN)
+                and len(uow.users.list_all(role=UserRole.ADMIN, active_only=True)) <= 1
+            ):
+                raise DomainValidationError("cannot remove the last active administrator")
             if updated == current:
                 uow.commit()
                 return current
-            updated = replace(updated, updated_at=at)
+            security_changed = (
+                updated.password_hash != current.password_hash
+                or updated.role != current.role
+                or updated.is_active != current.is_active
+            )
+            updated = replace(
+                updated,
+                updated_at=at,
+                auth_version=current.auth_version + int(security_changed),
+            )
             uow.users.save(updated)
             uow.commit()
             return updated
@@ -121,33 +138,40 @@ class AssignSessionExaminers:
     def __call__(self, data: AssignSessionExaminersInput) -> list[User]:
         at = self._clock()
         with self._uow_factory() as uow:
-            session = uow.sessions.get(data.session_id.strip())
-            deduped = list(dict.fromkeys(uid.strip() for uid in data.examiner_ids if uid.strip()))
-            examiners: list[User] = []
-            for user_id in deduped:
-                user = uow.users.get(user_id)
-                if user.role != UserRole.EXAMINER:
-                    raise DomainValidationError(
-                        f"user {user.username} is not an EXAMINER account"
-                    )
-                if not user.is_active:
-                    raise DomainValidationError(
-                        f"examiner {user.username} is inactive and cannot be assigned"
-                    )
-                examiners.append(user)
-            uow.users.assign_session_examiners(session.id, deduped, at)
-            uow.audits.append(
-                session.id,
-                actor=data.actor,
-                action="SESSION_EXAMINERS_UPDATED",
-                target=session.id,
-                details={
-                    "examiner_ids": deduped,
-                    "examiner_usernames": [user.username for user in examiners],
-                },
-            )
+            examiners = self.assign_in_transaction(uow, data, at)
             uow.commit()
             return examiners
+
+    @staticmethod
+    def assign_in_transaction(
+        uow: UnitOfWork, data: AssignSessionExaminersInput, at: datetime
+    ) -> list[User]:
+        session = uow.sessions.get(data.session_id.strip())
+        deduped = list(dict.fromkeys(uid.strip() for uid in data.examiner_ids if uid.strip()))
+        examiners: list[User] = []
+        for user_id in deduped:
+            user = uow.users.get(user_id)
+            if user.role != UserRole.EXAMINER:
+                raise DomainValidationError(
+                    f"user {user.username} is not an EXAMINER account"
+                )
+            if not user.is_active:
+                raise DomainValidationError(
+                    f"examiner {user.username} is inactive and cannot be assigned"
+                )
+            examiners.append(user)
+        uow.users.assign_session_examiners(session.id, deduped, at)
+        uow.audits.append(
+            session.id,
+            actor=data.actor,
+            action="SESSION_EXAMINERS_UPDATED",
+            target=session.id,
+            details={
+                "examiner_ids": deduped,
+                "examiner_usernames": [user.username for user in examiners],
+            },
+        )
+        return examiners
 
 
 def ensure_bootstrap_user(

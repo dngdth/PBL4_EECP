@@ -112,6 +112,10 @@ Pillow for image validation. Run `python -m app.infrastructure.persistence.migra
 before starting the PostgreSQL API. Migration `0002_screen.sql` adds screen
 metadata tables and `0003_users_and_auth.sql` adds multi-user RBAC, token
 revocation, and `session_examiners` scoping tables.
+Run migrations through `0004_user_auth_version.sql` before starting the updated
+PostgreSQL API. It adds the account authentication version used to invalidate
+tokens after password, role, or lock-state changes. Existing SQLite databases
+receive the same column automatically at startup.
 
 ## Dashboard and access
 

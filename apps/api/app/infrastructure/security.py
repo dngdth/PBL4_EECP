@@ -47,6 +47,7 @@ class TokenService:
         }
         if principal.user_id is not None:
             payload["uid"] = principal.user_id
+            payload["ver"] = principal.auth_version
         if principal.full_name is not None:
             payload["name"] = principal.full_name
         encoded = _b64(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
@@ -72,6 +73,7 @@ class TokenService:
                 full_name=str(payload["name"]) if payload.get("name") is not None else None,
                 jti=str(payload["jti"]) if payload.get("jti") is not None else None,
                 expires_at=datetime.fromtimestamp(exp_ts, tz=UTC),
+                auth_version=int(payload.get("ver", 0)),
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError("invalid or expired authentication token") from exc

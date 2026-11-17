@@ -38,7 +38,7 @@ flowchart TB
 
 | Path | Role |
 |---|---|
-| `apps/api/` | FastAPI Backend, PostgreSQL/SQLite persistence (`0001`–`0003` migrations), Redis presence, RBAC & HMAC signing |
+| `apps/api/` | FastAPI Backend, PostgreSQL/SQLite persistence (`0001`–`0004` migrations), Redis presence, RBAC & HMAC signing |
 | `apps/gateway/` | Local Gateway, WSS routing, SQLite durable Event buffer & screen spool |
 | `apps/web/` | React/Vite Examiner Dashboard (served by Nginx in Docker) |
 | `agent/client/` | Normal-user transport, sensors, and RAM screen capture |

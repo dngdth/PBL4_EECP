@@ -13,6 +13,7 @@ class CreateSessionInput:
     gateway_id: str
     workstation_ids: list[str]
     actor: str
+    examiner_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)

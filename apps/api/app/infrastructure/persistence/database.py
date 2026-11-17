@@ -143,7 +143,8 @@ CREATE TABLE IF NOT EXISTS users (
     role TEXT NOT NULL CHECK (role IN ('ADMIN', 'EXAMINER')),
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    auth_version INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_users_username ON users(username);
 
@@ -170,8 +171,19 @@ class SqliteDatabase:
             self._migrate_commands(connection)
             self._migrate_gateways(connection)
             self._migrate_audit_events(connection)
+            self._migrate_users(connection)
             self._seed_policy_profiles(connection)
             connection.commit()
+
+    @staticmethod
+    def _migrate_users(connection: sqlite3.Connection) -> None:
+        existing = {
+            row["name"] for row in connection.execute("PRAGMA table_info(users)")
+        }
+        if "auth_version" not in existing:
+            connection.execute(
+                "ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 0"
+            )
 
     @staticmethod
     def _migrate_commands(connection: sqlite3.Connection) -> None:

@@ -101,22 +101,13 @@ def create_session(
     service: Service,
     create_management: CreateExamSessionUseCase,
     get_management: GetExamSessionUseCase,
-    assign_examiners: AssignSessionExaminersUseCase,
     request: Request,
 ) -> SessionDetailView:
     authorize(request, Permission.CREATE_SESSION)
     resolved_actor = actor_name(request, body.actor)
     if isinstance(body, CreatePipelineSessionRequest):
-        payload = body.model_dump(exclude={"examiner_ids", "actor"})
+        payload = body.model_dump(exclude={"actor"})
         session = service.create_session(CreateSessionInput(**payload, actor=resolved_actor))
-        if body.examiner_ids:
-            assign_examiners(
-                AssignSessionExaminersInput(
-                    session_id=session.id,
-                    examiner_ids=body.examiner_ids,
-                    actor=resolved_actor,
-                )
-            )
     else:
         payload = body.model_dump(exclude={"actor"})
         details = create_management(CreateExamSessionInput(**payload, actor=resolved_actor))

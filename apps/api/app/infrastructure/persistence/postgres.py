@@ -34,6 +34,13 @@ class _CompatConnection:
     def rollback(self) -> None:
         self._connection.rollback()
 
+    def lock_users(self) -> None:
+        # Serialize account updates across API processes so simultaneous admin
+        # demotions cannot both pass the last-active-administrator check.
+        self._connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext('eecp:user-management'))"
+        )
+
     def close(self) -> None:
         # Read-only repository calls still open a PostgreSQL transaction. End it
         # explicitly before returning the connection to avoid pool-side rollback.
@@ -78,7 +85,7 @@ class PostgresDatabase:
             ) from exc
         if row is None:
             raise RuntimeError("PostgreSQL schema has no applied migration")
-        if int(row["version"]) < 3:
+        if int(row["version"]) < 4:
             raise RuntimeError(
                 "PostgreSQL users/auth schema is not migrated; run database migrations"
             )

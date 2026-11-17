@@ -71,8 +71,11 @@ def list_agents(use_case: ListAgentsUseCase, request: Request) -> list[AgentView
     authorize(request, Permission.VIEW_AGENT)
     scope = scoped_resources(request)
     values = []
+    principal = getattr(request.state, "principal", None)
     with request.app.state.container.database.unit_of_work() as uow:
-        latest_by_agent = uow.incidents.latest_by_workstation()
+        latest_by_agent = uow.incidents.latest_by_workstation(
+            session_ids=principal.session_scope if scope is not None else None
+        )
     for agent in use_case():
         if scope is not None and agent.id not in scope[0]:
             continue

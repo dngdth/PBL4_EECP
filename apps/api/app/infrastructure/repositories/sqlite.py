@@ -661,9 +661,20 @@ class SqliteIncidentRepository:
         ).fetchall()
         return [self._from_row(row) for row in rows]
 
-    def latest_by_workstation(self) -> dict[str, Incident]:
+    def latest_by_workstation(
+        self, *, session_ids: frozenset[str] | None = None
+    ) -> dict[str, Incident]:
+        if session_ids is not None and not session_ids:
+            return {}
+        where = ""
+        params = ()
+        if session_ids is not None:
+            params = tuple(sorted(session_ids))
+            placeholders = ", ".join("?" for _ in params)
+            where = f"WHERE session_id IN ({placeholders})"
         rows = self._connection.execute(
-            "SELECT * FROM incidents ORDER BY created_at ASC, id ASC"
+            f"SELECT * FROM incidents {where} ORDER BY created_at ASC, id ASC",
+            params,
         ).fetchall()
         latest: dict[str, Incident] = {}
         for row in rows:
@@ -782,12 +793,20 @@ class SqliteUserRepository:
     def __init__(self, connection: sqlite3.Connection):
         self._connection = connection
 
+    def lock_for_update(self) -> None:
+        # SQLite's unit of work already holds BEGIN IMMEDIATE. The PostgreSQL
+        # compatibility connection supplies a transaction-scoped write lock.
+        lock_users = getattr(self._connection, "lock_users", None)
+        if lock_users is not None:
+            lock_users()
+
     def add(self, user: User) -> None:
         self._connection.execute(
             """
             INSERT INTO users(
-                id, username, password_hash, full_name, role, is_active, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                id, username, password_hash, full_name, role, is_active,
+                created_at, updated_at, auth_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user.id,
@@ -798,6 +817,7 @@ class SqliteUserRepository:
                 int(user.is_active),
                 user.created_at.isoformat(),
                 user.updated_at.isoformat(),
+                user.auth_version,
             ),
         )
 
@@ -830,7 +850,8 @@ class SqliteUserRepository:
                    full_name = ?,
                    role = ?,
                    is_active = ?,
-                   updated_at = ?
+                   updated_at = ?,
+                   auth_version = ?
              WHERE id = ?
             """,
             (
@@ -840,6 +861,7 @@ class SqliteUserRepository:
                 user.role.value,
                 int(user.is_active),
                 user.updated_at.isoformat(),
+                user.auth_version,
                 user.id,
             ),
         )
@@ -912,6 +934,7 @@ class SqliteUserRepository:
             is_active=bool(row["is_active"]),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+            auth_version=row["auth_version"],
         )
 
 

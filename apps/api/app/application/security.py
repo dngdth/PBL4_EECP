@@ -42,6 +42,7 @@ class Principal:
     full_name: str | None = field(default=None, compare=False)
     jti: str | None = field(default=None, compare=False)
     expires_at: datetime | None = field(default=None, compare=False)
+    auth_version: int = field(default=0, compare=False)
 
 
 class AuthorizationDeniedError(PermissionError):

@@ -178,13 +178,21 @@ def hydrate_principal(app: object, principal: Principal) -> Principal:
     revocation = getattr(app.state, "token_revocation", None)  # type: ignore[attr-defined]
     if revocation is not None and principal.jti and revocation.is_revoked(principal.jti):
         raise ValueError("token revoked")
-    if principal.user_id is None:
-        return principal
     container = app.state.container  # type: ignore[attr-defined]
     with container.database.unit_of_work() as uow:
-        user = uow.users.find(principal.user_id)
+        if principal.user_id is None:
+            # Tokens issued before DB-backed accounts had no uid/version claim.
+            # Bind them to a migrated account so password resets also revoke them.
+            user = uow.users.find_by_username(principal.subject)
+            if user is None:
+                uow.commit()
+                return principal
+        else:
+            user = uow.users.find(principal.user_id)
         if user is None or not user.is_active:
             raise ValueError("account is inactive or removed")
+        if principal.auth_version != user.auth_version:
+            raise ValueError("token revoked by account security update")
         scope = (
             frozenset()
             if user.role == UserRole.ADMIN
@@ -199,6 +207,7 @@ def hydrate_principal(app: object, principal: Principal) -> Principal:
         full_name=user.full_name,
         jti=principal.jti,
         expires_at=principal.expires_at,
+        auth_version=user.auth_version,
     )
 
 

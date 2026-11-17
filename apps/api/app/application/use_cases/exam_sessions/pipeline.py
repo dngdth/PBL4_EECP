@@ -12,6 +12,8 @@ from app.application.dtos.exam_pipeline import (
     SubmitPreflightInput,
     TelemetryInput,
 )
+from app.application.dtos.users import AssignSessionExaminersInput
+from app.application.use_cases.users.management import AssignSessionExaminers
 from app.domain.entities.exam_session import ExamSession
 from app.domain.entities.operations import Command, TelemetryEvent
 from app.domain.entities.session_workstation import SessionWorkstation
@@ -87,6 +89,12 @@ class ExamPipelineService:
                     "workstations": sorted(session.workstations),
                 },
             )
+            if data.examiner_ids:
+                AssignSessionExaminers.assign_in_transaction(
+                    uow,
+                    AssignSessionExaminersInput(session.id, data.examiner_ids, data.actor),
+                    session.created_at,
+                )
             uow.commit()
         return session
 
